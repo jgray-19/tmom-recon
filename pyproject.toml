@@ -1,0 +1,97 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tmom-recon"
+version = "0.1.0"
+description = "Transverse momentum reconstruction utilities"
+authors = [
+    { name = "Your Name", email = "you@example.com" },
+]
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "pandas",
+    "tfs-pandas",
+    "omc3",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-cov",
+]
+dev = [
+    "pre-commit",
+    "ruff",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["tmom_recon*"]
+
+[tool.coverage.run]
+source = ["src/tmom_recon"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["tests/data"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+addopts = [
+    "--log-cli-level=INFO",
+    "--log-level=INFO",
+    "--log-cli-format=%(levelname)s %(name)s %(message)s",
+    "-s",
+]
+
+[tool.ruff]
+exclude = [
+  ".eggs",
+  ".git",
+  ".mypy_cache",
+  ".venv",
+  "_build",
+  "build",
+  "dist",
+]
+
+target-version = "py311"
+
+line-length = 100
+indent-width = 4
+
+[tool.ruff.lint]
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+ignore = [
+  "E501",
+  "FBT001",
+  "FBT002",
+  "PT019",
+]
+extend-select = [
+    "F",
+    "W",
+    "E",
+    "I",
+    "A",
+    "N",
+    "UP",
+    "C4",
+    "FA",
+    "FBT",
+    "ISC",
+    "BLE",
+    "ICN",
+    "RET",
+    "SIM",
+    "TID",
+    "PTH",
+    "NPY",
+]
+fixable = ["ALL"]
+unfixable = []
