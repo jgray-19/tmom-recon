@@ -5,9 +5,7 @@ from __future__ import annotations
 import pytest
 from omc3.scripts.fake_measurement_from_model import generate as generate_fake_measurement
 
-pytest.importorskip("xtrack")
-pytest.importorskip("xpart")
-pytest.importorskip("xobjects")
+pytest.importorskip("xtrack_tools")
 
 from aba_optimiser.model_creator import convert_tfs_to_madx
 from xtrack_tools.acd import run_acd_track

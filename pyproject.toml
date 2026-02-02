@@ -26,6 +26,7 @@ test = [
 ]
 dev = [
     "pre-commit",
+    "xtrack-tools",
     "ruff",
 ]
 

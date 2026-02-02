@@ -6,10 +6,7 @@ import numpy as np
 import pytest
 import tfs
 
-pytest.importorskip("xtrack")
-pytest.importorskip("xpart")
-pytest.importorskip("xobjects")
-pytest.importorskip("matplotlib")
+pytest.importorskip("xtrack_tools")
 
 from typing import TYPE_CHECKING
 

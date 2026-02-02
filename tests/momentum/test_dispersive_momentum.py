@@ -5,9 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-pytest.importorskip("xtrack")
-pytest.importorskip("xpart")
-pytest.importorskip("xobjects")
+pytest.importorskip("xtrack_tools")
 
 from xtrack_tools.acd import run_acd_track
 
