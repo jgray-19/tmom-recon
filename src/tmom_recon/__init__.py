@@ -9,11 +9,13 @@ consolidated functions directly.
 from __future__ import annotations
 
 from .measurements.dispersive_measurement import calculate_pz_measurement
+from .measurements.twiss_from_measurement import build_twiss_from_measurements
 from .physics.dispersive import calculate_pz as calculate_dispersive_pz
 from .physics.transverse import calculate_pz as calculate_transverse_pz
 from .physics.transverse import inject_noise_xy_inplace
 
 __all__ = [
+    "build_twiss_from_measurements",
     "calculate_dispersive_pz",
     "calculate_transverse_pz",
     "calculate_pz_measurement",
