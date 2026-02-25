@@ -93,8 +93,7 @@ def _merge_partner_coords(df):
                     row["turn"],
                 )
     # Clean up
-    df.drop(columns=["turn_bar", "turn_tilde"], inplace=True)
-    return df
+    return df.drop(columns=["turn_bar", "turn_tilde"])
 
 
 def _phases_radians(d_pi: np.ndarray, d_pi2: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

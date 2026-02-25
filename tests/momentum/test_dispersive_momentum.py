@@ -4,9 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-
-pytest.importorskip("xtrack_tools")
-
 from xtrack_tools.acd import run_acd_track
 
 from tmom_recon import calculate_dispersive_pz as dispersive_calc

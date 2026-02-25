@@ -8,6 +8,7 @@ __all__ = [
     "dispersive",
     "dpp_calculation",
     "errors",
+    "kalman",
     "momenta",
     "transverse",
 ]

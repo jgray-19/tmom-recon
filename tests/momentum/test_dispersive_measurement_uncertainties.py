@@ -8,7 +8,7 @@ from omc3.scripts.fake_measurement_from_model import generate as generate_fake_m
 
 pytest.importorskip("xtrack_tools")
 
-from aba_optimiser.model_creator import convert_tfs_to_madx
+from pymadng_utils.madx import convert_tfs_to_madx
 from xtrack_tools.acd import run_acd_track
 
 from tmom_recon import calculate_pz_measurement, inject_noise_xy_inplace

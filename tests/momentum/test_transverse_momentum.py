@@ -6,20 +6,16 @@ import numpy as np
 import pytest
 import tfs
 
-pytest.importorskip("xtrack_tools")
+pytest.importorskip("aba_optimiser")
 
 from typing import TYPE_CHECKING
 
-from aba_optimiser.mad.base_mad_interface import BaseMadInterface
-from aba_optimiser.model_creator.config import (
-    AC_MARKER_PATTERN,
-    DRV_TUNES,
-    NAT_TUNES,
-)
 from aba_optimiser.simulation.magnet_perturbations import (
     apply_magnet_perturbations,
 )
 from aba_optimiser.simulation.optics import perform_orbit_correction
+from pymadng_utils.mad.core_mad_interface import CoreMadInterface
+from pymadng_utils.mad.model_creator_mad_interface import LhcModelCreatorMadInterface
 from xtrack_tools.acd import run_ac_dipole_tracking_with_particles
 from xtrack_tools.env import create_xsuite_environment, initialise_env
 from xtrack_tools.monitors import process_tracking_data
@@ -34,6 +30,10 @@ if TYPE_CHECKING:
     from xtrack import Line
 
 
+NAT_TUNES = [0.28, 0.31]
+DRV_TUNES = [0.27, 0.322]
+
+
 def _rmse(actual: np.ndarray, predicted: np.ndarray) -> float:
     return float(np.sqrt(np.mean((predicted - actual) ** 2)))
 
@@ -46,13 +46,14 @@ def _setup_xsuite_simulation(
     sequence_file,
     tmp_path,
     test_id,
+    rel_k1_std_dev=1e-4,
 ):
     corrector_file = tmp_path / f"correctors_{test_id}.tfs"
 
-    mad = BaseMadInterface()
+    mad = CoreMadInterface()
     mad.load_sequence(sequence_file, "lhcb1")
     mad.setup_beam(beam_energy=6800)
-    mad.mad["zero_twiss", "_"] = mad.mad.twiss(sequence="loaded_sequence")  # ty:ignore[invalid-assignment]
+    mad.mad["zero_twiss", "_"] = mad.mad.twiss(sequence="loaded_sequence")
 
     mad.observe_elements()
     tws = mad.run_twiss()
@@ -62,7 +63,7 @@ def _setup_xsuite_simulation(
     magnet_strengths = {}
     if do_apply_magnet_perturbations:
         magnet_strengths, _ = apply_magnet_perturbations(
-            mad.mad, rel_k1_std_dev=1e-4, seed=magnet_seed
+            mad.mad, rel_k1_std_dev=rel_k1_std_dev, seed=magnet_seed
         )
         assert magnet_strengths, "Expected magnet perturbations to update strengths"
 
@@ -86,7 +87,7 @@ def _setup_xsuite_simulation(
         seq_name="lhcb1",
     )
 
-    baseline_line = env["lhcb1"].copy()  # ty:ignore[not-subscriptable]
+    baseline_line = env["lhcb1"].copy()
     xsuite_tws = baseline_line.twiss(method="4d", delta0=delta_p)
 
     qx = float(xsuite_tws.qx % 1)
@@ -142,7 +143,7 @@ def test_calculate_pz_recovers_true_momenta(seq_b1, tmp_path):
         seq_name="lhcb1",
     )
 
-    baseline_line: Line = env["lhcb1"].copy()  # ty:ignore[not-subscriptable]
+    baseline_line: Line = env["lhcb1"].copy()
     ng = baseline_line.to_madng()
     tws = baseline_line.twiss(method="4d")
 
@@ -152,7 +153,7 @@ def test_calculate_pz_recovers_true_momenta(seq_b1, tmp_path):
     assert np.isclose(qy, NAT_TUNES[1], atol=1e-6, rtol=1e-6)
     qxd = DRV_TUNES[0]
     qyd = DRV_TUNES[1]
-    acd_marker = AC_MARKER_PATTERN.format(beam=1).lower()
+    acd_marker = LhcModelCreatorMadInterface.AC_MARKER_PATTERN.format(beam=1).lower()
     betxac = tws.rows[acd_marker]["betx"][0]
     betyac = tws.rows[acd_marker]["bety"][0]
     ac_marker_place = "6.7065629327563011e+03"

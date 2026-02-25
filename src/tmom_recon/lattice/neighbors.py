@@ -181,6 +181,6 @@ def merge_neighbor_coords(
         data_n[col] = data_n[col].fillna(np.inf)
 
     # Drop temporary turn columns
-    data_p.drop(columns=["turn_x_p", "turn_y_p"], inplace=True)
-    data_n.drop(columns=["turn_x_n", "turn_y_n"], inplace=True)
+    data_p = data_p.drop(columns=["turn_x_p", "turn_y_p"])
+    data_n = data_n.drop(columns=["turn_x_n", "turn_y_n"])
     return data_p, data_n
