@@ -23,6 +23,7 @@ dependencies = [
 test = [
     "pytest",
     "pytest-cov",
+    "cpymad",
 ]
 dev = [
     "pre-commit",
