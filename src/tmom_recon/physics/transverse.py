@@ -82,5 +82,15 @@ def calculate_pz(
     orig_order = orig_data.set_index(["name", "turn"]).index
     data_avg = data_avg.set_index(["name", "turn"]).reindex(orig_order).reset_index()
 
+    for col in OUT_COLS:
+        if col not in data_avg.columns:
+            if col in orig_data.columns:
+                data_avg[col] = orig_data[col]
+            else:
+                raise KeyError(
+                    f"Required output column {col!r} is missing from both "
+                    "the reconstructed data and the original input data."
+                )
+
     diagnostics(orig_data, data_p, data_n, data_avg, info, features)
     return data_avg[OUT_COLS]

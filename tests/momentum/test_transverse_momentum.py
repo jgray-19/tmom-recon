@@ -10,11 +10,8 @@ pytest.importorskip("aba_optimiser")
 
 from typing import TYPE_CHECKING
 
-from aba_optimiser.simulation.magnet_perturbations import (
-    apply_magnet_perturbations,
-)
-from aba_optimiser.simulation.optics import perform_orbit_correction
-from pymadng_utils.mad.core_mad_interface import CoreMadInterface
+from aba_optimiser.accelerators import LHC
+from aba_optimiser.mad import AbaMadInterface
 from pymadng_utils.mad.model_creator_mad_interface import LhcModelCreatorMadInterface
 from xtrack_tools.acd import run_ac_dipole_tracking_with_particles
 from xtrack_tools.env import create_xsuite_environment, initialise_env
@@ -27,6 +24,8 @@ from .momentum_test_utils import (  # noqa: E402
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from xtrack import Line
 
 
@@ -38,21 +37,27 @@ def _rmse(actual: np.ndarray, predicted: np.ndarray) -> float:
     return float(np.sqrt(np.mean((predicted - actual) ** 2)))
 
 
+def _create_loaded_mad_interface(sequence_file: Path) -> AbaMadInterface:
+    accelerator = LHC(beam=1, sequence_file=sequence_file, beam_energy=6800)
+    return AbaMadInterface(accelerator)
+
+
 def _setup_xsuite_simulation(
-    delta_p,
-    do_apply_magnet_perturbations,
-    magnet_seed,
-    json_path,
-    sequence_file,
-    tmp_path,
-    test_id,
+    delta_p: float,
+    magnets_to_perturb: str | list[str],
+    magnet_seed: int,
+    json_path: Path,
+    sequence_file: Path,
+    tmp_path: Path,
+    test_id: str,
     rel_k1_std_dev=1e-4,
+    flattop_turns=100,
+    initial_tune_guess: dict[str, float] | None = None,
+    track_delta_p: float | None = None,
 ):
     corrector_file = tmp_path / f"correctors_{test_id}.tfs"
 
-    mad = CoreMadInterface()
-    mad.load_sequence(sequence_file, "lhcb1")
-    mad.setup_beam(beam_energy=6800)
+    mad = _create_loaded_mad_interface(sequence_file)
     mad.mad["zero_twiss", "_"] = mad.mad.twiss(sequence="loaded_sequence")
 
     mad.observe_elements()
@@ -61,15 +66,20 @@ def _setup_xsuite_simulation(
     mad.unobserve_elements(["BPM"])
 
     magnet_strengths = {}
-    if do_apply_magnet_perturbations:
-        magnet_strengths, _ = apply_magnet_perturbations(
-            mad.mad, rel_k1_std_dev=rel_k1_std_dev, seed=magnet_seed
+    if magnets_to_perturb:
+        magnet_strengths = mad.apply_magnet_perturbations(
+            rel_error=rel_k1_std_dev,
+            seed=magnet_seed,
+            magnet_type=magnets_to_perturb,
+            overwrite_strengths=True,
         )
         assert magnet_strengths, "Expected magnet perturbations to update strengths"
 
+    if initial_tune_guess is not None:
+        mad.set_madx_variables(**initial_tune_guess)
+
     # Perform orbit correction
-    matched_tunes = perform_orbit_correction(
-        mad=mad.mad,
+    matched_tunes = mad.perform_orbit_correction(
         machine_deltap=delta_p,
         target_qx=0.28,
         target_qy=0.31,
@@ -77,12 +87,14 @@ def _setup_xsuite_simulation(
     )
 
     corrector_table = tfs.read(corrector_file)
-    corrector_table = corrector_table[corrector_table["kind"] != "monitor"]
+    corrector_table = corrector_table.loc[
+        ~corrector_table["kind"].astype(str).str.lower().isin({"monitor", "hmonitor", "vmonitor"})
+    ]
 
     env = initialise_env(
         matched_tunes,
         magnet_strengths,
-        corrector_table,  # ty:ignore[invalid-argument-type]
+        corrector_table,
         sequence_file=sequence_file,
         seq_name="lhcb1",
     )
@@ -92,19 +104,19 @@ def _setup_xsuite_simulation(
 
     qx = float(xsuite_tws.qx % 1)
     qy = float(xsuite_tws.qy % 1)
-    assert np.isclose(qx, 0.28, atol=5e-4, rtol=5e-4)
-    assert np.isclose(qy, 0.31, atol=5e-4, rtol=5e-4)
+    assert np.isclose(qx, NAT_TUNES[0], atol=1e-3, rtol=0.0)
+    assert np.isclose(qy, NAT_TUNES[1], atol=1e-3, rtol=0.0)
 
     ramp_turns = 1000
-    flattop_turns = 100
 
     # Use generalized tracking function
+    track_delta_p = track_delta_p if track_delta_p is not None else delta_p
     particle_coords = {
         "x": [0],
         "px": [0],
         "y": [0],
         "py": [0],
-        "delta": [delta_p],
+        "delta": [track_delta_p],
     }
 
     monitored_line = run_ac_dipole_tracking_with_particles(
@@ -126,13 +138,12 @@ def _setup_xsuite_simulation(
     )
     tracking_df["var_x"] = 1.0
     tracking_df["var_y"] = 1.0
-    tracking_df["kick_plane"] = "both"
 
-    truth = tracking_df[["name", "turn", "px", "py"]].rename(
-        columns={"px": "px_true", "py": "py_true"}
+    truth = tracking_df[["name", "turn", "x", "px", "y", "py"]].rename(
+        columns={"px": "px_true", "py": "py_true", "x": "x_true", "y": "y_true"}
     )
 
-    return tracking_df, truth, tws
+    return tracking_df, truth, tws, xsuite_tws
 
 
 @pytest.mark.slow
@@ -212,7 +223,6 @@ local a = seq:replace({{
     )
     tracking_df["var_x"] = 1.0
     tracking_df["var_y"] = 1.0
-    tracking_df["kick_plane"] = "both"
 
     truth = tracking_df[["name", "turn", "px", "py"]].rename(
         columns={"px": "px_true", "py": "py_true"}
@@ -255,7 +265,7 @@ def _verify_pz_reconstruction(
     py_cleaned_max,
     rng_seed=42,
 ):
-    """Wrapper around shared verify_pz_reconstruction for backward compatibility."""
+    """Wrapper around the shared reconstruction assertions."""
     verify_pz_reconstruction(
         tracking_df,
         truth,
@@ -331,9 +341,9 @@ def test_calculate_pz_with_corrections_and_perturbations(
     json_path = xsuite_json_path("lhcb1.seq")
     test_id = f"test_{delta_p}_{do_apply_magnet_perturbations}"
 
-    tracking_df, truth, tws = _setup_xsuite_simulation(
+    tracking_df, truth, tws, _ = _setup_xsuite_simulation(
         delta_p,
-        do_apply_magnet_perturbations,
+        "all" if do_apply_magnet_perturbations else "",
         magnet_seed,
         json_path,
         seq_b1,

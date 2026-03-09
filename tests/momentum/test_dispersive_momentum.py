@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from functools import cache
+from pathlib import Path
+
 import numpy as np
 import pytest
 from xtrack_tools.acd import run_acd_track
@@ -14,6 +17,37 @@ from tmom_recon.svd import svd_clean_measurements  # noqa: E402
 from .momentum_test_utils import get_truth, rmse, xsuite_to_ngtws
 
 
+@cache
+def _cached_tracking_setup(
+    seq_path: str,
+    json_path: str,
+    delta_p: float,
+    ramp_turns: int,
+    flattop_turns: int,
+):
+    tracking_df, tws, _baseline_line = run_acd_track(
+        json_path=Path(json_path),
+        sequence_file=Path(seq_path),
+        delta_p=delta_p,
+        ramp_turns=ramp_turns,
+        flattop_turns=flattop_turns,
+    )
+    tws = xsuite_to_ngtws(tws)
+    truth = get_truth(tracking_df, tws)
+    return tracking_df, tws, truth
+
+
+def _get_tracking_setup(seq: Path, json_path: Path, delta_p: float) -> tuple:
+    tracking_df, tws, truth = _cached_tracking_setup(
+        str(seq),
+        str(json_path),
+        delta_p,
+        1000,
+        100,
+    )
+    return tracking_df.copy(deep=True), tws.copy(deep=True), truth.copy(deep=True)
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize("seq_file", ["lhcb1.seq", "b1_120cm_crossing.seq"])
 def test_dispersive_momentum_on_momentum(seq_file, data_dir, xsuite_json_path):
@@ -24,18 +58,7 @@ def test_dispersive_momentum_on_momentum(seq_file, data_dir, xsuite_json_path):
     """
     seq = data_dir / "sequences" / seq_file
     json_path = xsuite_json_path(seq_file)
-
-    tracking_df, tws, baseline_line = run_acd_track(
-        json_path=json_path,
-        sequence_file=seq,
-        delta_p=0.0,
-        ramp_turns=1000,
-        flattop_turns=100,
-    )
-
-    # Convert twiss to ngtws format, NAME will be index
-    tws = xsuite_to_ngtws(tws)
-    truth = get_truth(tracking_df, tws)
+    tracking_df, tws, truth = _get_tracking_setup(seq, json_path, 0.0)
 
     # Transverse reconstruction (baseline)
     trans_result = transverse_calc(
@@ -90,104 +113,34 @@ def test_dispersive_momentum_on_momentum(seq_file, data_dir, xsuite_json_path):
 @pytest.mark.slow
 @pytest.mark.parametrize("seq_file", ["lhcb1.seq", "b1_120cm_crossing.seq"])
 @pytest.mark.parametrize("delta_p", [-5e-4, 4e-4])
-def test_dispersive_momentum_off_momentum(seq_file, delta_p, data_dir, xsuite_json_path):
-    """Test dispersive momentum reconstruction for off-momentum beam.
+def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, xsuite_json_path):
+    """Validate off-momentum dispersive momentum reconstruction for clean, noisy, and SVD-cleaned data.
 
-    For off-momentum particles (δp≠0), the dispersive method should correct
-    for the dispersive contribution to the x coordinate, resulting in better
-    px reconstruction than the transverse method.
+    This test uses a single tracked off-momentum beam (non-zero δp) and performs:
 
-    The py reconstruction should be unaffected by dispersion and both methods
-    should perform equally well.
+    * A baseline transverse reconstruction (no dispersion model) used for comparison.
+    * A clean dispersive reconstruction (no injected noise) to validate the off-momentum
+      dispersive method against the tracking truth and the transverse baseline.
+    * A noisy dispersive reconstruction, where realistic BPM-like noise is injected into
+      the measured coordinates to assess the degradation in reconstruction quality.
+    * An SVD-cleaned dispersive reconstruction, where the noisy measurements are first
+      passed through ``svd_clean_measurements`` to verify that SVD cleaning recovers
+      performance close to the clean dispersive case and improves over the raw noisy case.
+
+    The merged results allow comparison between transverse and dispersive methods and
+    between clean, noisy, and SVD-cleaned dispersive reconstructions for each
+    sequence and δp value.
     """
     seq = data_dir / "sequences" / seq_file
     json_path = xsuite_json_path(seq_file)
+    tracking_df, tws, truth = _get_tracking_setup(seq, json_path, delta_p)
 
-    tracking_df, tws, baseline_line = run_acd_track(
-        json_path=json_path,
-        sequence_file=seq,
-        delta_p=delta_p,
-        ramp_turns=1000,
-        flattop_turns=100,
-    )
-    tws = xsuite_to_ngtws(tws)
-    truth = get_truth(tracking_df, tws)
-
-    # Transverse reconstruction (no dispersion correction)
     trans_result = transverse_calc(
         tracking_df.copy(deep=True),
         tws=tws,
         inject_noise=False,
         info=True,
     ).rename(columns={"px": "px_trans", "py": "py_trans"})
-
-    # Dispersive reconstruction (with dispersion correction)
-    disp_result = dispersive_calc(
-        tracking_df.copy(deep=True),
-        tws=tws,
-        inject_noise=False,
-        info=True,
-    ).rename(columns={"px": "px_disp", "py": "py_disp"})
-
-    # Merge results
-    merged = truth.merge(
-        trans_result[["name", "turn", "px_trans", "py_trans"]],
-        on=["name", "turn"],
-    ).merge(
-        disp_result[["name", "turn", "px_disp", "py_disp"]],
-        on=["name", "turn"],
-    )
-
-    assert len(merged) == len(truth)
-
-    # Compute RMSE for both methods
-    px_rmse_trans = rmse(merged["px_true"].to_numpy(), merged["px_trans"].to_numpy())
-    py_rmse_trans = rmse(merged["py_true"].to_numpy(), merged["py_trans"].to_numpy())
-    px_rmse_disp = rmse(merged["px_true"].to_numpy(), merged["px_disp"].to_numpy())
-    py_rmse_disp = rmse(merged["py_true"].to_numpy(), merged["py_disp"].to_numpy())
-
-    # For off-momentum:
-    # - Transverse px should be degraded due to uncorrected dispersion
-    # - Dispersive px should be better (dispersion corrected)
-    # - py should be similar for both (no dispersion in y)
-
-    # py should still be reasonably accurate for both methods
-    assert py_rmse_trans < 3e-7, f"Transverse py RMSE {py_rmse_trans:.2e} > 2e-7"
-    assert py_rmse_disp < 3e-7, f"Dispersive py RMSE {py_rmse_disp:.2e} > 2e-7"
-
-    # Dispersive px should be 20x better than transverse px
-    assert px_rmse_disp <= px_rmse_trans / 11, (
-        f"Dispersive px RMSE {px_rmse_disp:.2e} should be <= transverse {px_rmse_trans:.2e}"
-    )
-
-    # Both should give reasonable results
-    tol = 6e-6 if "crossing" not in seq_file else 7.2e-6
-    assert px_rmse_disp < 5e-7, f"Dispersive px RMSE {px_rmse_disp:.2e} > 5e-7"
-    assert px_rmse_trans < tol, f"Transverse px RMSE {px_rmse_trans:.2e} > {tol:.2e}"
-
-
-@pytest.mark.slow
-@pytest.mark.parametrize("seq_file", ["lhcb1.seq", "b1_120cm_crossing.seq"])
-@pytest.mark.parametrize("delta_p", [-5e-4, 4e-4])
-def test_dispersive_momentum_off_momentum_with_noise(seq_file, delta_p, data_dir, xsuite_json_path):
-    """Test dispersive momentum reconstruction with noise for off-momentum beam.
-
-    For off-momentum particles (δp≠0), verify that SVD cleaning improves
-    reconstruction quality for noisy data compared to noisy reconstruction.
-    """
-    seq = data_dir / "sequences" / seq_file
-    json_path = xsuite_json_path(seq_file)
-
-    tracking_df, tws, baseline_line = run_acd_track(
-        json_path=json_path,
-        sequence_file=seq,
-        delta_p=delta_p,
-        ramp_turns=1000,
-        flattop_turns=100,
-    )
-
-    tws = xsuite_to_ngtws(tws)
-    truth = get_truth(tracking_df, tws)
 
     # Clean reconstruction (no noise)
     clean_result = dispersive_calc(
@@ -220,6 +173,10 @@ def test_dispersive_momentum_off_momentum_with_noise(seq_file, delta_p, data_dir
     # Merge all results
     merged = (
         truth.merge(
+            trans_result[["name", "turn", "px_trans", "py_trans"]],
+            on=["name", "turn"],
+        )
+        .merge(
             clean_result[["name", "turn", "px_clean", "py_clean"]],
             on=["name", "turn"],
         )
@@ -236,12 +193,24 @@ def test_dispersive_momentum_off_momentum_with_noise(seq_file, delta_p, data_dir
     assert len(merged) == len(truth)
 
     # Compute RMSE
+    px_rmse_trans = rmse(merged["px_true"].to_numpy(), merged["px_trans"].to_numpy())
+    py_rmse_trans = rmse(merged["py_true"].to_numpy(), merged["py_trans"].to_numpy())
     px_rmse_nonoise = rmse(merged["px_true"].to_numpy(), merged["px_clean"].to_numpy())
     py_rmse_nonoise = rmse(merged["py_true"].to_numpy(), merged["py_clean"].to_numpy())
     px_rmse_noisy = rmse(merged["px_true"].to_numpy(), merged["px_noisy"].to_numpy())
     py_rmse_noisy = rmse(merged["py_true"].to_numpy(), merged["py_noisy"].to_numpy())
     px_rmse_cleaned = rmse(merged["px_true"].to_numpy(), merged["px_svd"].to_numpy())
     py_rmse_cleaned = rmse(merged["py_true"].to_numpy(), merged["py_svd"].to_numpy())
+
+    # Clean off-momentum behaviour should still beat the transverse baseline.
+    assert py_rmse_trans < 3e-7, f"Transverse py RMSE {py_rmse_trans:.2e} > 2e-7"
+    assert py_rmse_nonoise < 3e-7, f"Dispersive py RMSE {py_rmse_nonoise:.2e} > 2e-7"
+    assert px_rmse_nonoise <= px_rmse_trans / 11, (
+        f"Dispersive px RMSE {px_rmse_nonoise:.2e} should be <= transverse {px_rmse_trans:.2e}"
+    )
+    tol = 6e-6 if "crossing" not in seq_file else 7.2e-6
+    assert px_rmse_nonoise < 5e-7, f"Dispersive px RMSE {px_rmse_nonoise:.2e} > 5e-7"
+    assert px_rmse_trans < tol, f"Transverse px RMSE {px_rmse_trans:.2e} > {tol:.2e}"
 
     # Check clean reconstruction quality
     assert px_rmse_nonoise < 5e-7, f"No noise px RMSE {px_rmse_nonoise:.2e} should be < 3.5e-7"
