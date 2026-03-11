@@ -17,5 +17,4 @@ FILE_COLUMNS: tuple[str, ...] = (
     "var_y",
     "var_px",
     "var_py",
-    "kick_plane",
 )
