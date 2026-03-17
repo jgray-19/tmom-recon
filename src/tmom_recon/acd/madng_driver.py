@@ -90,7 +90,6 @@ class ACDipoleMadDriver(CoreMadInterface):
             stdout=stdout,
             redirect_stderr=redirect_stderr,
             debug=debug,
-            mad_path="/afs/cern.ch/work/j/jmgray/private/MAD/src/mad",
         )
         self._mad_logfile = str(mad_logfile) if mad_logfile is not None else None
         self._element_cache: dict[str, dict[str, object] | None] = {}
