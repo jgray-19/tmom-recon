@@ -414,7 +414,6 @@ def test_madng_track_range_and_direction_match_source_target_convention(
         xsuite_json_path,
         flattop_turns=20,
     )
-    first_bpm = str(tracking_df["name"].iloc[0])
     bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
         full_tws,
         available_bpms=tracking_df["name"].unique().tolist(),
@@ -423,7 +422,6 @@ def test_madng_track_range_and_direction_match_source_target_convention(
 
     model = _get_driver(
         data_dir / "sequences" / SEQ_FILE,
-        first_bpm,
         debug=False,
     )
     up_rows = (
@@ -515,7 +513,6 @@ def test_calculate_ac_dipole_momentum_uses_real_tracking_setup(
         flattop_turns=100,
     )
     full_ng_tws = _full_xsuite_to_ngtws(full_tws)
-    first_bpm = str(tracking_df["name"].iloc[0])
     bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
         full_tws,
         available_bpms=tracking_df["name"].unique().tolist(),
@@ -525,7 +522,6 @@ def test_calculate_ac_dipole_momentum_uses_real_tracking_setup(
     reco_log = tmp_path / "acd_madng_reco.log"
     model = _get_driver(
         data_dir / "sequences" / SEQ_FILE,
-        first_bpm,
         debug=True,
         mad_logfile=reco_log,
     )
@@ -637,7 +633,6 @@ def test_ac_dipole_kick_fit_improves_noisy_reconstruction(
             flattop_turns=100,
         )
     full_ng_tws = _full_xsuite_to_ngtws(full_tws)
-    first_bpm = str(tracking_df["name"].iloc[0])
     bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
         full_tws,
         available_bpms=tracking_df["name"].unique().tolist(),
@@ -647,7 +642,6 @@ def test_ac_dipole_kick_fit_improves_noisy_reconstruction(
     reco_log = tmp_path / "acd_madng_reco_noisy.log"
     model = _get_driver(
         data_dir / "sequences" / SEQ_FILE,
-        first_bpm,
         debug=True,
         mad_logfile=reco_log,
     )
@@ -737,7 +731,6 @@ def test_ac_dipole_kick_fit_improves_with_more_turns(
             flattop_turns=flattop_turns,
         )
         full_ng_tws = _full_xsuite_to_ngtws(full_tws)
-        first_bpm = str(tracking_df["name"].iloc[0])
         bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
             full_tws,
             available_bpms=tracking_df["name"].unique().tolist(),
@@ -745,7 +738,6 @@ def test_ac_dipole_kick_fit_improves_with_more_turns(
         )
         model = _get_driver(
             data_dir / "sequences" / SEQ_FILE,
-            first_bpm,
             debug=True,
             mad_logfile=tmp_path / f"acd_madng_reco_turns_{flattop_turns}.log",
         )
@@ -798,7 +790,6 @@ def test_ac_dipole_multi_bpm_window_reports_used_bpms(
         flattop_turns=100,
     )
     full_ng_tws = _full_xsuite_to_ngtws(full_tws)
-    first_bpm = str(tracking_df["name"].iloc[0])
     expected_window = select_ac_dipole_bpm_window(
         full_ng_tws,
         ac_dipole_marker=AC_DIPOLE_ELEMENT,
@@ -808,7 +799,6 @@ def test_ac_dipole_multi_bpm_window_reports_used_bpms(
 
     model = _get_driver(
         data_dir / "sequences" / SEQ_FILE,
-        first_bpm,
         debug=True,
         mad_logfile=tmp_path / "acd_madng_reco_multi.log",
     )

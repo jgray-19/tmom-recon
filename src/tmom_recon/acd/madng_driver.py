@@ -73,7 +73,6 @@ class ACDipoleMadDriver(CoreMadInterface):
         deltap: float = 0.0,
         bpm_pattern: str = "BPM",
         observed_elements: str | list[str] | None = None,
-        start_bpm: str | None = None,
         debug: bool = False,
         mad_logfile: Path | None = None,
         discard_mad_output: bool = False,
@@ -98,12 +97,6 @@ class ACDipoleMadDriver(CoreMadInterface):
         self.load_sequence(sequence_file, f"lhcb{beam}")
         self.setup_beam(beam_energy)
         self.mad["DELTAP"] = deltap
-
-        if start_bpm is not None:
-            marker_name = self.install_marker(start_bpm, "marker_" + start_bpm)
-            self.cycle_sequence(marker_name=marker_name)
-            LOGGER.info("Cycled sequence to start at BPM: %s", start_bpm)
-
         self.observe_elements(bpm_pattern)
         self.add_observed_elements(observed_elements)
 

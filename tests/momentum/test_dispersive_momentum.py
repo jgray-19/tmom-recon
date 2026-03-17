@@ -139,13 +139,12 @@ def test_dispersive_momentum_on_momentum_with_ac_dipole_config(
     full_tws = baseline_line.twiss(method="4d")
     full_ng_tws = _full_xsuite_to_ngtws(full_tws)
 
-    first_bpm = str(tracking_df["name"].iloc[0])
     bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
         full_tws,
         available_bpms=tracking_df["name"].unique().tolist(),
         element_name=AC_DIPOLE_ELEMENT,
     )
-    model = _get_driver(seq, first_bpm, deltap=0.0)
+    model = _get_driver(seq, deltap=0.0)
 
     baseline = dispersive_calc(
         tracking_df.copy(deep=True),

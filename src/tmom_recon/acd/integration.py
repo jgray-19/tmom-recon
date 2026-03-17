@@ -54,6 +54,13 @@ def apply_ac_dipole_bpm_overrides_inplace(
         acd_result.attrs.get("bpm_downstream", acd_result["bpm_downstream"].iloc[0])
     )
 
+    # Persist resolved AC-dipole selection metadata for downstream consumers.
+    result.attrs["ac_dipole_marker"] = config.ac_dipole_marker
+    result.attrs["ac_dipole_bpm_upstream"] = bpm_upstream
+    result.attrs["ac_dipole_bpm_downstream"] = bpm_downstream
+    result.attrs["ac_dipole_n_bpms_each_side"] = int(config.n_bpms_each_side)
+    result.attrs["ac_dipole_smooth_lambda"] = float(config.smooth_lambda)
+
     side_specs = [
         (
             bpm_upstream,

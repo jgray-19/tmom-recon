@@ -26,7 +26,6 @@ def _full_xsuite_to_ngtws(tbl) -> tfs.TfsDataFrame:
 
 def _get_driver(
     seq: Path,
-    first_bpm: str,
     deltap: float = 0.0,
     *,
     debug: bool = False,
@@ -37,7 +36,6 @@ def _get_driver(
         beam_energy=6800,
         deltap=deltap,
         sequence_file=seq,
-        start_bpm=first_bpm,
         observed_elements=AC_DIPOLE_ELEMENT,
         debug=debug,
         mad_logfile=mad_logfile,
