@@ -4,6 +4,10 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from tmom_recon.acd.integration import (
+    ACDipoleConfig,
+    apply_ac_dipole_bpm_overrides_inplace,
+)
 from tmom_recon.measurements.measurement_pipeline import (
     aggregate_results,
     attach_errors_inplace,
@@ -29,6 +33,7 @@ def calculate_pz_measurement(
     include_errors: bool = False,
     include_optics_errors: bool = False,
     dpp_override: float | None = None,
+    ac_dipole_config: ACDipoleConfig | None = None,
 ) -> pd.DataFrame:
     """Calculate transverse momenta from dispersive measurements.
 
@@ -85,11 +90,21 @@ def calculate_pz_measurement(
     if has_errors:
         attach_errors_inplace(data_p, data_n, tws)
 
+    data_for_acd = data.copy(deep=True)
+
     # Stage 5: Calculate momenta
     data_p, data_n = calculate_momenta(data_p, data_n, dpp_est, include_optics_errors)
 
     # Stage 6: Aggregate results
     data_avg = aggregate_results(data_p, data_n, model_tws, dpp_est)
+
+    if ac_dipole_config is not None:
+        apply_ac_dipole_bpm_overrides_inplace(
+            result=data_avg,
+            data=data_for_acd,
+            tws=model_tws,
+            config=ac_dipole_config,
+        )
 
     # Stage 7: Run diagnostics
     run_diagnostics(orig_data, data_p, data_n, data_avg, info, features)

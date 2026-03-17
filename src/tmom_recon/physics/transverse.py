@@ -4,6 +4,7 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING
 
+from tmom_recon.acd.integration import ACDipoleConfig, apply_ac_dipole_bpm_overrides_inplace
 from tmom_recon.data.config import POSITION_STD_DEV
 from tmom_recon.lattice.core import (
     OUT_COLS,
@@ -41,6 +42,7 @@ def calculate_pz(
     inject_noise: bool | float = True,
     info: bool = True,
     rng: np.random.Generator | None = None,
+    ac_dipole_config: ACDipoleConfig | None = None,
 ) -> pd.DataFrame:
     LOGGER.info(
         "Calculating transverse momentum - inject_noise=%s",
@@ -57,11 +59,14 @@ def calculate_pz(
         noise_std = POSITION_STD_DEV if inject_noise is True else float(inject_noise)
         inject_noise_xy_inplace(data, orig_data, rng, noise_std=noise_std)
 
+    tws_for_acd = tws
+
     # Get the shared list of data and twiss BPMs
     tws_bpm_names = set(tws.index).intersection(data["name"].unique())
     data = data[data["name"].isin(tws_bpm_names)]
     tws = tws.loc[tws.index.isin(tws_bpm_names)]
 
+    data_for_acd = data.copy(deep=True)
     remove_closed_orbit_inplace(data, tws)
 
     data_p, data_n, bpm_index, _maps = prepare_neighbor_views(data, tws)
@@ -77,6 +82,14 @@ def calculate_pz(
     data_avg = weighted_average(data_p, data_n)
 
     restore_closed_orbit_and_reference_momenta_inplace(data_avg, tws)
+
+    if ac_dipole_config is not None:
+        apply_ac_dipole_bpm_overrides_inplace(
+            result=data_avg,
+            data=data_for_acd,
+            tws=tws_for_acd,
+            config=ac_dipole_config,
+        )
 
     # Restore original order of orig_data
     orig_order = orig_data.set_index(["name", "turn"]).index

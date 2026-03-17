@@ -9,11 +9,17 @@ import numpy as np
 import pytest
 from xtrack_tools.acd import run_acd_track
 
+from tmom_recon import ACDipoleConfig, inject_noise_xy_inplace
 from tmom_recon import calculate_dispersive_pz as dispersive_calc
 from tmom_recon import calculate_transverse_pz as transverse_calc
-from tmom_recon import inject_noise_xy_inplace
 from tmom_recon.svd import svd_clean_measurements  # noqa: E402
 
+from .acd_test_helpers import (
+    AC_DIPOLE_ELEMENT,
+    _ac_dipole_segment_around_element,
+    _full_xsuite_to_ngtws,
+    _get_driver,
+)
 from .momentum_test_utils import get_truth, rmse, xsuite_to_ngtws
 
 
@@ -108,6 +114,100 @@ def test_dispersive_momentum_on_momentum(seq_file, data_dir, xsuite_json_path):
     assert py_rmse_disp < py_rmse_trans or np.isclose(py_rmse_disp, py_rmse_trans, rtol=1e-2), (
         f"Dispersive py RMSE {py_rmse_disp:.2e} > transverse {py_rmse_trans:.2e}"
     )
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("seq_file", ["lhcb1.seq", "b1_120cm_crossing.seq"])
+def test_dispersive_momentum_on_momentum_with_ac_dipole_config(
+    seq_file,
+    data_dir,
+    xsuite_json_path,
+):
+    pytest.importorskip("pymadng_utils")
+
+    seq = data_dir / "sequences" / seq_file
+    json_path = xsuite_json_path(seq_file)
+    tracking_df, tws_xsuite, baseline_line = run_acd_track(
+        json_path=json_path,
+        sequence_file=seq,
+        delta_p=0.0,
+        ramp_turns=1000,
+        flattop_turns=100,
+    )
+    tws = xsuite_to_ngtws(tws_xsuite)
+    truth = get_truth(tracking_df, tws)
+    full_tws = baseline_line.twiss(method="4d")
+    full_ng_tws = _full_xsuite_to_ngtws(full_tws)
+
+    first_bpm = str(tracking_df["name"].iloc[0])
+    bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
+        full_tws,
+        available_bpms=tracking_df["name"].unique().tolist(),
+        element_name=AC_DIPOLE_ELEMENT,
+    )
+    model = _get_driver(seq, first_bpm, deltap=0.0)
+
+    baseline = dispersive_calc(
+        tracking_df.copy(deep=True),
+        tws=full_ng_tws,
+        inject_noise=False,
+        info=False,
+    ).rename(columns={"px": "px_base", "py": "py_base"})
+
+    with_acd = dispersive_calc(
+        tracking_df.copy(deep=True),
+        tws=full_ng_tws,
+        inject_noise=False,
+        info=False,
+        ac_dipole_config=ACDipoleConfig(
+            ac_dipole_marker=AC_DIPOLE_ELEMENT,
+            model=model,
+            bpm_upstream=bpm_upstream,
+            bpm_downstream=bpm_downstream,
+        ),
+    ).rename(columns={"px": "px_acd", "py": "py_acd"})
+
+    merged = truth.merge(
+        baseline[["name", "turn", "px_base", "py_base"]],
+        on=["name", "turn"],
+    ).merge(
+        with_acd[["name", "turn", "px_acd", "py_acd"]],
+        on=["name", "turn"],
+    )
+
+    px_rmse_base = rmse(merged["px_true"].to_numpy(), merged["px_base"].to_numpy())
+    py_rmse_base = rmse(merged["py_true"].to_numpy(), merged["py_base"].to_numpy())
+    px_rmse_acd = rmse(merged["px_true"].to_numpy(), merged["px_acd"].to_numpy())
+    py_rmse_acd = rmse(merged["py_true"].to_numpy(), merged["py_acd"].to_numpy())
+
+    # Global quality should not be worse when ACD corrections are enabled.
+    assert px_rmse_acd <= px_rmse_base
+    assert py_rmse_acd <= py_rmse_base
+
+    improved_bpms = {bpm_upstream, bpm_downstream}
+    improved_rows = merged[merged["name"].isin(improved_bpms)]
+    assert len(improved_rows) > 0
+
+    px_rmse_base_local = rmse(
+        improved_rows["px_true"].to_numpy(),
+        improved_rows["px_base"].to_numpy(),
+    )
+    py_rmse_base_local = rmse(
+        improved_rows["py_true"].to_numpy(),
+        improved_rows["py_base"].to_numpy(),
+    )
+    px_rmse_acd_local = rmse(
+        improved_rows["px_true"].to_numpy(),
+        improved_rows["px_acd"].to_numpy(),
+    )
+    py_rmse_acd_local = rmse(
+        improved_rows["py_true"].to_numpy(),
+        improved_rows["py_acd"].to_numpy(),
+    )
+
+    # At the BPMs near the AC dipole, corrected estimates should improve.
+    assert px_rmse_acd_local < px_rmse_base_local
+    assert py_rmse_acd_local < py_rmse_base_local
 
 
 @pytest.mark.slow

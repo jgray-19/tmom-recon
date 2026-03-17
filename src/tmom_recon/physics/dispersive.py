@@ -3,6 +3,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from tmom_recon.acd.integration import (
+    ACDipoleConfig,
+    apply_ac_dipole_bpm_overrides_inplace,
+)
 from tmom_recon.lattice.core import (
     OUT_COLS,
     diagnostics,
@@ -38,6 +42,7 @@ def calculate_pz(
     inject_noise: bool = True,
     info: bool = True,
     rng: Generator | None = None,
+    ac_dipole_config: ACDipoleConfig | None = None,
 ) -> pd.DataFrame:
     LOGGER.info(
         "Calculating dispersive transverse momentum - inject_noise=%s",
@@ -51,11 +56,14 @@ def calculate_pz(
     if inject_noise:
         inject_noise_xy_inplace(data, orig_data, rng)
 
+    tws_for_acd = tws
+
     # Get the shared list of data and twiss BPMs
     tws_bpm_names = set(tws.index).intersection(data["name"].unique())
     data = data[data["name"].isin(tws_bpm_names)]
     tws = tws.loc[tws.index.isin(tws_bpm_names)]
 
+    data_for_acd = data.copy(deep=True)
     remove_closed_orbit_inplace(data, tws)
 
     dpp_est = estimate_dpp_from_model(data, tws, info)
@@ -72,6 +80,14 @@ def calculate_pz(
     data_avg = weighted_average(data_p, data_n)
 
     restore_closed_orbit_and_reference_momenta_inplace(data_avg, tws)
+
+    if ac_dipole_config is not None:
+        apply_ac_dipole_bpm_overrides_inplace(
+            result=data_avg,
+            data=data_for_acd,
+            tws=tws_for_acd,
+            config=ac_dipole_config,
+        )
 
     # Add to the header the dpp used
     data_avg.attrs["DPP_EST"] = dpp_est

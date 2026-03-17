@@ -1,0 +1,833 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import matplotlib as mpl
+
+mpl.use("Agg")
+import numpy as np
+import pandas as pd
+import pytest
+import tfs
+from matplotlib import pyplot as plt
+from xtrack_tools.acd import run_acd_track
+
+pytest.importorskip("pymadng_utils")
+pytest.importorskip("xtrack_tools")
+
+from tmom_recon import inject_noise_xy_inplace
+from tmom_recon.acd.madng_driver import ACDipoleMadDriver
+from tmom_recon.acd.reconstruction import (
+    calculate_ac_dipole_momentum,
+    select_ac_dipole_bpm_window,
+    select_ac_dipole_bpms,
+)
+from tmom_recon.svd import svd_clean_measurements
+
+from .acd_test_helpers import (
+    AC_DIPOLE_ELEMENT,
+    _ac_dipole_segment_around_element,
+    _full_xsuite_to_ngtws,
+    _get_driver,
+)
+from .momentum_test_utils import get_truth, rmse, xsuite_to_ngtws
+
+SEQ_FILE = "lhcb1.seq"
+
+
+def _should_plot_test_results() -> bool:
+    return os.getenv("TMOM_RECON_PLOT_TESTS", "0") == "1"
+
+
+def _get_setup(
+    seq_file: str,
+    data_dir: Path,
+    xsuite_json_path,
+    *,
+    delta_p: float = 0.0,
+    ramp_turns: int = 1000,
+    flattop_turns: int = 1000,
+):
+    seq = data_dir / "sequences" / seq_file
+    json_path = xsuite_json_path(seq_file)
+    tracking_df, tws, baseline_line = run_acd_track(
+        json_path=json_path,
+        sequence_file=seq,
+        delta_p=delta_p,
+        ramp_turns=ramp_turns,
+        flattop_turns=flattop_turns,
+    )
+    tws = xsuite_to_ngtws(tws)
+    truth = get_truth(tracking_df, tws)
+    return tracking_df, tws, truth, baseline_line.twiss(method="4d")
+
+
+def _get_setup_with_magnetic_errors(
+    data_dir: Path,
+    *,
+    flattop_turns: int = 100,
+    magnet_seed: int = 13,
+    rel_k1_std_dev: float = 1e-4,
+):
+    aba_optimiser = pytest.importorskip("aba_optimiser")
+    assert aba_optimiser is not None  # satisfy linters
+
+    from aba_optimiser.accelerators import LHC
+    from aba_optimiser.mad import AbaMadInterface
+    from xtrack_tools.acd import run_ac_dipole_tracking_with_particles
+    from xtrack_tools.env import initialise_env
+    from xtrack_tools.monitors import process_tracking_data
+
+    sequence_file = data_dir / "sequences" / SEQ_FILE
+    accelerator = LHC(beam=1, sequence_file=sequence_file, beam_energy=6800)
+    mad = AbaMadInterface(accelerator)
+
+    mad.observe_elements()
+    tws = mad.run_twiss()
+    tws = tws.loc[tws.index.str.upper().str.contains("BPM")]
+    mad.unobserve_elements(["BPM"])
+
+    magnet_strengths, _reference_strengths = mad.apply_magnet_perturbations(
+        rel_error=rel_k1_std_dev,
+        seed=magnet_seed,
+        magnet_type="all",
+    )
+    assert magnet_strengths, "Expected magnet perturbations to update strengths"
+
+    matched_tunes = mad.perform_orbit_correction(
+        machine_deltap=0.0,
+        target_qx=0.28,
+        target_qy=0.31,
+        corrector_file=None,
+    )
+
+    # Build xtrack env with perturbed magnet strengths and no explicit corrector table.
+    env = initialise_env(
+        matched_tunes,
+        magnet_strengths,
+        tfs.TfsDataFrame(columns=["name", "kind", "knl", "ksl"]),
+        sequence_file=sequence_file,
+        seq_name="lhcb1",
+        strict_set=False,
+    )
+    baseline_line = env["lhcb1"].copy()
+    full_tws = baseline_line.twiss(method="4d")
+
+    monitored_line = run_ac_dipole_tracking_with_particles(
+        line=baseline_line,
+        tws=full_tws,
+        beam=1,
+        ramp_turns=1000,
+        flattop_turns=flattop_turns,
+        driven_tunes=[0.27, 0.322],
+        bpm_pattern=r"(?i)bpm.*",
+        particle_coords={
+            "x": [0.0],
+            "px": [0.0],
+            "y": [0.0],
+            "py": [0.0],
+            "delta": [0.0],
+        },
+    )
+    tracking_df = process_tracking_data(
+        monitored_line,
+        ramp_turns=1000,
+        flattop_turns=flattop_turns,
+        add_variance_columns=True,
+    )
+    ng_tws = xsuite_to_ngtws(full_tws)
+    truth = get_truth(tracking_df, ng_tws)
+    return tracking_df, ng_tws, truth, full_tws
+
+
+def _transport_rows_to_marker(
+    rows: pd.DataFrame,
+    model,
+    *,
+    source_name: str,
+    marker_name: str,
+    direction: int,
+) -> np.ndarray:
+    states = rows[["x", "px", "y", "py"]].to_numpy(dtype=float)
+    return model.track_particles(source_name, marker_name, states, direction=direction)
+
+
+def _raw_mad_track(
+    model: ACDipoleMadDriver,
+    *,
+    range_name: str,
+    direction: int,
+    states: np.ndarray,
+) -> pd.DataFrame:
+    x0_particles = [
+        {
+            "x": float(x),
+            "px": float(px),
+            "y": float(y),
+            "py": float(py),
+            "t": 0.0,
+            "pt": 0.0,
+        }
+        for x, px, y, py in np.asarray(states, dtype=float)
+    ]
+    model.mad.send(
+        """
+--begin
+range = py:recv()
+x0_particles = py:recv()
+direction = py:recv()
+
+tbl, flw = track {
+    sequence=loaded_sequence,
+    range=range,
+    X0=x0_particles,
+    save=true,
+    nturn=1,
+    dir=direction,
+    observe=1,
+    deltap=DELTAP
+}
+py:send(true)
+--end
+"""
+    ).send(range_name).send(x0_particles).send(direction)
+    assert model.mad.recv()
+    track_df = model.mad.tbl.to_df(force_pandas=True)
+    return (
+        track_df.sort_values(["id", "turn", "s"], kind="stable")
+        .groupby("id", sort=False, as_index=False)
+        .tail(1)
+        .sort_values("id", kind="stable")
+        .reset_index(drop=True)
+    )
+
+
+def _build_truth_at_ac_dipole(
+    tracking_df: pd.DataFrame,
+    model,
+    *,
+    bpm_upstream: str,
+    bpm_downstream: str,
+    marker_name: str,
+) -> pd.DataFrame:
+    up_rows = (
+        tracking_df.loc[tracking_df["name"] == bpm_upstream, ["turn", "x", "px", "y", "py"]]
+        .sort_values("turn")
+        .reset_index(drop=True)
+    )
+    down_rows = (
+        tracking_df.loc[tracking_df["name"] == bpm_downstream, ["turn", "x", "px", "y", "py"]]
+        .sort_values("turn")
+        .reset_index(drop=True)
+    )
+
+    up_at_marker = _transport_rows_to_marker(
+        up_rows,
+        model,
+        source_name=bpm_upstream,
+        marker_name=marker_name,
+        direction=1,
+    )
+    down_at_marker = _transport_rows_to_marker(
+        down_rows,
+        model,
+        source_name=bpm_downstream,
+        marker_name=marker_name,
+        direction=-1,
+    )
+
+    truth = up_rows[["turn", "px", "py"]].rename(
+        columns={"px": "px_bpm_upstream_true", "py": "py_bpm_upstream_true"}
+    )
+    truth = truth.merge(
+        down_rows[["turn", "px", "py"]].rename(
+            columns={"px": "px_bpm_downstream_true", "py": "py_bpm_downstream_true"}
+        ),
+        on="turn",
+        how="inner",
+    )
+    truth["x_acd_upstream_true"] = up_at_marker[:, 0]
+    truth["px_acd_upstream_true"] = up_at_marker[:, 1]
+    truth["y_acd_upstream_true"] = up_at_marker[:, 2]
+    truth["py_acd_upstream_true"] = up_at_marker[:, 3]
+    truth["x_acd_downstream_true"] = down_at_marker[:, 0]
+    truth["px_acd_downstream_true"] = down_at_marker[:, 1]
+    truth["y_acd_downstream_true"] = down_at_marker[:, 2]
+    truth["py_acd_downstream_true"] = down_at_marker[:, 3]
+    truth["dpx_rad_true"] = truth["px_acd_downstream_true"] - truth["px_acd_upstream_true"]
+    truth["dpy_rad_true"] = truth["py_acd_downstream_true"] - truth["py_acd_upstream_true"]
+    return truth
+
+
+def _plot_ac_dipole_reconstruction(merged: pd.DataFrame, output_path: Path) -> None:
+    fig, axes = plt.subplots(4, 1, figsize=(10, 12), sharex=True)
+
+    axes[0].plot(merged["turn"], merged["px_bpm_upstream_true"], label="px upstream true", lw=1.3)
+    axes[0].plot(merged["turn"], merged["px_bpm_upstream"], "--", label="px upstream reco", lw=1.1)
+    if "px_bpm_upstream_cleaned" in merged.columns:
+        axes[0].plot(
+            merged["turn"],
+            merged["px_bpm_upstream_cleaned"],
+            ":",
+            label="px upstream cleaned",
+            lw=1.2,
+        )
+    axes[0].plot(
+        merged["turn"], merged["px_bpm_downstream_true"], label="px downstream true", lw=1.3
+    )
+    axes[0].plot(
+        merged["turn"],
+        merged["px_bpm_downstream"],
+        "--",
+        label="px downstream reco",
+        lw=1.1,
+    )
+    if "px_bpm_downstream_cleaned" in merged.columns:
+        axes[0].plot(
+            merged["turn"],
+            merged["px_bpm_downstream_cleaned"],
+            ":",
+            label="px downstream cleaned",
+            lw=1.2,
+        )
+    axes[0].set_ylabel("px [rad]")
+    axes[0].legend(loc="upper right", ncol=2)
+
+    axes[1].plot(merged["turn"], merged["py_bpm_upstream_true"], label="py upstream true", lw=1.3)
+    axes[1].plot(merged["turn"], merged["py_bpm_upstream"], "--", label="py upstream reco", lw=1.1)
+    if "py_bpm_upstream_cleaned" in merged.columns:
+        axes[1].plot(
+            merged["turn"],
+            merged["py_bpm_upstream_cleaned"],
+            ":",
+            label="py upstream cleaned",
+            lw=1.2,
+        )
+    axes[1].plot(
+        merged["turn"], merged["py_bpm_downstream_true"], label="py downstream true", lw=1.3
+    )
+    axes[1].plot(
+        merged["turn"],
+        merged["py_bpm_downstream"],
+        "--",
+        label="py downstream reco",
+        lw=1.1,
+    )
+    if "py_bpm_downstream_cleaned" in merged.columns:
+        axes[1].plot(
+            merged["turn"],
+            merged["py_bpm_downstream_cleaned"],
+            ":",
+            label="py downstream cleaned",
+            lw=1.2,
+        )
+    axes[1].set_ylabel("py [rad]")
+    axes[1].legend(loc="upper right", ncol=2)
+
+    axes[2].plot(merged["turn"], merged["dpx_rad_true"], label="dpx true", lw=1.3)
+    axes[2].plot(merged["turn"], merged["dpx"], "--", label="dpx reco", lw=1.1)
+    if "dpx_fit_rad" in merged.columns:
+        axes[2].plot(merged["turn"], merged["dpx_fit_rad"], ":", label="dpx fit", lw=1.2)
+    axes[2].plot(merged["turn"], merged["dpy_rad_true"], label="dpy true", lw=1.3)
+    axes[2].plot(merged["turn"], merged["dpy"], "--", label="dpy reco", lw=1.1)
+    if "dpy_fit_rad" in merged.columns:
+        axes[2].plot(merged["turn"], merged["dpy_fit_rad"], ":", label="dpy fit", lw=1.2)
+    axes[2].set_ylabel("kick [rad]")
+    axes[2].legend(loc="upper right", ncol=2)
+
+    axes[3].plot(
+        merged["turn"], merged["px_acd_upstream_true"], label="px ACD true from up", lw=1.3
+    )
+    axes[3].plot(
+        merged["turn"], merged["px_acd_upstream"], "--", label="px ACD reco from up", lw=1.1
+    )
+    if "px_acd_upstream_cleaned" in merged.columns:
+        axes[3].plot(
+            merged["turn"],
+            merged["px_acd_upstream_cleaned"],
+            ":",
+            label="px ACD cleaned from up",
+            lw=1.2,
+        )
+    axes[3].plot(
+        merged["turn"], merged["px_acd_downstream_true"], label="px ACD true from down", lw=1.3
+    )
+    axes[3].plot(
+        merged["turn"],
+        merged["px_acd_downstream"],
+        "--",
+        label="px ACD reco from down",
+        lw=1.1,
+    )
+    if "px_acd_downstream_cleaned" in merged.columns:
+        axes[3].plot(
+            merged["turn"],
+            merged["px_acd_downstream_cleaned"],
+            ":",
+            label="px ACD cleaned from down",
+            lw=1.2,
+        )
+    axes[3].set_ylabel("ACD px [rad]")
+    axes[3].set_xlabel("turn")
+    axes[3].legend(loc="upper right", ncol=2)
+    if _should_plot_test_results():
+        plt.show()
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=140)
+
+
+@pytest.mark.slow
+def test_select_ac_dipole_bpms_matches_real_lattice_neighbors(data_dir, xsuite_json_path) -> None:
+    tracking_df, _tws, _truth, full_tws = _get_setup(
+        SEQ_FILE,
+        data_dir,
+        xsuite_json_path,
+        flattop_turns=64,
+    )
+    full_ng_tws = _full_xsuite_to_ngtws(full_tws)
+    expected_up, expected_down = _ac_dipole_segment_around_element(
+        full_tws,
+        available_bpms=tracking_df["name"].unique().tolist(),
+        element_name=AC_DIPOLE_ELEMENT,
+    )
+
+    selection = select_ac_dipole_bpms(
+        full_ng_tws,
+        ac_dipole_marker=AC_DIPOLE_ELEMENT,
+        bpm_names=tracking_df["name"].unique(),
+    )
+
+    assert selection.upstream == expected_up
+    assert selection.downstream == expected_down
+
+
+@pytest.mark.slow
+def test_madng_track_range_and_direction_match_source_target_convention(
+    data_dir,
+    xsuite_json_path,
+) -> None:
+    tracking_df, _tws, _truth, full_tws = _get_setup(
+        SEQ_FILE,
+        data_dir,
+        xsuite_json_path,
+        flattop_turns=20,
+    )
+    first_bpm = str(tracking_df["name"].iloc[0])
+    bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
+        full_tws,
+        available_bpms=tracking_df["name"].unique().tolist(),
+        element_name=AC_DIPOLE_ELEMENT,
+    )
+
+    model = _get_driver(
+        data_dir / "sequences" / SEQ_FILE,
+        first_bpm,
+        debug=False,
+    )
+    up_rows = (
+        tracking_df.loc[tracking_df["name"] == bpm_upstream, ["turn", "x", "px", "y", "py"]]
+        .sort_values("turn")
+        .reset_index(drop=True)
+    )
+    down_rows = (
+        tracking_df.loc[tracking_df["name"] == bpm_downstream, ["turn", "x", "px", "y", "py"]]
+        .sort_values("turn")
+        .reset_index(drop=True)
+    )
+    count = min(len(up_rows), len(down_rows), 20)
+    up_states = up_rows[["x", "px", "y", "py"]].to_numpy(dtype=float)[:count]
+    down_states = down_rows[["x", "px", "y", "py"]].to_numpy(dtype=float)[:count]
+
+    forward = _raw_mad_track(
+        model,
+        range_name=f"{bpm_upstream}/{bpm_downstream}",
+        direction=1,
+        states=up_states,
+    )
+    backward_same_range = _raw_mad_track(
+        model,
+        range_name=f"{bpm_downstream}/{bpm_upstream}",
+        direction=-1,
+        states=down_states,
+    )
+    backward_swapped_range = _raw_mad_track(
+        model,
+        range_name=f"{bpm_upstream}/{bpm_downstream}",
+        direction=-1,
+        states=down_states,
+    )
+
+    forward_rmse = rmse(
+        down_states.reshape(-1),
+        forward[["x", "px", "y", "py"]].to_numpy(dtype=float).reshape(-1),
+    )
+    backward_same_range_rmse = rmse(
+        up_states.reshape(-1),
+        backward_same_range[["x", "px", "y", "py"]].to_numpy(dtype=float).reshape(-1),
+    )
+    backward_swapped_range_rmse = rmse(
+        up_states.reshape(-1),
+        backward_swapped_range[["x", "px", "y", "py"]].to_numpy(dtype=float).reshape(-1),
+    )
+
+    assert forward_rmse < 1e-4
+    assert backward_same_range_rmse < backward_swapped_range_rmse
+
+
+@pytest.mark.slow
+def test_select_ac_dipole_bpm_window_returns_requested_count(data_dir, xsuite_json_path) -> None:
+    tracking_df, _tws, _truth, full_tws = _get_setup(
+        SEQ_FILE,
+        data_dir,
+        xsuite_json_path,
+        flattop_turns=64,
+    )
+    full_ng_tws = _full_xsuite_to_ngtws(full_tws)
+
+    window = select_ac_dipole_bpm_window(
+        full_ng_tws,
+        ac_dipole_marker=AC_DIPOLE_ELEMENT,
+        bpm_names=tracking_df["name"].unique(),
+        n_bpms_each_side=2,
+    )
+
+    assert len(window.upstream) == 2
+    assert len(window.downstream) == 2
+    assert window.primary == select_ac_dipole_bpms(
+        full_ng_tws,
+        ac_dipole_marker=AC_DIPOLE_ELEMENT,
+        bpm_names=tracking_df["name"].unique(),
+    )
+
+
+@pytest.mark.slow
+def test_calculate_ac_dipole_momentum_uses_real_tracking_setup(
+    data_dir,
+    xsuite_json_path,
+    tmp_path,
+) -> None:
+    tracking_df, _tws, _truth, full_tws = _get_setup(
+        SEQ_FILE,
+        data_dir,
+        xsuite_json_path,
+        flattop_turns=100,
+    )
+    full_ng_tws = _full_xsuite_to_ngtws(full_tws)
+    first_bpm = str(tracking_df["name"].iloc[0])
+    bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
+        full_tws,
+        available_bpms=tracking_df["name"].unique().tolist(),
+        element_name=AC_DIPOLE_ELEMENT,
+    )
+
+    reco_log = tmp_path / "acd_madng_reco.log"
+    model = _get_driver(
+        data_dir / "sequences" / SEQ_FILE,
+        first_bpm,
+        debug=True,
+        mad_logfile=reco_log,
+    )
+    tracked_up = model.track_particles(
+        bpm_upstream,
+        AC_DIPOLE_ELEMENT,
+        np.zeros((2, 4), dtype=float),
+        direction=1,
+    )
+    tracked_down = model.track_particles(
+        bpm_downstream,
+        AC_DIPOLE_ELEMENT,
+        np.zeros((2, 4), dtype=float),
+        direction=-1,
+    )
+    assert tracked_up.shape == (2, 4)
+    assert tracked_down.shape == (2, 4)
+
+    truth = _build_truth_at_ac_dipole(
+        tracking_df,
+        model,
+        bpm_upstream=bpm_upstream,
+        bpm_downstream=bpm_downstream,
+        marker_name=AC_DIPOLE_ELEMENT,
+    )
+
+    result = calculate_ac_dipole_momentum(
+        tracking_df,
+        full_ng_tws,
+        ac_dipole_marker=AC_DIPOLE_ELEMENT,
+        model=model,
+        bpm_upstream=bpm_upstream,
+        bpm_downstream=bpm_downstream,
+        inject_noise=False,
+    )
+
+    merged = result.merge(truth, on="turn", how="inner")
+    assert len(merged) == len(truth)
+    assert result.attrs["acd_marker"] == AC_DIPOLE_ELEMENT
+    assert result.attrs["acd_element"] == AC_DIPOLE_ELEMENT
+    assert result.attrs["bpm_upstream"] == bpm_upstream
+    assert result.attrs["bpm_downstream"] == bpm_downstream
+    assert result.attrs["bpms_upstream_used"] == (bpm_upstream,)
+    assert result.attrs["bpms_downstream_used"] == (bpm_downstream,)
+    assert result.headers["ACD_MARKER"] == AC_DIPOLE_ELEMENT
+    assert result.headers["ACD_ELEMENT"] == AC_DIPOLE_ELEMENT
+    assert result.headers["ACD_BPM_UPSTREAM"] == bpm_upstream
+    assert result.headers["ACD_BPM_DOWNSTREAM"] == bpm_downstream
+    assert result.headers["ACD_N_BPMS_EACH_SIDE"] == 1
+    assert reco_log.exists()
+
+    px_up_rmse = rmse(
+        merged["px_bpm_upstream_true"].to_numpy(), merged["px_bpm_upstream"].to_numpy()
+    )
+    py_up_rmse = rmse(
+        merged["py_bpm_upstream_true"].to_numpy(), merged["py_bpm_upstream"].to_numpy()
+    )
+    px_down_rmse = rmse(
+        merged["px_bpm_downstream_true"].to_numpy(),
+        merged["px_bpm_downstream"].to_numpy(),
+    )
+    py_down_rmse = rmse(
+        merged["py_bpm_downstream_true"].to_numpy(),
+        merged["py_bpm_downstream"].to_numpy(),
+    )
+    dpx_rmse = rmse(merged["dpx_rad_true"].to_numpy(), merged["dpx"].to_numpy())
+    dpy_rmse = rmse(merged["dpy_rad_true"].to_numpy(), merged["dpy"].to_numpy())
+
+    assert px_up_rmse < 1e-10
+    assert py_up_rmse < 1e-12
+    assert px_down_rmse < 1e-15
+    assert py_down_rmse < 1e-15
+    assert dpx_rmse < 1e-9
+    assert dpy_rmse < 1e-10
+
+    plot_path = tmp_path / "ac_dipole_momentum_debug.png"
+    _plot_ac_dipole_reconstruction(merged, plot_path)
+    assert plot_path.exists()
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("use_svd_cleaning", "include_magnetic_errors", "ratio_limit"),
+    [
+        (False, False, 0.4),
+        (True, False, 0.6),
+        (True, True, 0.4),
+    ],
+    ids=["raw_noisy", "svd_cleaned_noisy", "svd_cleaned_noisy_with_magnet_errors"],
+)
+def test_ac_dipole_kick_fit_improves_noisy_reconstruction(
+    data_dir,
+    xsuite_json_path,
+    tmp_path,
+    use_svd_cleaning: bool,
+    include_magnetic_errors: bool,
+    ratio_limit: float,
+) -> None:
+    if include_magnetic_errors:
+        tracking_df, _tws, _truth, full_tws = _get_setup_with_magnetic_errors(
+            data_dir,
+            flattop_turns=100,
+        )
+    else:
+        tracking_df, _tws, _truth, full_tws = _get_setup(
+            SEQ_FILE,
+            data_dir,
+            xsuite_json_path,
+            flattop_turns=100,
+        )
+    full_ng_tws = _full_xsuite_to_ngtws(full_tws)
+    first_bpm = str(tracking_df["name"].iloc[0])
+    bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
+        full_tws,
+        available_bpms=tracking_df["name"].unique().tolist(),
+        element_name=AC_DIPOLE_ELEMENT,
+    )
+
+    reco_log = tmp_path / "acd_madng_reco_noisy.log"
+    model = _get_driver(
+        data_dir / "sequences" / SEQ_FILE,
+        first_bpm,
+        debug=True,
+        mad_logfile=reco_log,
+    )
+
+    truth = _build_truth_at_ac_dipole(
+        tracking_df,
+        model,
+        bpm_upstream=bpm_upstream,
+        bpm_downstream=bpm_downstream,
+        marker_name=AC_DIPOLE_ELEMENT,
+    )
+
+    noisy_df = tracking_df.copy(deep=True)
+    inject_noise_xy_inplace(
+        noisy_df,
+        tracking_df,
+        np.random.default_rng(42),
+        noise_std=1e-4,
+    )
+    input_df = svd_clean_measurements(noisy_df) if use_svd_cleaning else noisy_df
+
+    result = calculate_ac_dipole_momentum(
+        input_df,
+        full_ng_tws,
+        ac_dipole_marker=AC_DIPOLE_ELEMENT,
+        model=model,
+        bpm_upstream=bpm_upstream,
+        bpm_downstream=bpm_downstream,
+        inject_noise=False,
+    )
+
+    merged = result.merge(truth, on="turn", how="inner")
+    dpx_rmse_raw = rmse(merged["dpx_rad_true"].to_numpy(), merged["dpx"].to_numpy())
+    dpy_rmse_raw = rmse(merged["dpy_rad_true"].to_numpy(), merged["dpy"].to_numpy())
+    dpx_rmse_fit = rmse(merged["dpx_rad_true"].to_numpy(), merged["dpx_fit_rad"].to_numpy())
+    dpy_rmse_fit = rmse(merged["dpy_rad_true"].to_numpy(), merged["dpy_fit_rad"].to_numpy())
+
+    assert dpx_rmse_fit < dpx_rmse_raw
+    assert dpy_rmse_fit < dpy_rmse_raw
+
+    if use_svd_cleaning or include_magnetic_errors:
+        assert dpx_rmse_fit < ratio_limit * dpx_rmse_raw
+        assert dpy_rmse_fit < 0.999 * dpy_rmse_raw
+    else:
+        assert dpx_rmse_fit < ratio_limit * dpx_rmse_raw
+        assert dpy_rmse_fit < ratio_limit * dpy_rmse_raw
+    assert np.all(np.isfinite(merged["px_bpm_upstream_cleaned"].to_numpy()))
+    assert np.all(np.isfinite(merged["py_bpm_upstream_cleaned"].to_numpy()))
+    assert np.all(np.isfinite(merged["px_bpm_downstream_cleaned"].to_numpy()))
+    assert np.all(np.isfinite(merged["py_bpm_downstream_cleaned"].to_numpy()))
+
+    fit_attrs_x = result.attrs["dpx_fit"]
+    fit_attrs_y = result.attrs["dpy_fit"]
+    assert result.headers["ACD_DPX_TUNE"] == pytest.approx(fit_attrs_x["tune"])
+    assert result.headers["ACD_DPX_AMPLITUDE"] == pytest.approx(fit_attrs_x["amplitude"])
+    assert result.headers["ACD_DPX_PHASE"] == pytest.approx(fit_attrs_x["phase"])
+    assert result.headers["ACD_DPX_OFFSET"] == pytest.approx(fit_attrs_x["offset"])
+    assert result.headers["ACD_DPY_TUNE"] == pytest.approx(fit_attrs_y["tune"])
+    assert result.headers["ACD_DPY_AMPLITUDE"] == pytest.approx(fit_attrs_y["amplitude"])
+    assert result.headers["ACD_DPY_PHASE"] == pytest.approx(fit_attrs_y["phase"])
+    assert result.headers["ACD_DPY_OFFSET"] == pytest.approx(fit_attrs_y["offset"])
+    assert fit_attrs_x["amplitude"] > 0.0
+    assert fit_attrs_y["amplitude"] > 0.0
+    assert 0.0 < fit_attrs_x["tune"] < 0.5
+    assert 0.0 < fit_attrs_y["tune"] < 0.5
+
+    plot_path = tmp_path / "ac_dipole_momentum_noisy_cleaned.png"
+    _plot_ac_dipole_reconstruction(merged, plot_path)
+    assert plot_path.exists()
+
+
+@pytest.mark.slow
+def test_ac_dipole_kick_fit_improves_with_more_turns(
+    data_dir,
+    xsuite_json_path,
+    tmp_path,
+) -> None:
+    flattop_turns_grid = [50, 100, 200]
+    dpx_fit_errors: list[float] = []
+    dpy_fit_errors: list[float] = []
+
+    for flattop_turns in flattop_turns_grid:
+        tracking_df, _tws, _truth, full_tws = _get_setup(
+            SEQ_FILE,
+            data_dir,
+            xsuite_json_path,
+            flattop_turns=flattop_turns,
+        )
+        full_ng_tws = _full_xsuite_to_ngtws(full_tws)
+        first_bpm = str(tracking_df["name"].iloc[0])
+        bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
+            full_tws,
+            available_bpms=tracking_df["name"].unique().tolist(),
+            element_name=AC_DIPOLE_ELEMENT,
+        )
+        model = _get_driver(
+            data_dir / "sequences" / SEQ_FILE,
+            first_bpm,
+            debug=True,
+            mad_logfile=tmp_path / f"acd_madng_reco_turns_{flattop_turns}.log",
+        )
+        truth = _build_truth_at_ac_dipole(
+            tracking_df,
+            model,
+            bpm_upstream=bpm_upstream,
+            bpm_downstream=bpm_downstream,
+            marker_name=AC_DIPOLE_ELEMENT,
+        )
+
+        noisy_df = tracking_df.copy(deep=True)
+        inject_noise_xy_inplace(
+            noisy_df,
+            tracking_df,
+            np.random.default_rng(42),
+            noise_std=1e-4,
+        )
+        result = calculate_ac_dipole_momentum(
+            noisy_df,
+            full_ng_tws,
+            ac_dipole_marker=AC_DIPOLE_ELEMENT,
+            model=model,
+            bpm_upstream=bpm_upstream,
+            bpm_downstream=bpm_downstream,
+            inject_noise=False,
+        )
+        merged = result.merge(truth, on="turn", how="inner")
+        dpx_fit_errors.append(
+            rmse(merged["dpx_rad_true"].to_numpy(), merged["dpx_fit_rad"].to_numpy())
+        )
+        dpy_fit_errors.append(
+            rmse(merged["dpy_rad_true"].to_numpy(), merged["dpy_fit_rad"].to_numpy())
+        )
+
+    assert dpx_fit_errors[-1] < dpx_fit_errors[0]
+    assert dpy_fit_errors[-1] < dpy_fit_errors[0]
+
+
+@pytest.mark.slow
+def test_ac_dipole_multi_bpm_window_reports_used_bpms(
+    data_dir,
+    xsuite_json_path,
+    tmp_path,
+) -> None:
+    tracking_df, _tws, _truth, full_tws = _get_setup(
+        SEQ_FILE,
+        data_dir,
+        xsuite_json_path,
+        flattop_turns=100,
+    )
+    full_ng_tws = _full_xsuite_to_ngtws(full_tws)
+    first_bpm = str(tracking_df["name"].iloc[0])
+    expected_window = select_ac_dipole_bpm_window(
+        full_ng_tws,
+        ac_dipole_marker=AC_DIPOLE_ELEMENT,
+        bpm_names=tracking_df["name"].unique(),
+        n_bpms_each_side=2,
+    )
+
+    model = _get_driver(
+        data_dir / "sequences" / SEQ_FILE,
+        first_bpm,
+        debug=True,
+        mad_logfile=tmp_path / "acd_madng_reco_multi.log",
+    )
+    result = calculate_ac_dipole_momentum(
+        tracking_df,
+        full_ng_tws,
+        ac_dipole_marker=AC_DIPOLE_ELEMENT,
+        model=model,
+        n_bpms_each_side=2,
+        inject_noise=False,
+    )
+
+    assert result.attrs["bpms_upstream_used"] == expected_window.upstream
+    assert result.attrs["bpms_downstream_used"] == expected_window.downstream
+    assert result.attrs["n_bpms_each_side"] == 2
+    assert result.headers["ACD_N_BPMS_EACH_SIDE"] == 2
+    assert result.headers["ACD_BPMS_UPSTREAM_USED"] == ",".join(expected_window.upstream)
+    assert result.headers["ACD_BPMS_DOWNSTREAM_USED"] == ",".join(expected_window.downstream)
+    assert "px_bpm_upstream_cleaned" in result.columns
+    assert "py_bpm_upstream_cleaned" in result.columns
+    assert "px_bpm_downstream_cleaned" in result.columns
+    assert "py_bpm_downstream_cleaned" in result.columns
