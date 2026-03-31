@@ -158,8 +158,12 @@ def svd_clean_measurements(
     # Optional: attach metadata about chosen ranks
     indexed_meas_df.attrs["svd_rank_x"] = rank_x
     indexed_meas_df.attrs["svd_rank_y"] = rank_y
-    indexed_meas_df.attrs["svd_singular_values_x"] = singular_values_x
-    indexed_meas_df.attrs["svd_singular_values_y"] = singular_values_y
+    indexed_meas_df.attrs["svd_singular_values_x"] = tuple(
+        float(value) for value in singular_values_x
+    )
+    indexed_meas_df.attrs["svd_singular_values_y"] = tuple(
+        float(value) for value in singular_values_y
+    )
     indexed_meas_df.attrs["center"] = center
     logger.info("SVD cleaning completed successfully")
     return indexed_meas_df.reset_index()

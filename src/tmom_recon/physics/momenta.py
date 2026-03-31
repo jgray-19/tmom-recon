@@ -98,7 +98,49 @@ def _compute_nominal_momenta(
     is_prev: bool,
     dpp_est: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute nominal (error-free) momentum values.
+    r"""Compute nominal (error-free) momentum values.
+
+    The implementation evaluates
+
+    .. math::
+
+       \phi_x = 2 \pi \Delta_x,
+       \qquad
+       \phi_y = 2 \pi \Delta_y
+
+    with normalized coordinates
+
+    .. math::
+
+       \tilde x = \frac{x - \delta D_x}{\sqrt{\beta_x}},
+       \qquad
+       \tilde x_n = \frac{x_n - \delta D_{x,n}}{\sqrt{\beta_{x,n}}},
+
+    .. math::
+
+       \tilde y = \frac{y - \delta D_y}{\sqrt{\beta_y}},
+       \qquad
+       \tilde y_n = \frac{y_n - \delta D_{y,n}}{\sqrt{\beta_{y,n}}},
+
+    where :math:`\delta = \Delta p / p`.
+
+    For the previous-neighbor branch the code uses :math:`s = -1` and
+    :math:`a = +1`; for the next-neighbor branch it uses :math:`s = +1`
+    and :math:`a = -1`. The reconstructed momenta are
+
+    .. math::
+
+       p_x =
+       s \frac{\tilde x_n \sec \phi_x + \tilde x (\tan \phi_x + a \alpha_x)}
+       {\sqrt{\beta_x}}
+       + D_x' \delta,
+
+    .. math::
+
+       p_y =
+       s \frac{\tilde y_n \sec \phi_y + \tilde y (\tan \phi_y + a \alpha_y)}
+       {\sqrt{\beta_y}}
+       + D_y' \delta.
 
     Args:
         data: DataFrame with position and optics columns.
@@ -172,7 +214,24 @@ def _compute_momenta(
     dpp_est: float = 0.0,
     include_optics_errors: bool = False,
 ) -> pd.DataFrame:
-    """Compute momenta with error propagation.
+    r"""Compute momenta with error propagation.
+
+    The total variances are built as
+
+    .. math::
+
+       \operatorname{var}(p_x) =
+       \operatorname{var}_{\mathrm{meas}}(p_x) +
+       \operatorname{var}_{\mathrm{opt}}(p_x),
+
+    .. math::
+
+       \operatorname{var}(p_y) =
+       \operatorname{var}_{\mathrm{meas}}(p_y) +
+       \operatorname{var}_{\mathrm{opt}}(p_y),
+
+    where the optics term is only added when the required uncertainty columns
+    are present and ``include_optics_errors=True``.
 
     Args:
         data: DataFrame with position and optics columns.

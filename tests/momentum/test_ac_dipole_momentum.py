@@ -28,7 +28,6 @@ from tmom_recon.svd import svd_clean_measurements
 from .acd_test_helpers import (
     AC_DIPOLE_ELEMENT,
     _ac_dipole_segment_around_element,
-    _full_xsuite_to_ngtws,
     _get_driver,
 )
 from .momentum_test_utils import get_truth, rmse, xsuite_to_ngtws
@@ -380,21 +379,21 @@ def _plot_ac_dipole_reconstruction(merged: pd.DataFrame, output_path: Path) -> N
 
 @pytest.mark.slow
 def test_select_ac_dipole_bpms_matches_real_lattice_neighbors(data_dir, xsuite_json_path) -> None:
-    tracking_df, _tws, _truth, full_tws = _get_setup(
+    tracking_df, _tws, _truth, _full_tws = _get_setup(
         SEQ_FILE,
         data_dir,
         xsuite_json_path,
         flattop_turns=64,
     )
-    full_ng_tws = _full_xsuite_to_ngtws(full_tws)
+    model = _get_driver(data_dir / "sequences" / SEQ_FILE, debug=False)
     expected_up, expected_down = _ac_dipole_segment_around_element(
-        full_tws,
+        model.twiss_elements,
         available_bpms=tracking_df["name"].unique().tolist(),
         element_name=AC_DIPOLE_ELEMENT,
     )
 
     selection = select_ac_dipole_bpms(
-        full_ng_tws,
+        model.twiss_elements,
         ac_dipole_marker=AC_DIPOLE_ELEMENT,
         bpm_names=tracking_df["name"].unique(),
     )
@@ -408,21 +407,20 @@ def test_madng_track_range_and_direction_match_source_target_convention(
     data_dir,
     xsuite_json_path,
 ) -> None:
-    tracking_df, _tws, _truth, full_tws = _get_setup(
+    tracking_df, _tws, _truth, _full_tws = _get_setup(
         SEQ_FILE,
         data_dir,
         xsuite_json_path,
         flattop_turns=20,
     )
-    bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
-        full_tws,
-        available_bpms=tracking_df["name"].unique().tolist(),
-        element_name=AC_DIPOLE_ELEMENT,
-    )
-
     model = _get_driver(
         data_dir / "sequences" / SEQ_FILE,
         debug=False,
+    )
+    bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
+        model.twiss_elements,
+        available_bpms=tracking_df["name"].unique().tolist(),
+        element_name=AC_DIPOLE_ELEMENT,
     )
     up_rows = (
         tracking_df.loc[tracking_df["name"] == bpm_upstream, ["turn", "x", "px", "y", "py"]]
@@ -476,16 +474,16 @@ def test_madng_track_range_and_direction_match_source_target_convention(
 
 @pytest.mark.slow
 def test_select_ac_dipole_bpm_window_returns_requested_count(data_dir, xsuite_json_path) -> None:
-    tracking_df, _tws, _truth, full_tws = _get_setup(
+    tracking_df, _tws, _truth, _full_tws = _get_setup(
         SEQ_FILE,
         data_dir,
         xsuite_json_path,
         flattop_turns=64,
     )
-    full_ng_tws = _full_xsuite_to_ngtws(full_tws)
+    model = _get_driver(data_dir / "sequences" / SEQ_FILE, debug=False)
 
     window = select_ac_dipole_bpm_window(
-        full_ng_tws,
+        model.twiss_elements,
         ac_dipole_marker=AC_DIPOLE_ELEMENT,
         bpm_names=tracking_df["name"].unique(),
         n_bpms_each_side=2,
@@ -494,7 +492,7 @@ def test_select_ac_dipole_bpm_window_returns_requested_count(data_dir, xsuite_js
     assert len(window.upstream) == 2
     assert len(window.downstream) == 2
     assert window.primary == select_ac_dipole_bpms(
-        full_ng_tws,
+        model.twiss_elements,
         ac_dipole_marker=AC_DIPOLE_ELEMENT,
         bpm_names=tracking_df["name"].unique(),
     )
@@ -506,15 +504,14 @@ def test_calculate_ac_dipole_momentum_uses_real_tracking_setup(
     xsuite_json_path,
     tmp_path,
 ) -> None:
-    tracking_df, _tws, _truth, full_tws = _get_setup(
+    tracking_df, tws, _truth, _full_tws = _get_setup(
         SEQ_FILE,
         data_dir,
         xsuite_json_path,
         flattop_turns=100,
     )
-    full_ng_tws = _full_xsuite_to_ngtws(full_tws)
     bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
-        full_tws,
+        _get_driver(data_dir / "sequences" / SEQ_FILE, debug=False).twiss_elements,
         available_bpms=tracking_df["name"].unique().tolist(),
         element_name=AC_DIPOLE_ELEMENT,
     )
@@ -550,7 +547,7 @@ def test_calculate_ac_dipole_momentum_uses_real_tracking_setup(
 
     result = calculate_ac_dipole_momentum(
         tracking_df,
-        full_ng_tws,
+        tws,
         ac_dipole_marker=AC_DIPOLE_ELEMENT,
         model=model,
         bpm_upstream=bpm_upstream,
@@ -621,29 +618,26 @@ def test_ac_dipole_kick_fit_improves_noisy_reconstruction(
     ratio_limit: float,
 ) -> None:
     if include_magnetic_errors:
-        tracking_df, _tws, _truth, full_tws = _get_setup_with_magnetic_errors(
+        tracking_df, tws, _truth, _full_tws = _get_setup_with_magnetic_errors(
             data_dir,
             flattop_turns=100,
         )
     else:
-        tracking_df, _tws, _truth, full_tws = _get_setup(
+        tracking_df, tws, _truth, _full_tws = _get_setup(
             SEQ_FILE,
             data_dir,
             xsuite_json_path,
             flattop_turns=100,
         )
-    full_ng_tws = _full_xsuite_to_ngtws(full_tws)
-    bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
-        full_tws,
-        available_bpms=tracking_df["name"].unique().tolist(),
-        element_name=AC_DIPOLE_ELEMENT,
-    )
-
-    reco_log = tmp_path / "acd_madng_reco_noisy.log"
     model = _get_driver(
         data_dir / "sequences" / SEQ_FILE,
         debug=True,
-        mad_logfile=reco_log,
+        mad_logfile=tmp_path / "acd_madng_reco_noisy.log",
+    )
+    bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
+        model.twiss_elements,
+        available_bpms=tracking_df["name"].unique().tolist(),
+        element_name=AC_DIPOLE_ELEMENT,
     )
 
     truth = _build_truth_at_ac_dipole(
@@ -665,7 +659,7 @@ def test_ac_dipole_kick_fit_improves_noisy_reconstruction(
 
     result = calculate_ac_dipole_momentum(
         input_df,
-        full_ng_tws,
+        tws,
         ac_dipole_marker=AC_DIPOLE_ELEMENT,
         model=model,
         bpm_upstream=bpm_upstream,
@@ -724,22 +718,21 @@ def test_ac_dipole_kick_fit_improves_with_more_turns(
     dpy_fit_errors: list[float] = []
 
     for flattop_turns in flattop_turns_grid:
-        tracking_df, _tws, _truth, full_tws = _get_setup(
+        tracking_df, tws, _truth, _full_tws = _get_setup(
             SEQ_FILE,
             data_dir,
             xsuite_json_path,
             flattop_turns=flattop_turns,
         )
-        full_ng_tws = _full_xsuite_to_ngtws(full_tws)
-        bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
-            full_tws,
-            available_bpms=tracking_df["name"].unique().tolist(),
-            element_name=AC_DIPOLE_ELEMENT,
-        )
         model = _get_driver(
             data_dir / "sequences" / SEQ_FILE,
             debug=True,
             mad_logfile=tmp_path / f"acd_madng_reco_turns_{flattop_turns}.log",
+        )
+        bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
+            model.twiss_elements,
+            available_bpms=tracking_df["name"].unique().tolist(),
+            element_name=AC_DIPOLE_ELEMENT,
         )
         truth = _build_truth_at_ac_dipole(
             tracking_df,
@@ -758,7 +751,7 @@ def test_ac_dipole_kick_fit_improves_with_more_turns(
         )
         result = calculate_ac_dipole_momentum(
             noisy_df,
-            full_ng_tws,
+            tws,
             ac_dipole_marker=AC_DIPOLE_ELEMENT,
             model=model,
             bpm_upstream=bpm_upstream,
@@ -783,28 +776,26 @@ def test_ac_dipole_multi_bpm_window_reports_used_bpms(
     xsuite_json_path,
     tmp_path,
 ) -> None:
-    tracking_df, _tws, _truth, full_tws = _get_setup(
+    tracking_df, _tws, _truth, _full_tws = _get_setup(
         SEQ_FILE,
         data_dir,
         xsuite_json_path,
         flattop_turns=100,
     )
-    full_ng_tws = _full_xsuite_to_ngtws(full_tws)
-    expected_window = select_ac_dipole_bpm_window(
-        full_ng_tws,
-        ac_dipole_marker=AC_DIPOLE_ELEMENT,
-        bpm_names=tracking_df["name"].unique(),
-        n_bpms_each_side=2,
-    )
-
     model = _get_driver(
         data_dir / "sequences" / SEQ_FILE,
         debug=True,
         mad_logfile=tmp_path / "acd_madng_reco_multi.log",
     )
+    expected_window = select_ac_dipole_bpm_window(
+        model.twiss_elements,
+        ac_dipole_marker=AC_DIPOLE_ELEMENT,
+        bpm_names=tracking_df["name"].unique(),
+        n_bpms_each_side=2,
+    )
     result = calculate_ac_dipole_momentum(
         tracking_df,
-        full_ng_tws,
+        _tws,
         ac_dipole_marker=AC_DIPOLE_ELEMENT,
         model=model,
         n_bpms_each_side=2,

@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import numpy as np
+from pymadng_utils.io.utils import read_knobs
 from pymadng_utils.mad import CoreMadInterface
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
 N_COORD = 4
@@ -73,6 +71,8 @@ class ACDipoleMadDriver(CoreMadInterface):
         deltap: float = 0.0,
         bpm_pattern: str = "BPM",
         observed_elements: str | list[str] | None = None,
+        tune_knobs_file: Path | None = None,
+        corrector_knobs_file: Path | None = None,
         debug: bool = False,
         mad_logfile: Path | None = None,
         discard_mad_output: bool = False,
@@ -96,8 +96,22 @@ class ACDipoleMadDriver(CoreMadInterface):
         self.load_sequence(sequence_file, f"lhcb{beam}")
         self.setup_beam(beam_energy)
         self.mad["DELTAP"] = deltap
+        self._apply_knobs_file(tune_knobs_file, kind="tune")
+        self._apply_knobs_file(corrector_knobs_file, kind="corrector")
+        self.twiss_elements = self.run_twiss(observe=0)
+
         self.observe_elements(bpm_pattern)
         self.add_observed_elements(observed_elements)
+
+    def _apply_knobs_file(self, knob_file: Path | None, *, kind: str) -> None:
+        if knob_file is None:
+            return
+
+        knobs = read_knobs(knob_file)
+        for name, value in knobs.items():
+            self.mad.send(f"MADX['{name}'] = {value}")
+
+        LOGGER.info("Applied %d %s knobs from %s", len(knobs), kind, knob_file)
 
     def add_observed_elements(self, elements: str | list[str] | None) -> None:
         if elements is None:

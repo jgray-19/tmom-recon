@@ -63,7 +63,7 @@ def _restore_reference_momenta(
     element_name: str,
     column: str,
 ) -> np.ndarray:
-    if column not in tws.columns:
+    if column not in tws.columns or element_name not in tws.index:
         return values
     return values + float(tws.at[element_name, column])
 
@@ -128,6 +128,12 @@ def _normalise_measurement_names(data: pd.DataFrame, tws_names: list[str]) -> pd
     }
     data["name"] = data["name"].astype(str).map(raw_name_map)
     return data
+
+
+def _normalise_twiss_index(tws: pd.DataFrame, lattice_names: list[str]) -> pd.DataFrame:
+    normalised = tws.copy(deep=True)
+    normalised.index = [_resolve_name(str(name), lattice_names) for name in normalised.index]
+    return normalised
 
 
 def _require_neighbor_name(value: object, bpm_name: str, plane: str, direction: str) -> str:
@@ -453,15 +459,17 @@ def calculate_ac_dipole_momentum(
         noise_std = POSITION_STD_DEV if inject_noise is True else float(inject_noise)
         inject_noise_xy_inplace(data, orig_data, rng, noise_std=noise_std)
 
-    tws_names = [str(name) for name in tws.index]
-    marker_name = _resolve_name(ac_dipole_marker, tws_names)
-    data = _normalise_measurement_names(data, tws_names)
+    lattice_names = [str(name) for name in model.twiss_elements.index]
+    marker_name = _resolve_name(ac_dipole_marker, lattice_names)
+    data = _normalise_measurement_names(data, lattice_names)
+    tws = _normalise_twiss_index(tws, lattice_names)
 
     measured_bpm_names = [str(name) for name in data["name"].unique()]
+    available_bpm_names = [name for name in measured_bpm_names if name in set(tws.index)]
     window = select_ac_dipole_bpm_window(
-        tws,
+        model.twiss_elements,
         marker_name,
-        measured_bpm_names,
+        available_bpm_names,
         bpm_upstream=bpm_upstream,
         bpm_downstream=bpm_downstream,
         n_bpms_each_side=n_bpms_each_side,
@@ -474,11 +482,14 @@ def calculate_ac_dipole_momentum(
         window.downstream,
     )
 
-    data = data[data["name"].isin(measured_bpm_names)].copy(deep=True)
-    tws_bpm = tws.loc[tws.index.isin(measured_bpm_names)].copy(deep=True)
+    data = data[data["name"].isin(available_bpm_names)].copy(deep=True)
+    lattice_bpm_order = [
+        name for name in model.twiss_elements.index if str(name) in set(available_bpm_names)
+    ]
+    tws_bpm = tws.reindex(lattice_bpm_order).copy(deep=True)
     remove_closed_orbit_inplace(data, tws)
 
-    bpm_order = [name for name in tws_bpm.index if name in set(measured_bpm_names)]
+    bpm_order = [str(name) for name in tws_bpm.index]
     bpm_index = {str(name): idx for idx, name in enumerate(bpm_order)}
     prev_x, prev_y, next_x, next_y = _prepare_neighbor_tables(tws_bpm)
 

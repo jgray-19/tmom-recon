@@ -20,7 +20,40 @@ def compute_measurement_errors(
     neighbor_suffix: str,
     is_prev: bool,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute measurement-only error contributions to momentum variances.
+    r"""Compute measurement-only error contributions to momentum variances.
+
+    The analytical expressions implemented here are
+
+    .. math::
+
+       \operatorname{var}_{\mathrm{meas}}(p_x)
+       =
+       \sigma^2_{x_n}
+       \left(
+       \frac{s \sec \phi_x}{\sqrt{\beta_x}\sqrt{\beta_{x,n}}}
+       \right)^2
+       +
+       \sigma^2_x
+       \left(
+       \frac{s (\tan \phi_x + a \alpha_x)}{\beta_x}
+       \right)^2,
+
+    .. math::
+
+       \operatorname{var}_{\mathrm{meas}}(p_y)
+       =
+       \sigma^2_{y_n}
+       \left(
+       \frac{s \sec \phi_y}{\sqrt{\beta_y}\sqrt{\beta_{y,n}}}
+       \right)^2
+       +
+       \sigma^2_y
+       \left(
+       \frac{s (\tan \phi_y + a \alpha_y)}{\beta_y}
+       \right)^2,
+
+    with :math:`s = -1, a = +1` for the previous neighbor and
+    :math:`s = +1, a = -1` for the next neighbor.
 
     Args:
         data: DataFrame with position and variance columns.
@@ -75,7 +108,29 @@ def compute_optics_errors(
     is_prev: bool,
     dpp_est: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute optics error contributions to momentum variances.
+    r"""Compute optics error contributions to momentum variances.
+
+    The code applies first-order uncertainty propagation,
+
+    .. math::
+
+       \operatorname{var}_{\mathrm{opt}}(p_x) =
+       \sum_i \sigma_i^2 \left(\frac{\partial p_x}{\partial q_i}\right)^2,
+       \qquad
+       q_i \in
+       \{D_{x,n}, D_x, D_x', \alpha_x, \sqrt{\beta_x}, \sqrt{\beta_{x,n}}, \Delta_x\},
+
+    .. math::
+
+       \operatorname{var}_{\mathrm{opt}}(p_y) =
+       \sum_i \sigma_i^2 \left(\frac{\partial p_y}{\partial q_i}\right)^2,
+       \qquad
+       q_i \in
+       \{D_{y,n}, D_y, D_y', \alpha_y, \sqrt{\beta_y}, \sqrt{\beta_{y,n}}, \Delta_y\}.
+
+    The phase-advance uncertainties are stored in turns and converted to radians
+    through :math:`\phi = 2 \pi \Delta`, so the implementation uses
+    :math:`\partial p / \partial \Delta = 2 \pi \, \partial p / \partial \phi`.
 
     Args:
         data: DataFrame with optics and error columns.

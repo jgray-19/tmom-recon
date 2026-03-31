@@ -17,7 +17,6 @@ from tmom_recon.svd import svd_clean_measurements  # noqa: E402
 from .acd_test_helpers import (
     AC_DIPOLE_ELEMENT,
     _ac_dipole_segment_around_element,
-    _full_xsuite_to_ngtws,
     _get_driver,
 )
 from .momentum_test_utils import get_truth, rmse, xsuite_to_ngtws
@@ -136,26 +135,23 @@ def test_dispersive_momentum_on_momentum_with_ac_dipole_config(
     )
     tws = xsuite_to_ngtws(tws_xsuite)
     truth = get_truth(tracking_df, tws)
-    full_tws = baseline_line.twiss(method="4d")
-    full_ng_tws = _full_xsuite_to_ngtws(full_tws)
-
+    model = _get_driver(seq, deltap=0.0)
     bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
-        full_tws,
+        model.twiss_elements,
         available_bpms=tracking_df["name"].unique().tolist(),
         element_name=AC_DIPOLE_ELEMENT,
     )
-    model = _get_driver(seq, deltap=0.0)
 
     baseline = dispersive_calc(
         tracking_df.copy(deep=True),
-        tws=full_ng_tws,
+        tws=tws,
         inject_noise=False,
         info=False,
     ).rename(columns={"px": "px_base", "py": "py_base"})
 
     with_acd = dispersive_calc(
         tracking_df.copy(deep=True),
-        tws=full_ng_tws,
+        tws=tws,
         inject_noise=False,
         info=False,
         ac_dipole_config=ACDipoleConfig(

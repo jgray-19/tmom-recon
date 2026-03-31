@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
 
-import pandas as pd
-
-from .madng_driver import ACDipoleMadDriver
 from .reconstruction import calculate_ac_dipole_momentum
+
+if TYPE_CHECKING:
+    import pandas as pd
+
+    from .madng_driver import ACDipoleMadDriver
 
 
 @dataclass(frozen=True)
@@ -16,6 +20,8 @@ class ACDipoleConfig:
     bpm_downstream: str | None = None
     n_bpms_each_side: int = 1
     smooth_lambda: float = 1.0
+    tune_knobs_file: Path | None = None
+    corrector_knobs_file: Path | None = None
 
 
 def apply_ac_dipole_bpm_overrides_inplace(

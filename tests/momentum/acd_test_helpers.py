@@ -2,26 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import tfs
+import pandas as pd
 
 from tmom_recon.acd.madng_driver import ACDipoleMadDriver
 
 AC_DIPOLE_ELEMENT = "MKQA.6L4.B1"
-
-
-def _full_xsuite_to_ngtws(tbl) -> tfs.TfsDataFrame:
-    df = tbl.to_pandas()
-    df["beta11"] = df["betx"]
-    df["beta22"] = df["bety"]
-    df["alfa11"] = df["alfx"]
-    df["alfa22"] = df["alfy"]
-    df["mu1"] = df["mux"]
-    df["mu2"] = df["muy"]
-    df["name"] = df["name"].astype(str).str.upper()
-    return tfs.TfsDataFrame(
-        df.set_index("name"),
-        headers={"q1": tbl.qx, "q2": tbl.qy},
-    )
 
 
 def _get_driver(
@@ -43,12 +28,20 @@ def _get_driver(
 
 
 def _ac_dipole_segment_around_element(
-    full_tws,
+    twiss_elements,
     available_bpms,
     *,
     element_name: str = AC_DIPOLE_ELEMENT,
 ) -> tuple[str, str]:
-    tws_df = full_tws.to_pandas()
+    if hasattr(twiss_elements, "to_pandas"):
+        tws_df = twiss_elements.to_pandas()
+    else:
+        tws_df = pd.DataFrame(twiss_elements).reset_index()
+
+    if "name" not in tws_df.columns:
+        first_col = str(tws_df.columns[0])
+        tws_df = tws_df.rename(columns={first_col: "name"})
+
     tws_df = tws_df.assign(name=tws_df["name"].astype(str).str.upper())
 
     target = str(element_name).upper()
