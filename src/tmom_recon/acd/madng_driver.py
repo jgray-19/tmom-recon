@@ -5,9 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+from pymadng_utils.accelerators import Accelerator
 from pymadng_utils.mad import KnobMadInterface
-
-from tmom_recon.accelerators import Accelerator
 
 N_COORD = 4
 

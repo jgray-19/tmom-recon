@@ -35,8 +35,6 @@ The top-level package re-exports the main entry points:
 ```python
 from tmom_recon import (
     ACDipoleConfig,
-    LHC,
-    PSB,
     build_twiss_from_measurements,
     calculate_ac_dipole_momentum,
     calculate_dispersive_pz,
@@ -56,7 +54,6 @@ Main modules:
 - `tmom_recon.acd`: AC-dipole reconstruction and MAD-NG integration helpers.
 - `tmom_recon.kalman`: Kalman-based reconstruction utilities.
 - `tmom_recon.lattice`: neighbor and lattice helper functions.
-- `tmom_recon.accelerators`: accelerator descriptors such as `LHC` and `PSB`.
 
 ## Usage
 
@@ -109,7 +106,7 @@ acd_result = calculate_ac_dipole_momentum(
 Accelerator descriptors for driver setup:
 
 ```python
-from tmom_recon import LHC
+from pymadng_utils.accelerators import LHC
 
 accelerator = LHC(
     beam=1,

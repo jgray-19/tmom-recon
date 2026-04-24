@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+from pymadng_utils.accelerators import LHC
 
-from tmom_recon.accelerators import LHC
 from tmom_recon.acd.madng_driver import ACDipoleMadDriver
 
 AC_DIPOLE_ELEMENT = "MKQA.6L4.B1"

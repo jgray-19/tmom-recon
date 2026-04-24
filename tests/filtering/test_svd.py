@@ -1,5 +1,5 @@
 """
-Tests for aba_optimiser.filtering.svd module.
+Tests for tmom_recon.svd module.
 """
 
 from __future__ import annotations

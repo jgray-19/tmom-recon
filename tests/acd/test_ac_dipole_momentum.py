@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 import tfs
 from matplotlib import pyplot as plt
+from pymadng_utils.accelerators import LHC
 from xtrack_tools.acd import run_acd_track
 
 pytest.importorskip("pymadng_utils")
@@ -24,7 +25,6 @@ from xtrack_tools.monitors import process_tracking_data
 
 from tests.momentum.momentum_test_utils import get_truth, rmse, xsuite_to_ngtws
 from tmom_recon import inject_noise_xy_inplace
-from tmom_recon.accelerators import LHC
 from tmom_recon.acd import reconstruction as acd_reconstruction
 from tmom_recon.acd.madng_driver import ACDipoleMadDriver
 from tmom_recon.acd.models import (

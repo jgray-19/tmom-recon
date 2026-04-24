@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import tfs
+from pymadng_utils.accelerators import LHC
 
 pytest.importorskip("pymadng_utils")
 
@@ -18,7 +19,6 @@ from xtrack_tools.env import create_xsuite_environment, initialise_env
 from xtrack_tools.monitors import process_tracking_data
 
 from tmom_recon import calculate_transverse_pz as calculate_pz
-from tmom_recon.accelerators import LHC
 
 from .momentum_test_utils import (  # noqa: E402
     verify_pz_reconstruction,
