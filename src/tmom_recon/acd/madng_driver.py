@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 import numpy as np
-from pymadng_utils.io.utils import read_knobs
-from pymadng_utils.mad import CoreMadInterface
+from pymadng_utils.mad import KnobMadInterface
 
-LOGGER = logging.getLogger(__name__)
+from tmom_recon.accelerators import Accelerator
+
 N_COORD = 4
 
 
@@ -23,8 +22,6 @@ class ACDipoleTrackingError(RuntimeError):
         target_element: str,
         direction: int,
         range_name: str,
-        endpoint_a: dict[str, object] | None,
-        endpoint_b: dict[str, object] | None,
         mad_logfile: str | None,
         error: str | None = None,
     ) -> None:
@@ -32,10 +29,6 @@ class ACDipoleTrackingError(RuntimeError):
             f"MAD-NG failed to track states {source_element} -> {target_element} (dir={direction})",
             f"range={range_name}",
         ]
-        if endpoint_a is not None:
-            lines.append(f"endpoint_a={endpoint_a}")
-        if endpoint_b is not None:
-            lines.append(f"endpoint_b={endpoint_b}")
         if mad_logfile is not None:
             lines.append(f"mad_logfile={mad_logfile}")
         if error is not None:
@@ -45,31 +38,29 @@ class ACDipoleTrackingError(RuntimeError):
         self.target_element = target_element
         self.direction = direction
         self.range_name = range_name
-        self.endpoint_a = endpoint_a
-        self.endpoint_b = endpoint_b
         self.mad_logfile = mad_logfile
         self.error = error
 
 
-class ACDipoleMadDriver(CoreMadInterface):
+class ACDipoleMadDriver(KnobMadInterface):
     """Simplified MAD-NG driver dedicated to AC-dipole state tracking.
 
     This strips away all Kalman-specific sensitivity and knob machinery and only
     keeps what the AC-dipole reconstruction needs:
-    - sequence loading and beam setup,
+    - accelerator-owned sequence loading and beam setup,
     - optional cycling to a chosen BPM,
     - observation of BPMs plus the requested AC-dipole element,
     - direct particle tracking for batches of ``[x, px, y, py]`` states.
+
+    The driver is configured through an explicit accelerator object, matching
+    the ``aba_optimiser`` pattern this repository already uses elsewhere.
     """
 
     def __init__(
         self,
         *,
-        sequence_file: Path,
-        beam: int,
-        beam_energy: float,
+        accelerator: Accelerator,
         deltap: float = 0.0,
-        bpm_pattern: str = "BPM",
         observed_elements: str | list[str] | None = None,
         tune_knobs_file: Path | None = None,
         corrector_knobs_file: Path | None = None,
@@ -87,76 +78,26 @@ class ACDipoleMadDriver(CoreMadInterface):
             redirect_stderr = True
 
         super().__init__(
+            accelerator=accelerator,
             stdout=stdout,
             redirect_stderr=redirect_stderr,
             debug=debug,
         )
         self._mad_logfile = str(mad_logfile) if mad_logfile is not None else None
-        self._element_cache: dict[str, dict[str, object] | None] = {}
-        self.load_sequence(sequence_file, f"lhcb{beam}")
-        self.setup_beam(beam_energy)
         self.mad["DELTAP"] = deltap
-        self._apply_knobs_file(tune_knobs_file, kind="tune")
-        self._apply_knobs_file(corrector_knobs_file, kind="corrector")
+        if tune_knobs_file is not None:
+            self.set_knobs(tune_knobs_file)
+        if corrector_knobs_file is not None:
+            self.set_knobs(corrector_knobs_file)
         self.twiss_elements = self.run_twiss(observe=0)
 
-        self.observe_elements(bpm_pattern)
-        self.add_observed_elements(observed_elements)
-
-    def _apply_knobs_file(self, knob_file: Path | None, *, kind: str) -> None:
-        if knob_file is None:
+        self.observe(self.accelerator.bpm_pattern)
+        if observed_elements is None:
             return
-
-        knobs = read_knobs(knob_file)
-        for name, value in knobs.items():
-            self.mad.send(f"MADX['{name}'] = {value}")
-
-        LOGGER.info("Applied %d %s knobs from %s", len(knobs), kind, knob_file)
-
-    def add_observed_elements(self, elements: str | list[str] | None) -> None:
-        if elements is None:
-            return
-        if isinstance(elements, str):
-            elements = [elements]
-        element_lines = "\n".join(
-            f'loaded_sequence:select(observed, {{pattern="{element}"}})' for element in elements
-        )
-        self.mad.send(
-            f"""
-local observed in MAD.element.flags
-{element_lines}
-"""
-        )
-
-    def _get_range(self, source_element: str, target_element: str) -> str:
-        # MAD-NG expects X0 at the first element in the range for both
-        # forward and backward tracking. Only ``dir`` changes sign.
-        return f"{source_element}/{target_element}"
-
-    def _describe_element(self, element_name: str) -> dict[str, object] | None:
-        if element_name in self._element_cache:
-            return self._element_cache[element_name]
-        self.mad.send(
-            """
---begin
-local element_name = py:recv()
-local elem = loaded_sequence[element_name]
-if not elem then
-    py:send(nil)
-else
-    py:send({
-        name = elem.name,
-        kind = elem.kind,
-        at = elem.at or 0,
-        l = elem.l or 0,
-    }, true)
-end
---end
-"""
-        ).send(element_name)
-        description = self.mad.recv()
-        self._element_cache[element_name] = description
-        return description
+        if isinstance(observed_elements, str):
+            observed_elements = [observed_elements]
+        for element in observed_elements:
+            self.observe(element, unobserve_first=False)
 
     def track_particles(
         self,
@@ -169,14 +110,15 @@ end
         if direction not in (-1, 1):
             raise ValueError(f"direction must be +/- 1, got {direction}")
 
-        range_name = self._get_range(source_element, target_element)
-        endpoint_a = self._describe_element(source_element)
-        endpoint_b = self._describe_element(target_element)
         state_array = np.asarray(states, dtype=float)
         if state_array.ndim != 2 or state_array.shape[1] != 4:
             raise ValueError(f"states must have shape (n, 4), got {state_array.shape}")
         if len(state_array) == 0:
             return np.empty((0, 4), dtype=float)
+
+        # MAD-NG expects X0 at the first element in the range for both forward
+        # and backward tracking; only dir changes sign.
+        range_name = f"{source_element}/{target_element}"
 
         x0_particles = [
             {
@@ -220,8 +162,6 @@ py:send(true)
                 target_element=target_element,
                 direction=direction,
                 range_name=range_name,
-                endpoint_a=endpoint_a,
-                endpoint_b=endpoint_b,
                 mad_logfile=self._mad_logfile,
                 error=f"{type(exc).__name__}: {exc}",
             ) from exc

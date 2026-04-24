@@ -271,6 +271,117 @@ def _prepare_next_reconstruction(
     return momenta_from_next(rows)
 
 
+def _prepare_direct_bpm_reconstruction(
+    data: pd.DataFrame,
+    tws_bpm: pd.DataFrame,
+    *,
+    window: ACDipoleBPMWindow,
+    bpm_index: dict[str, int],
+) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
+    prev_x, prev_y, next_x, next_y = _prepare_neighbor_tables(tws_bpm)
+    upstream_frames = {
+        bpm_name: _prepare_prev_reconstruction(
+            data,
+            tws_bpm,
+            bpm_name,
+            prev_x,
+            prev_y,
+            bpm_index,
+        )
+        for bpm_name in window.upstream
+    }
+    downstream_frames = {
+        bpm_name: _prepare_next_reconstruction(
+            data,
+            tws_bpm,
+            bpm_name,
+            next_x,
+            next_y,
+            bpm_index,
+        )
+        for bpm_name in window.downstream
+    }
+    return upstream_frames, downstream_frames
+
+
+def _fit_ac_dipole_from_frames(
+    *,
+    selection: ACDipoleBPMSelection,
+    window: ACDipoleBPMWindow,
+    marker_name: str,
+    model: ACDipoleMadDriver,
+    smooth_lambda: float,
+    upstream_frames: dict[str, pd.DataFrame],
+    downstream_frames: dict[str, pd.DataFrame],
+) -> tuple[
+    pd.DataFrame,
+    np.ndarray,
+    ACDipoleStateEstimate,
+    ACDipoleStateEstimate,
+    ACDipoleStateEstimate,
+    ACDipoleStateEstimate,
+    np.ndarray,
+    np.ndarray,
+    ACDipoleHarmonicFit,
+    ACDipoleHarmonicFit,
+]:
+    primary_upstream = upstream_frames[selection.upstream]
+    primary_downstream = downstream_frames[selection.downstream]
+    result = _merge_primary_bpm_results(
+        primary_upstream,
+        primary_downstream,
+        selection=selection,
+        marker_name=marker_name,
+    )
+    turns = result["turn"].to_numpy(dtype=float)
+
+    upstream_tables = [
+        _build_tracked_state_table(
+            upstream_frames[bpm_name],
+            model,
+            source_name=bpm_name,
+            marker_name=marker_name,
+            direction=1,
+        )
+        for bpm_name in window.upstream
+    ]
+    downstream_tables = [
+        _build_tracked_state_table(
+            downstream_frames[bpm_name],
+            model,
+            source_name=bpm_name,
+            marker_name=marker_name,
+            direction=-1,
+        )
+        for bpm_name in window.downstream
+    ]
+
+    raw_upstream = _combine_state_tables(turns, upstream_tables)
+    raw_downstream = _combine_state_tables(turns, downstream_tables)
+    dpx_raw = raw_downstream.state.px - raw_upstream.state.px
+    dpy_raw = raw_downstream.state.py - raw_upstream.state.py
+    cleaned_upstream, cleaned_downstream, dpx_fit, dpy_fit = _clean_ac_dipole_states(
+        turns,
+        upstream_tables,
+        downstream_tables,
+        dpx_tune=_estimate_dominant_tune(turns, dpx_raw),
+        dpy_tune=_estimate_dominant_tune(turns, dpy_raw),
+        smooth_lambda=smooth_lambda,
+    )
+    return (
+        result,
+        turns,
+        raw_upstream,
+        raw_downstream,
+        cleaned_upstream,
+        cleaned_downstream,
+        dpx_raw,
+        dpy_raw,
+        dpx_fit,
+        dpy_fit,
+    )
+
+
 def _transport_to_marker(
     frame: pd.DataFrame,
     model: ACDipoleMadDriver,
@@ -410,7 +521,6 @@ def _build_ac_dipole_headers(
         "ACD_ELEMENT": marker_name,
         "ACD_BPM_UPSTREAM": window.primary.upstream,
         "ACD_BPM_DOWNSTREAM": window.primary.downstream,
-        "ACD_N_BPMS_EACH_SIDE": len(window.upstream),
         "ACD_BPMS_UPSTREAM_USED": ",".join(window.upstream),
         "ACD_BPMS_DOWNSTREAM_USED": ",".join(window.downstream),
         "ACD_DPX_TUNE": dpx_fit.tune,
@@ -432,7 +542,6 @@ def calculate_ac_dipole_momentum(
     model: ACDipoleMadDriver,
     bpm_upstream: str | None = None,
     bpm_downstream: str | None = None,
-    n_bpms_each_side: int = 1,
     smooth_lambda: float = 1,
     inject_noise: bool | float = True,
     rng: np.random.Generator | None = None,
@@ -472,7 +581,6 @@ def calculate_ac_dipole_momentum(
         available_bpm_names,
         bpm_upstream=bpm_upstream,
         bpm_downstream=bpm_downstream,
-        n_bpms_each_side=n_bpms_each_side,
     )
     selection = window.primary
     LOGGER.info(
@@ -491,74 +599,34 @@ def calculate_ac_dipole_momentum(
 
     bpm_order = [str(name) for name in tws_bpm.index]
     bpm_index = {str(name): idx for idx, name in enumerate(bpm_order)}
-    prev_x, prev_y, next_x, next_y = _prepare_neighbor_tables(tws_bpm)
-
-    upstream_frames = {
-        bpm_name: _prepare_prev_reconstruction(
-            data,
-            tws_bpm,
-            bpm_name,
-            prev_x,
-            prev_y,
-            bpm_index,
-        )
-        for bpm_name in window.upstream
-    }
-    downstream_frames = {
-        bpm_name: _prepare_next_reconstruction(
-            data,
-            tws_bpm,
-            bpm_name,
-            next_x,
-            next_y,
-            bpm_index,
-        )
-        for bpm_name in window.downstream
-    }
-
+    upstream_frames, downstream_frames = _prepare_direct_bpm_reconstruction(
+        data,
+        tws_bpm,
+        window=window,
+        bpm_index=bpm_index,
+    )
+    (
+        result,
+        turns,
+        raw_upstream,
+        raw_downstream,
+        cleaned_upstream,
+        cleaned_downstream,
+        dpx_raw,
+        dpy_raw,
+        dpx_fit,
+        dpy_fit,
+    ) = _fit_ac_dipole_from_frames(
+        selection=selection,
+        window=window,
+        marker_name=marker_name,
+        model=model,
+        smooth_lambda=smooth_lambda,
+        upstream_frames=upstream_frames,
+        downstream_frames=downstream_frames,
+    )
     primary_upstream = upstream_frames[selection.upstream]
     primary_downstream = downstream_frames[selection.downstream]
-    result = _merge_primary_bpm_results(
-        primary_upstream,
-        primary_downstream,
-        selection=selection,
-        marker_name=marker_name,
-    )
-    turns = result["turn"].to_numpy(dtype=float)
-
-    upstream_tables = [
-        _build_tracked_state_table(
-            upstream_frames[bpm_name],
-            model,
-            source_name=bpm_name,
-            marker_name=marker_name,
-            direction=1,
-        )
-        for bpm_name in window.upstream
-    ]
-    downstream_tables = [
-        _build_tracked_state_table(
-            downstream_frames[bpm_name],
-            model,
-            source_name=bpm_name,
-            marker_name=marker_name,
-            direction=-1,
-        )
-        for bpm_name in window.downstream
-    ]
-
-    raw_upstream = _combine_state_tables(turns, upstream_tables)
-    raw_downstream = _combine_state_tables(turns, downstream_tables)
-    dpx_raw = raw_downstream.state.px - raw_upstream.state.px
-    dpy_raw = raw_downstream.state.py - raw_upstream.state.py
-    cleaned_upstream, cleaned_downstream, dpx_fit, dpy_fit = _clean_ac_dipole_states(
-        turns,
-        upstream_tables,
-        downstream_tables,
-        dpx_tune=_estimate_dominant_tune(turns, dpx_raw),
-        dpy_tune=_estimate_dominant_tune(turns, dpy_raw),
-        smooth_lambda=smooth_lambda,
-    )
 
     px_bpm_upstream_cleaned, py_bpm_upstream_cleaned = _blend_bpm_momentum_estimate(
         primary_upstream,
@@ -668,7 +736,6 @@ def calculate_ac_dipole_momentum(
     result_out.attrs["bpm_downstream"] = selection.downstream
     result_out.attrs["bpms_upstream_used"] = window.upstream
     result_out.attrs["bpms_downstream_used"] = window.downstream
-    result_out.attrs["n_bpms_each_side"] = n_bpms_each_side
     result_out.attrs["smooth_lambda"] = smooth_lambda
     result_out.attrs["dpx_fit"] = dpx_fit_meta
     result_out.attrs["dpy_fit"] = dpy_fit_meta

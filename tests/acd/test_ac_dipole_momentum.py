@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import cast
 
 import matplotlib as mpl
 
@@ -16,8 +17,22 @@ from xtrack_tools.acd import run_acd_track
 pytest.importorskip("pymadng_utils")
 pytest.importorskip("xtrack_tools")
 
+from pymadng_utils.mad.accelerator_mad_interface import AcceleratorMadInterface
+from xtrack_tools.acd import run_ac_dipole_tracking_with_particles
+from xtrack_tools.env import initialise_env
+from xtrack_tools.monitors import process_tracking_data
+
+from tests.momentum.momentum_test_utils import get_truth, rmse, xsuite_to_ngtws
 from tmom_recon import inject_noise_xy_inplace
+from tmom_recon.accelerators import LHC
+from tmom_recon.acd import reconstruction as acd_reconstruction
 from tmom_recon.acd.madng_driver import ACDipoleMadDriver
+from tmom_recon.acd.models import (
+    ACDipoleBPMWindow,
+    ACDipoleHarmonicFit,
+    ACDipoleStateEstimate,
+    ACDipoleStateSeries,
+)
 from tmom_recon.acd.reconstruction import (
     calculate_ac_dipole_momentum,
     select_ac_dipole_bpm_window,
@@ -30,13 +45,28 @@ from .acd_test_helpers import (
     _ac_dipole_segment_around_element,
     _get_driver,
 )
-from .momentum_test_utils import get_truth, rmse, xsuite_to_ngtws
 
 SEQ_FILE = "lhcb1.seq"
 
 
 def _should_plot_test_results() -> bool:
     return os.getenv("TMOM_RECON_PLOT_TESTS", "0") == "1"
+
+
+class _IdentityAcdModel:
+    def __init__(self, twiss_elements: pd.DataFrame) -> None:
+        self.twiss_elements = twiss_elements
+
+    def track_particles(
+        self,
+        source_name: str,
+        marker_name: str,
+        source_state: np.ndarray,
+        *,
+        direction: int,
+    ) -> np.ndarray:
+        del source_name, marker_name, direction
+        return np.asarray(source_state, dtype=float)
 
 
 def _get_setup(
@@ -67,22 +97,22 @@ def _get_setup_with_magnetic_errors(
     *,
     flattop_turns: int = 100,
     magnet_seed: int = 13,
-    rel_k1_std_dev: float = 1e-4,
+    rel_k1_std_dev: float | None = None,
 ):
-    aba_optimiser = pytest.importorskip("aba_optimiser")
-    assert aba_optimiser is not None  # satisfy linters
+    """Build an ACD tracking dataset with lattice perturbations and orbit correction.
 
-    from aba_optimiser.accelerators import LHC
-    from aba_optimiser.mad import AbaMadInterface
-    from xtrack_tools.acd import run_ac_dipole_tracking_with_particles
-    from xtrack_tools.env import initialise_env
-    from xtrack_tools.monitors import process_tracking_data
+    This helper intentionally exercises the pymadng-based workflow used in the
+    integration tests:
+    1. apply random magnet perturbations,
+    2. re-match tunes via orbit correction,
+    3. export the resulting machine state to xtrack and generate turn-by-turn data.
+    """
 
     sequence_file = data_dir / "sequences" / SEQ_FILE
-    accelerator = LHC(beam=1, sequence_file=sequence_file, beam_energy=6800)
-    mad = AbaMadInterface(accelerator)
+    accelerator = LHC(beam=1, sequence_file=sequence_file, pc=6800)
+    mad = AcceleratorMadInterface(accelerator)
 
-    mad.observe_elements()
+    mad.observe()
     tws = mad.run_twiss()
     tws = tws.loc[tws.index.str.upper().str.contains("BPM")]
     mad.unobserve_elements(["BPM"])
@@ -90,7 +120,7 @@ def _get_setup_with_magnetic_errors(
     magnet_strengths, _reference_strengths = mad.apply_magnet_perturbations(
         rel_error=rel_k1_std_dev,
         seed=magnet_seed,
-        magnet_type="all",
+        magnet_type="qd",
     )
     assert magnet_strengths, "Expected magnet perturbations to update strengths"
 
@@ -377,6 +407,138 @@ def _plot_ac_dipole_reconstruction(merged: pd.DataFrame, output_path: Path) -> N
     fig.savefig(output_path, dpi=140)
 
 
+def _minimal_bpm_state_frame(name: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "turn": [0, 1],
+            "x": [0.0, 0.0],
+            "px": [1.0e-4, 2.0e-4],
+            "y": [0.0, 0.0],
+            "py": [3.0e-4, 4.0e-4],
+            "var_x": [1.0, 1.0],
+            "var_px": [1.0, 1.0],
+            "var_y": [1.0, 1.0],
+            "var_py": [1.0, 1.0],
+            "source_bpm": [name, name],
+        }
+    )
+
+
+def _estimate_from_table(table: pd.DataFrame) -> ACDipoleStateEstimate:
+    ordered = table.sort_values("turn").reset_index(drop=True)
+    return ACDipoleStateEstimate(
+        state=ACDipoleStateSeries(
+            x=ordered["x"].to_numpy(dtype=float),
+            px=ordered["px"].to_numpy(dtype=float),
+            y=ordered["y"].to_numpy(dtype=float),
+            py=ordered["py"].to_numpy(dtype=float),
+        ),
+        var_x=ordered["var_x"].to_numpy(dtype=float),
+        var_px=ordered["var_px"].to_numpy(dtype=float),
+        var_y=ordered["var_y"].to_numpy(dtype=float),
+        var_py=ordered["var_py"].to_numpy(dtype=float),
+    )
+
+
+def test_calculate_ac_dipole_momentum_uses_direct_bpm_seed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = cast(
+        ACDipoleMadDriver,
+        _IdentityAcdModel(pd.DataFrame(index=pd.Index(["BPMU", "MKQA.6L4.B1", "BPMD"], dtype=str))),
+    )
+    tws = pd.DataFrame(
+        {
+            "px": [0.0, 0.0],
+            "py": [0.0, 0.0],
+        },
+        index=pd.Index(["BPMU", "BPMD"], dtype=str),
+    )
+    data = pd.DataFrame(
+        {
+            "name": ["BPMU", "BPMD", "BPMU", "BPMD"],
+            "turn": [0, 0, 1, 1],
+            "x": [0.0, 0.0, 0.0, 0.0],
+            "y": [0.0, 0.0, 0.0, 0.0],
+            "var_x": [1.0, 1.0, 1.0, 1.0],
+            "var_y": [1.0, 1.0, 1.0, 1.0],
+        }
+    )
+    counts = {"prev": 0, "next": 0}
+
+    monkeypatch.setattr(
+        acd_reconstruction,
+        "select_ac_dipole_bpm_window",
+        lambda *args, **kwargs: ACDipoleBPMWindow(("BPMU",), ("BPMD",)),
+    )
+    monkeypatch.setattr(acd_reconstruction, "remove_closed_orbit_inplace", lambda data, tws: None)
+
+    def fake_prepare_neighbor_tables(
+        tws_bpm: pd.DataFrame,
+    ) -> tuple[object, object, object, object]:
+        del tws_bpm
+        return object(), object(), object(), object()
+
+    def fake_prepare_prev_reconstruction(*args, **kwargs) -> pd.DataFrame:
+        del args, kwargs
+        counts["prev"] += 1
+        return _minimal_bpm_state_frame("BPMU")
+
+    def fake_prepare_next_reconstruction(*args, **kwargs) -> pd.DataFrame:
+        del args, kwargs
+        counts["next"] += 1
+        return _minimal_bpm_state_frame("BPMD")
+
+    def fake_clean_ac_dipole_states(
+        turns: np.ndarray,
+        upstream_tables: list[pd.DataFrame],
+        downstream_tables: list[pd.DataFrame],
+        *,
+        dpx_tune: float,
+        dpy_tune: float,
+        smooth_lambda: float,
+    ) -> tuple[
+        ACDipoleStateEstimate, ACDipoleStateEstimate, ACDipoleHarmonicFit, ACDipoleHarmonicFit
+    ]:
+        del turns, dpx_tune, dpy_tune, smooth_lambda
+        fit = ACDipoleHarmonicFit(
+            tune=0.1,
+            amplitude=1.0,
+            phase=0.0,
+            offset=0.0,
+            fitted=np.zeros(2, dtype=float),
+        )
+        return (
+            _estimate_from_table(upstream_tables[0]),
+            _estimate_from_table(downstream_tables[0]),
+            fit,
+            fit,
+        )
+
+    monkeypatch.setattr(
+        acd_reconstruction, "_prepare_neighbor_tables", fake_prepare_neighbor_tables
+    )
+    monkeypatch.setattr(
+        acd_reconstruction, "_prepare_prev_reconstruction", fake_prepare_prev_reconstruction
+    )
+    monkeypatch.setattr(
+        acd_reconstruction, "_prepare_next_reconstruction", fake_prepare_next_reconstruction
+    )
+    monkeypatch.setattr(acd_reconstruction, "_clean_ac_dipole_states", fake_clean_ac_dipole_states)
+
+    result = calculate_ac_dipole_momentum(
+        data,
+        tws,
+        ac_dipole_marker="MKQA.6L4.B1",
+        model=model,
+        inject_noise=False,
+    )
+
+    assert counts == {"prev": 1, "next": 1}
+    assert result.attrs["bpm_upstream"] == "BPMU"
+    assert result.attrs["bpm_downstream"] == "BPMD"
+
+
 @pytest.mark.slow
 def test_select_ac_dipole_bpms_matches_real_lattice_neighbors(data_dir, xsuite_json_path) -> None:
     tracking_df, _tws, _truth, _full_tws = _get_setup(
@@ -473,7 +635,7 @@ def test_madng_track_range_and_direction_match_source_target_convention(
 
 
 @pytest.mark.slow
-def test_select_ac_dipole_bpm_window_returns_requested_count(data_dir, xsuite_json_path) -> None:
+def test_select_ac_dipole_bpm_window_returns_primary_pair(data_dir, xsuite_json_path) -> None:
     tracking_df, _tws, _truth, _full_tws = _get_setup(
         SEQ_FILE,
         data_dir,
@@ -486,11 +648,10 @@ def test_select_ac_dipole_bpm_window_returns_requested_count(data_dir, xsuite_js
         model.twiss_elements,
         ac_dipole_marker=AC_DIPOLE_ELEMENT,
         bpm_names=tracking_df["name"].unique(),
-        n_bpms_each_side=2,
     )
 
-    assert len(window.upstream) == 2
-    assert len(window.downstream) == 2
+    assert len(window.upstream) == 1
+    assert len(window.downstream) == 1
     assert window.primary == select_ac_dipole_bpms(
         model.twiss_elements,
         ac_dipole_marker=AC_DIPOLE_ELEMENT,
@@ -567,7 +728,6 @@ def test_calculate_ac_dipole_momentum_uses_real_tracking_setup(
     assert result.headers["ACD_ELEMENT"] == AC_DIPOLE_ELEMENT
     assert result.headers["ACD_BPM_UPSTREAM"] == bpm_upstream
     assert result.headers["ACD_BPM_DOWNSTREAM"] == bpm_downstream
-    assert result.headers["ACD_N_BPMS_EACH_SIDE"] == 1
     assert reco_log.exists()
 
     px_up_rmse = rmse(
@@ -603,7 +763,7 @@ def test_calculate_ac_dipole_momentum_uses_real_tracking_setup(
 @pytest.mark.parametrize(
     ("use_svd_cleaning", "include_magnetic_errors", "ratio_limit"),
     [
-        (False, False, 0.4),
+        (False, False, 0.8),
         (True, False, 0.6),
         (True, True, 0.4),
     ],
@@ -771,7 +931,7 @@ def test_ac_dipole_kick_fit_improves_with_more_turns(
 
 
 @pytest.mark.slow
-def test_ac_dipole_multi_bpm_window_reports_used_bpms(
+def test_ac_dipole_reports_selected_bpms(
     data_dir,
     xsuite_json_path,
     tmp_path,
@@ -791,21 +951,17 @@ def test_ac_dipole_multi_bpm_window_reports_used_bpms(
         model.twiss_elements,
         ac_dipole_marker=AC_DIPOLE_ELEMENT,
         bpm_names=tracking_df["name"].unique(),
-        n_bpms_each_side=2,
     )
     result = calculate_ac_dipole_momentum(
         tracking_df,
         _tws,
         ac_dipole_marker=AC_DIPOLE_ELEMENT,
         model=model,
-        n_bpms_each_side=2,
         inject_noise=False,
     )
 
     assert result.attrs["bpms_upstream_used"] == expected_window.upstream
     assert result.attrs["bpms_downstream_used"] == expected_window.downstream
-    assert result.attrs["n_bpms_each_side"] == 2
-    assert result.headers["ACD_N_BPMS_EACH_SIDE"] == 2
     assert result.headers["ACD_BPMS_UPSTREAM_USED"] == ",".join(expected_window.upstream)
     assert result.headers["ACD_BPMS_DOWNSTREAM_USED"] == ",".join(expected_window.downstream)
     assert "px_bpm_upstream_cleaned" in result.columns

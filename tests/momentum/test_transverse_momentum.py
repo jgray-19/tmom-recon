@@ -6,18 +6,19 @@ import numpy as np
 import pytest
 import tfs
 
-pytest.importorskip("aba_optimiser")
+pytest.importorskip("pymadng_utils")
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
-from aba_optimiser.accelerators import LHC
-from aba_optimiser.mad import AbaMadInterface
-from pymadng_utils.mad.model_creator_mad_interface import LhcModelCreatorMadInterface
+import pandas as pd
+from pymadng_utils.mad import ModelCreatorMadInterface
+from pymadng_utils.mad.accelerator_mad_interface import AcceleratorMadInterface
 from xtrack_tools.acd import run_ac_dipole_tracking_with_particles
 from xtrack_tools.env import create_xsuite_environment, initialise_env
 from xtrack_tools.monitors import process_tracking_data
 
 from tmom_recon import calculate_transverse_pz as calculate_pz
+from tmom_recon.accelerators import LHC
 
 from .momentum_test_utils import (  # noqa: E402
     verify_pz_reconstruction,
@@ -37,9 +38,9 @@ def _rmse(actual: np.ndarray, predicted: np.ndarray) -> float:
     return float(np.sqrt(np.mean((predicted - actual) ** 2)))
 
 
-def _create_loaded_mad_interface(sequence_file: Path) -> AbaMadInterface:
-    accelerator = LHC(beam=1, sequence_file=sequence_file, beam_energy=6800)
-    return AbaMadInterface(accelerator)
+def _create_loaded_mad_interface(sequence_file: Path) -> AcceleratorMadInterface:
+    accelerator = LHC(beam=1, sequence_file=sequence_file, pc=6800)
+    return AcceleratorMadInterface(accelerator)
 
 
 def _setup_xsuite_simulation(
@@ -57,10 +58,10 @@ def _setup_xsuite_simulation(
 ):
     corrector_file = tmp_path / f"correctors_{test_id}.tfs"
 
-    mad = _create_loaded_mad_interface(sequence_file)
+    mad = cast(Any, _create_loaded_mad_interface(sequence_file))
     mad.mad["zero_twiss", "_"] = mad.mad.twiss(sequence="loaded_sequence")
 
-    mad.observe_elements()
+    mad.observe()
     tws = mad.run_twiss()
     tws = tws.loc[tws.index.str.upper().str.contains("BPM")]
     mad.unobserve_elements(["BPM"])
@@ -71,7 +72,6 @@ def _setup_xsuite_simulation(
             rel_error=rel_k1_std_dev,
             seed=magnet_seed,
             magnet_type=magnets_to_perturb,
-            overwrite_strengths=True,
         )
         assert magnet_strengths, "Expected magnet perturbations to update strengths"
 
@@ -86,7 +86,7 @@ def _setup_xsuite_simulation(
         corrector_file=corrector_file,
     )
 
-    corrector_table = tfs.read(corrector_file)
+    corrector_table = cast(pd.DataFrame, tfs.read(corrector_file))
     corrector_table = corrector_table.loc[
         ~corrector_table["kind"].astype(str).str.lower().isin({"monitor", "hmonitor", "vmonitor"})
     ]
@@ -164,7 +164,7 @@ def test_calculate_pz_recovers_true_momenta(seq_b1, tmp_path):
     assert np.isclose(qy, NAT_TUNES[1], atol=1e-6, rtol=1e-6)
     qxd = DRV_TUNES[0]
     qyd = DRV_TUNES[1]
-    acd_marker = LhcModelCreatorMadInterface.AC_MARKER_PATTERN.format(beam=1).lower()
+    acd_marker = ModelCreatorMadInterface.AC_MARKER_PATTERN.format(beam=1).lower()
     betxac = tws.rows[acd_marker]["betx"][0]
     betyac = tws.rows[acd_marker]["bety"][0]
     ac_marker_place = "6.7065629327563011e+03"

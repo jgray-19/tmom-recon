@@ -67,11 +67,7 @@ def select_ac_dipole_bpm_window(
     *,
     bpm_upstream: str | None = None,
     bpm_downstream: str | None = None,
-    n_bpms_each_side: int = 1,
 ) -> ACDipoleBPMWindow:
-    if n_bpms_each_side < 1:
-        raise ValueError(f"n_bpms_each_side must be >= 1, got {n_bpms_each_side}")
-
     names = [str(name) for name in tws.index]
     marker_name = resolve_name(ac_dipole_marker, names)
 
@@ -92,7 +88,7 @@ def select_ac_dipole_bpm_window(
             marker_name,
             bpm_set,
             step=-1,
-            count=n_bpms_each_side,
+            count=1,
         )
     else:
         upstream = _collect_bpms_from_anchor(
@@ -100,7 +96,7 @@ def select_ac_dipole_bpm_window(
             resolved_upstream,
             bpm_set,
             step=-1,
-            count=n_bpms_each_side,
+            count=1,
         )
 
     if resolved_downstream is None:
@@ -109,7 +105,7 @@ def select_ac_dipole_bpm_window(
             marker_name,
             bpm_set,
             step=1,
-            count=n_bpms_each_side,
+            count=1,
         )
     else:
         downstream = _collect_bpms_from_anchor(
@@ -117,13 +113,11 @@ def select_ac_dipole_bpm_window(
             resolved_downstream,
             bpm_set,
             step=1,
-            count=n_bpms_each_side,
+            count=1,
         )
 
-    if len(upstream) != n_bpms_each_side or len(downstream) != n_bpms_each_side:
-        raise ValueError(
-            f"Unable to find {n_bpms_each_side} BPMs on each side of marker {marker_name!r}"
-        )
+    if len(upstream) != 1 or len(downstream) != 1:
+        raise ValueError(f"Unable to find BPMs on both sides of marker {marker_name!r}")
 
     return ACDipoleBPMWindow(
         upstream=tuple(upstream),
@@ -145,5 +139,4 @@ def select_ac_dipole_bpms(
         bpm_names,
         bpm_upstream=bpm_upstream,
         bpm_downstream=bpm_downstream,
-        n_bpms_each_side=1,
     ).primary

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from tmom_recon.accelerators import LHC
 from tmom_recon.acd.madng_driver import ACDipoleMadDriver
 
 AC_DIPOLE_ELEMENT = "MKQA.6L4.B1"
@@ -17,10 +18,12 @@ def _get_driver(
     mad_logfile: Path | None = None,
 ) -> ACDipoleMadDriver:
     return ACDipoleMadDriver(
-        beam=1,
-        beam_energy=6800,
+        accelerator=LHC(
+            beam=1,
+            sequence_file=seq,
+            pc=6800,
+        ),
         deltap=deltap,
-        sequence_file=seq,
         observed_elements=AC_DIPOLE_ELEMENT,
         debug=debug,
         mad_logfile=mad_logfile,
