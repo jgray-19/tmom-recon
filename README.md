@@ -1,18 +1,121 @@
 # tmom-recon
 [![codecov](https://codecov.io/gh/jgray-19/tmom-recon/graph/badge.svg?token=1R2UUJGSP3)](https://codecov.io/gh/jgray-19/tmom-recon)
 
-Transverse momentum reconstruction utilities extracted from the SGD magnet tuner codebase.
+Momentum reconstruction utilities for turn-by-turn BPM data.
 
-## Install (editable)
+The package now bundles the core two-BPM reconstruction formulae together with
+higher-level workflows for dispersive momentum estimation, n-BPM BLUE
+combination, AC-dipole reconstruction, lattice helpers, and accelerator
+descriptors used by the MAD-NG drivers.
+
+## Install
+
+Base install:
 
 ```bash
 python -m pip install -e .
 ```
 
+With test dependencies:
+
+```bash
+python -m pip install -e '.[test]'
+```
+
+With development dependencies:
+
+```bash
+python -m pip install -e '.[dev,test]'
+```
+
+## Public API
+
+The top-level package re-exports the main entry points:
+
+```python
+from tmom_recon import (
+    ACDipoleConfig,
+    LHC,
+    PSB,
+    build_twiss_from_measurements,
+    calculate_ac_dipole_momentum,
+    calculate_dispersive_pz,
+    calculate_pz_measurement,
+    calculate_transverse_pz,
+    calculate_transverse_pz_nbpm,
+    combine_momentum_blue,
+    inject_noise_xy_inplace,
+)
+```
+
+Main modules:
+
+- `tmom_recon.physics`: two-BPM transverse and dispersive momentum formulae.
+- `tmom_recon.measurements`: measured `delta p / p` and Twiss reconstruction helpers.
+- `tmom_recon.nbpm`: n-BPM pair building, covariance assembly, and BLUE combination.
+- `tmom_recon.acd`: AC-dipole reconstruction and MAD-NG integration helpers.
+- `tmom_recon.kalman`: Kalman-based reconstruction utilities.
+- `tmom_recon.lattice`: neighbor and lattice helper functions.
+- `tmom_recon.accelerators`: accelerator descriptors such as `LHC` and `PSB`.
+
 ## Usage
+
+Two-BPM transverse reconstruction:
 
 ```python
 from tmom_recon import calculate_transverse_pz
+
+result = calculate_transverse_pz(
+    tracking_df,
+    twiss_df,
+)
+```
+
+Dispersive momentum reconstruction:
+
+```python
+from tmom_recon import calculate_dispersive_pz
+
+dp_over_p = calculate_dispersive_pz(
+    tracking_df,
+    twiss_df,
+)
+```
+
+n-BPM combination:
+
+```python
+from tmom_recon import calculate_transverse_pz_nbpm
+
+nbpm_result = calculate_transverse_pz_nbpm(
+    tracking_df,
+    twiss_df,
+)
+```
+
+AC-dipole workflow:
+
+```python
+from tmom_recon import calculate_ac_dipole_momentum
+
+acd_result = calculate_ac_dipole_momentum(
+    tracking_df,
+    twiss_df,
+    ac_dipole_marker="MKQA.6L4.B1",
+    model=acd_model,
+)
+```
+
+Accelerator descriptors for driver setup:
+
+```python
+from tmom_recon import LHC
+
+accelerator = LHC(
+    beam=1,
+    sequence_file="lhcb1.seq",
+    pc=6800,
+)
 ```
 
 ## Momentum Reconstruction Formulae
@@ -103,6 +206,26 @@ var(p^) = 1 / (1 / \sigma_a^2 + 1 / \sigma_b^2)
 
 ## Development
 
+Install the editable development environment first:
+
+```bash
+python -m pip install -e '.[dev,test]'
+```
+
+Set up hooks:
+
 ```bash
 pre-commit install
+```
+
+Run the test suite:
+
+```bash
+pytest
+```
+
+Run linting:
+
+```bash
+ruff check .
 ```
