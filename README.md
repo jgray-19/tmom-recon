@@ -273,6 +273,10 @@ python -m pip install -e '.[docs]'
 sphinx-build -b html docs docs/_build/html
 ```
 
+Published documentation:
+
+- https://jgray-19.github.io/tmom-recon/
+
 Deploy the documentation with GitHub Pages:
 
 - the repository includes [`.github/workflows/docs-pages.yml`](/afs/cern.ch/work/j/jmgray/private/tmom-recon/.github/workflows/docs-pages.yml)
