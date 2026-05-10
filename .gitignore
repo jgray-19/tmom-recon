@@ -168,9 +168,9 @@ runs/
 analysis*/
 b1_flat_60_18cm/
 betabeat/
-docs/api/
 models/**
 plots/
 *.out
 *.png
 .vscode/
+kalman/
