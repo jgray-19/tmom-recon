@@ -21,7 +21,7 @@ def _get_driver(
         accelerator=LHC(
             beam=1,
             sequence_file=seq,
-            pc=6800,
+            kinetic_energy=6800,
         ),
         deltap=deltap,
         observed_elements=AC_DIPOLE_ELEMENT,

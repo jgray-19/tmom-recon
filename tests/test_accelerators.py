@@ -11,28 +11,28 @@ def test_lhc_exposes_expected_sequence_fields() -> None:
     accelerator = LHC(
         beam=2,
         sequence_file="machine.seq",
-        pc=7000,
+        kinetic_energy=7000,
         bpm_pattern="^BPM.*$",
     )
 
     assert accelerator.beam == 2
     assert accelerator.sequence_file == Path("machine.seq")
     assert accelerator.seq_name == "lhcb2"
-    assert accelerator.pc == 7000.0
+    assert accelerator.kinetic_energy == 7000.0
     assert accelerator.bpm_pattern == "^BPM.*$"
 
 
-def test_psb_derives_pc_and_sequence_name() -> None:
+def test_psb_derives_kinetic_energy_and_sequence_name() -> None:
     accelerator = PSB(
         ring=3,
         sequence_file="psb.seq",
-        pc=0.2,
+        kinetic_energy=0.2,
     )
 
     assert accelerator.ring == 3
     assert accelerator.sequence_file == Path("psb.seq")
     assert accelerator.seq_name == "psb3"
-    assert isclose(accelerator.pc, 0.2)
+    assert isclose(accelerator.kinetic_energy, 0.2)
     assert accelerator.bpm_pattern == "^BR3%.BPM"
 
 

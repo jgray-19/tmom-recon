@@ -110,7 +110,7 @@ def _get_setup_with_magnetic_errors(
     """
 
     sequence_file = data_dir / "sequences" / SEQ_FILE
-    accelerator = LHC(beam=1, sequence_file=sequence_file, pc=6800)
+    accelerator = LHC(beam=1, sequence_file=sequence_file, kinetic_energy=6800)
     mad = AcceleratorMadInterface(accelerator)
 
     mad.observe()

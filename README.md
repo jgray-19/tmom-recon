@@ -110,7 +110,7 @@ from pymadng_utils.accelerators import LHC
 accelerator = LHC(
     beam=1,
     sequence_file="lhcb1.seq",
-    pc=6800,
+    kinetic_energy=6800,
 )
 ```
 

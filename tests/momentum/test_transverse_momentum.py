@@ -12,12 +12,12 @@ pytest.importorskip("pymadng_utils")
 from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
-from pymadng_utils.mad import ModelCreatorMadInterface
 from pymadng_utils.mad.accelerator_mad_interface import AcceleratorMadInterface
 from xtrack_tools.acd import run_ac_dipole_tracking_with_particles
 from xtrack_tools.env import create_xsuite_environment, initialise_env
 from xtrack_tools.monitors import process_tracking_data
 
+from tests.acd.acd_test_helpers import AC_DIPOLE_ELEMENT
 from tmom_recon import calculate_transverse_pz as calculate_pz
 
 from .momentum_test_utils import (  # noqa: E402
@@ -39,7 +39,7 @@ def _rmse(actual: np.ndarray, predicted: np.ndarray) -> float:
 
 
 def _create_loaded_mad_interface(sequence_file: Path) -> AcceleratorMadInterface:
-    accelerator = LHC(beam=1, sequence_file=sequence_file, pc=6800)
+    accelerator = LHC(beam=1, sequence_file=sequence_file, kinetic_energy=6800)
     return AcceleratorMadInterface(accelerator)
 
 
@@ -164,7 +164,7 @@ def test_calculate_pz_recovers_true_momenta(seq_b1, tmp_path):
     assert np.isclose(qy, NAT_TUNES[1], atol=1e-6, rtol=1e-6)
     qxd = DRV_TUNES[0]
     qyd = DRV_TUNES[1]
-    acd_marker = ModelCreatorMadInterface.AC_MARKER_PATTERN.format(beam=1).lower()
+    acd_marker = AC_DIPOLE_ELEMENT.lower()
     betxac = tws.rows[acd_marker]["betx"][0]
     betyac = tws.rows[acd_marker]["bety"][0]
     ac_marker_place = "6.7065629327563011e+03"
