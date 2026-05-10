@@ -33,7 +33,7 @@ def test_psb_derives_kinetic_energy_and_sequence_name() -> None:
     assert accelerator.sequence_file == Path("psb.seq")
     assert accelerator.seq_name == "psb3"
     assert isclose(accelerator.kinetic_energy, 0.2)
-    assert accelerator.bpm_pattern == "^BR3%.BPM"
+    assert accelerator.bpm_pattern == "^BR3%.BPM.*$"
 
 
 def test_lhc_rejects_invalid_beam() -> None:

@@ -73,6 +73,8 @@ def _setup_xsuite_simulation(
             seed=magnet_seed,
             magnet_type=magnets_to_perturb,
         )
+        if isinstance(magnet_strengths, tuple):
+            magnet_strengths = magnet_strengths[0]
         assert magnet_strengths, "Expected magnet perturbations to update strengths"
 
     if initial_tune_guess is not None:

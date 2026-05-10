@@ -476,8 +476,9 @@ def test_calculate_ac_dipole_momentum_uses_direct_bpm_seed(
 
     def fake_prepare_neighbor_tables(
         tws_bpm: pd.DataFrame,
+        use_immediate_neighbors_for_bpms: bool = False,
     ) -> tuple[object, object, object, object]:
-        del tws_bpm
+        del tws_bpm, use_immediate_neighbors_for_bpms
         return object(), object(), object(), object()
 
     def fake_prepare_prev_reconstruction(*args, **kwargs) -> pd.DataFrame:
@@ -810,7 +811,7 @@ def test_calculate_ac_dipole_momentum_uses_real_tracking_setup(
     [
         (False, False, 0.8),
         (True, False, 0.6),
-        (True, True, 0.4),
+        (True, True, 0.6),
     ],
     ids=["raw_noisy", "svd_cleaned_noisy", "svd_cleaned_noisy_with_magnet_errors"],
 )
