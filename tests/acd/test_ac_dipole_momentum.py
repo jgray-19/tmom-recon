@@ -38,6 +38,7 @@ from tmom_recon.acd.reconstruction import (
     select_ac_dipole_bpm_window,
     select_ac_dipole_bpms,
 )
+from tmom_recon.data.schema import NEXT, PREV
 from tmom_recon.svd import svd_clean_measurements
 
 from .acd_test_helpers import (
@@ -537,6 +538,50 @@ def test_calculate_ac_dipole_momentum_uses_direct_bpm_seed(
     assert counts == {"prev": 1, "next": 1}
     assert result.attrs["bpm_upstream"] == "BPMU"
     assert result.attrs["bpm_downstream"] == "BPMD"
+
+
+@pytest.mark.parametrize("use_immediate_neighbors_for_bpms", [False, True])
+def test_prepare_neighbor_tables_immediate_bpm_flag(
+    use_immediate_neighbors_for_bpms: bool,
+) -> None:
+    bpm_names = [f"BPM{i}" for i in range(1, 6)]
+    mu = np.array([0.0, 0.1, 0.2, 0.3, 0.4], dtype=float)
+    tws_bpm = tfs.TfsDataFrame(
+        {
+            "mu1": mu,
+            "mu2": mu,
+            "s": np.arange(len(bpm_names), dtype=float),
+        },
+        index=pd.Index(bpm_names, dtype=str),
+        headers={"q1": 1.0, "q2": 1.0},
+    )
+
+    prev_x, prev_y, next_x, next_y = acd_reconstruction._prepare_neighbor_tables(
+        tws_bpm,
+        use_immediate_neighbors_for_bpms=use_immediate_neighbors_for_bpms,
+    )
+
+    if use_immediate_neighbors_for_bpms:
+        expected_prev = ["BPM5", "BPM1", "BPM2", "BPM3", "BPM4"]
+        expected_next = ["BPM2", "BPM3", "BPM4", "BPM5", "BPM1"]
+        expected_prev_delta = [0.35, -0.15, -0.15, -0.15, -0.15]
+        expected_next_delta = [-0.15, -0.15, -0.15, -0.15, 0.35]
+    else:
+        expected_prev_table = acd_reconstruction.prev_bpm_to_pi_2(tws_bpm["mu1"], 1.0)
+        expected_next_table = acd_reconstruction.next_bpm_to_pi_2(tws_bpm["mu1"], 1.0)
+        expected_prev = expected_prev_table["prev_bpm"].tolist()
+        expected_next = expected_next_table["next_bpm"].tolist()
+        expected_prev_delta = expected_prev_table["delta"].tolist()
+        expected_next_delta = expected_next_table["delta"].tolist()
+
+    assert prev_x[PREV.bpm_x].tolist() == expected_prev
+    assert prev_y[PREV.bpm_y].tolist() == expected_prev
+    assert next_x[NEXT.bpm_x].tolist() == expected_next
+    assert next_y[NEXT.bpm_y].tolist() == expected_next
+    assert np.allclose(prev_x[PREV.delta_x].to_numpy(dtype=float), expected_prev_delta)
+    assert np.allclose(prev_y[PREV.delta_y].to_numpy(dtype=float), expected_prev_delta)
+    assert np.allclose(next_x[NEXT.delta_x].to_numpy(dtype=float), expected_next_delta)
+    assert np.allclose(next_y[NEXT.delta_y].to_numpy(dtype=float), expected_next_delta)
 
 
 @pytest.mark.slow

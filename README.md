@@ -41,7 +41,6 @@ from tmom_recon import (
     calculate_pz_measurement,
     calculate_transverse_pz,
     calculate_transverse_pz_nbpm,
-    combine_momentum_blue,
     inject_noise_xy_inplace,
 )
 ```
@@ -50,7 +49,7 @@ Main modules:
 
 - `tmom_recon.physics`: two-BPM transverse and dispersive momentum formulae.
 - `tmom_recon.measurements`: measured `delta p / p` and Twiss reconstruction helpers.
-- `tmom_recon.nbpm`: n-BPM pair building, covariance assembly, and BLUE combination.
+- `tmom_recon.nbpm`: n-BPM transverse reconstruction.
 - `tmom_recon.acd`: AC-dipole reconstruction and MAD-NG integration helpers.
 - `tmom_recon.kalman`: Kalman-based reconstruction utilities.
 - `tmom_recon.lattice`: neighbor and lattice helper functions.

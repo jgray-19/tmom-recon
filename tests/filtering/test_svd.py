@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tmom_recon.svd import svd_clean_measurements
+from tmom_recon.svd import svd_clean_measurements, weighted_svd_clean_measurements
 
 
 class TestSvdCleanMeasurements:
@@ -233,3 +233,100 @@ class TestSvdCleanMeasurements:
 
         assert x_err2 < x_err1
         assert y_err2 < y_err1
+
+
+class TestWeightedSvdCleanMeasurements:
+    """Tests for weighted SVD cleaning."""
+
+    def test_requires_variance_columns(self) -> None:
+        meas_df = pd.DataFrame(
+            {
+                "turn": [0, 0],
+                "name": ["BPM1", "BPM2"],
+                "x": [0.1, 0.2],
+                "y": [0.3, 0.4],
+            }
+        )
+
+        with pytest.raises(ValueError, match=r"requires columns: var_x, var_y"):
+            weighted_svd_clean_measurements(meas_df, rank=1)
+
+    def test_requires_positive_finite_variances_for_observed_values(self) -> None:
+        meas_df = pd.DataFrame(
+            {
+                "turn": [0, 0],
+                "name": ["BPM1", "BPM2"],
+                "x": [0.1, 0.2],
+                "y": [0.3, 0.4],
+                "var_x": [1.0, 0.0],
+                "var_y": [1.0, 1.0],
+            }
+        )
+
+        with pytest.raises(
+            ValueError, match=r"requires finite positive horizontal measurement variances"
+        ):
+            weighted_svd_clean_measurements(meas_df, rank=1)
+
+    def test_heteroskedastic_weighting_improves_trusted_bpms(self) -> None:
+        rng = np.random.default_rng(123)
+        turns = np.arange(120)
+        bpms = ["BPM1", "BPM2", "BPM3", "BPM4"]
+        clean_rows = []
+        noisy_rows = []
+        low_noise_bpms = {"BPM1", "BPM2"}
+        noise_sigma = {"BPM1": 0.05, "BPM2": 0.05, "BPM3": 0.6, "BPM4": 0.6}
+
+        for turn in turns:
+            mode_1 = np.sin(turn * 0.08)
+            mode_2 = np.cos(turn * 0.05)
+            for idx, bpm in enumerate(bpms):
+                x_clean = 0.8 * mode_1 + 0.4 * idx * mode_2
+                y_clean = 0.6 * mode_2 - 0.3 * idx * mode_1
+                sigma = noise_sigma[bpm]
+                clean_rows.append({"turn": turn, "name": bpm, "x": x_clean, "y": y_clean})
+                noisy_rows.append(
+                    {
+                        "turn": turn,
+                        "name": bpm,
+                        "x": x_clean + rng.normal(0.0, sigma),
+                        "y": y_clean + rng.normal(0.0, sigma),
+                        "var_x": sigma**2,
+                        "var_y": sigma**2,
+                    }
+                )
+
+        clean_df = pd.DataFrame(clean_rows)
+        noisy_df = pd.DataFrame(noisy_rows)
+
+        unweighted_df = svd_clean_measurements(noisy_df, bpm_list=bpms, rank=2)
+        weighted_df = weighted_svd_clean_measurements(noisy_df, bpm_list=bpms, rank=2)
+
+        trusted_mask = clean_df["name"].isin(low_noise_bpms)
+        x_err_unweighted = float(
+            np.sqrt(
+                np.mean(
+                    (unweighted_df.loc[trusted_mask, "x"] - clean_df.loc[trusted_mask, "x"]) ** 2
+                )
+            )
+        )
+        x_err_weighted = float(
+            np.sqrt(
+                np.mean((weighted_df.loc[trusted_mask, "x"] - clean_df.loc[trusted_mask, "x"]) ** 2)
+            )
+        )
+        y_err_unweighted = float(
+            np.sqrt(
+                np.mean(
+                    (unweighted_df.loc[trusted_mask, "y"] - clean_df.loc[trusted_mask, "y"]) ** 2
+                )
+            )
+        )
+        y_err_weighted = float(
+            np.sqrt(
+                np.mean((weighted_df.loc[trusted_mask, "y"] - clean_df.loc[trusted_mask, "y"]) ** 2)
+            )
+        )
+
+        assert x_err_weighted < x_err_unweighted
+        assert y_err_weighted < y_err_unweighted

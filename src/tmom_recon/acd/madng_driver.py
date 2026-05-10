@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
-from pymadng_utils.accelerators import Accelerator
 from pymadng_utils.mad import KnobMadInterface
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from pymadng_utils.accelerators import Accelerator
 
 N_COORD = 4
 
@@ -44,8 +48,6 @@ class ACDipoleTrackingError(RuntimeError):
 class ACDipoleMadDriver(KnobMadInterface):
     """Simplified MAD-NG driver dedicated to AC-dipole state tracking.
 
-    This strips away all Kalman-specific sensitivity and knob machinery and only
-    keeps what the AC-dipole reconstruction needs:
     - accelerator-owned sequence loading and beam setup,
     - optional cycling to a chosen BPM,
     - observation of BPMs plus the requested AC-dipole element,
@@ -147,13 +149,13 @@ tbl, flw = track {
     observe=1,
     deltap=DELTAP
 }
-py:send(true)
+py:send(flw.tpar == flw.npar)
 --end
 """
         ).send(range_name).send(x0_particles).send(direction)
         try:
             if not bool(self.mad.recv()):
-                raise RuntimeError("Unexpected acknowledgement from MAD-NG track call")
+                raise RuntimeError("Could not confirm all particles tracked successfully")
             track_df = self.mad.tbl.to_df(force_pandas=True)
         except Exception as exc:
             raise ACDipoleTrackingError(

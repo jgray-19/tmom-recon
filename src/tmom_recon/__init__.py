@@ -12,7 +12,7 @@ from .acd.integration import ACDipoleConfig
 from .acd.reconstruction import calculate_ac_dipole_momentum
 from .measurements.dispersive_measurement import calculate_pz_measurement
 from .measurements.twiss_from_measurement import build_twiss_from_measurements
-from .nbpm import calculate_transverse_pz_nbpm, combine_momentum_blue
+from .nbpm import calculate_transverse_pz_nbpm
 from .physics.dispersive import calculate_pz as calculate_dispersive_pz
 from .physics.transverse import calculate_pz as calculate_transverse_pz
 from .physics.transverse import inject_noise_xy_inplace
@@ -25,6 +25,5 @@ __all__ = [
     "calculate_transverse_pz_nbpm",
     "calculate_transverse_pz",
     "calculate_pz_measurement",
-    "combine_momentum_blue",
     "inject_noise_xy_inplace",
 ]

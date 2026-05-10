@@ -146,7 +146,14 @@ def _require_neighbor_name(value: object, bpm_name: str, plane: str, direction: 
 
 def _prepare_neighbor_tables(
     tws_bpm: pd.DataFrame,
+    use_immediate_neighbors_for_bpms: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Prepare neighbor BPM lookup tables.
+
+    Args:
+        tws_bpm: Twiss dataframe indexed by BPM names
+        use_immediate_neighbors_for_bpms: If True, use the immediate neighboring BPMs in the lattice as the pi/2 BPMs for all BPMs, instead of the BPMs at the closest pi/2 phase advance. This can be useful for very sparse BPM configurations where the pi/2 BPMs are very far from the primary BPMs, but may lead to worse reconstruction quality if the immediate neighbors are not close to pi/2 phase advance.
+    """
     q1 = _get_tune(tws_bpm, "q1")
     q2 = _get_tune(tws_bpm, "q2")
 
@@ -162,6 +169,34 @@ def _prepare_neighbor_tables(
     next_y = next_bpm_to_pi_2(tws_bpm["mu2"], q2).rename(
         columns={"next_bpm": NEXT.bpm_y, "delta": NEXT.delta_y}
     )
+
+    if use_immediate_neighbors_for_bpms:
+        # Use immediate lattice neighbors instead of π/2 phase neighbors
+        bpm_order = pd.Series(tws_bpm.index.astype(str), index=tws_bpm.index)
+        prev_names = bpm_order.shift(1).fillna(bpm_order.iloc[-1])
+        next_names = bpm_order.shift(-1).fillna(bpm_order.iloc[0])
+        prev_x[PREV.bpm_x] = prev_names
+        prev_y[PREV.bpm_y] = prev_names
+        next_x[NEXT.bpm_x] = next_names
+        next_y[NEXT.bpm_y] = next_names
+
+        # Recalculate delta values from the phase advances in mu1/mu2, not from s.
+        # The momentum formulas expect delta = actual_phase_advance - 0.25.
+        mu1 = pd.Series(tws_bpm["mu1"].to_numpy(dtype=float), index=tws_bpm.index)
+        mu2 = pd.Series(tws_bpm["mu2"].to_numpy(dtype=float), index=tws_bpm.index)
+        q1 = _get_tune(tws_bpm, "q1")
+        q2 = _get_tune(tws_bpm, "q2")
+
+        prev_phase_x = (mu1 - mu1.shift(1).fillna(mu1.iloc[-1]) + q1) % q1
+        prev_phase_y = (mu2 - mu2.shift(1).fillna(mu2.iloc[-1]) + q2) % q2
+        next_phase_x = (mu1.shift(-1).fillna(mu1.iloc[0]) - mu1 + q1) % q1
+        next_phase_y = (mu2.shift(-1).fillna(mu2.iloc[0]) - mu2 + q2) % q2
+
+        prev_x[PREV.delta_x] = prev_phase_x - 0.25
+        prev_y[PREV.delta_y] = prev_phase_y - 0.25
+        next_x[NEXT.delta_x] = next_phase_x - 0.25
+        next_y[NEXT.delta_y] = next_phase_y - 0.25
+
     return prev_x, prev_y, next_x, next_y
 
 
@@ -277,8 +312,11 @@ def _prepare_direct_bpm_reconstruction(
     *,
     window: ACDipoleBPMWindow,
     bpm_index: dict[str, int],
+    use_immediate_neighbors_for_bpms: bool = False,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
-    prev_x, prev_y, next_x, next_y = _prepare_neighbor_tables(tws_bpm)
+    prev_x, prev_y, next_x, next_y = _prepare_neighbor_tables(
+        tws_bpm, use_immediate_neighbors_for_bpms=use_immediate_neighbors_for_bpms
+    )
     upstream_frames = {
         bpm_name: _prepare_prev_reconstruction(
             data,
@@ -545,13 +583,14 @@ def calculate_ac_dipole_momentum(
     smooth_lambda: float = 1,
     inject_noise: bool | float = True,
     rng: np.random.Generator | None = None,
+    use_immediate_neighbors_for_bpms: bool = False,
 ) -> pd.DataFrame:
     """Reconstruct AC-dipole kicks and constrained BPM momenta.
 
     The kick itself is fitted from the raw pre/post ACD momentum difference. The
     cleaned BPM momenta are then obtained by:
     1. tracking local BPM state estimates to the ACD from each selected BPM,
-     2. solving a global weighted linear least-squares problem for the pre/post
+    2. solving a global weighted linear least-squares problem for the pre/post
          ACD momenta constrained by the fitted kick waveform, with tunable
          smoothness strength ``smooth_lambda``, and
     3. using the ACD-side momentum correction as a variance-weighted update to
@@ -604,6 +643,7 @@ def calculate_ac_dipole_momentum(
         tws_bpm,
         window=window,
         bpm_index=bpm_index,
+        use_immediate_neighbors_for_bpms=use_immediate_neighbors_for_bpms,
     )
     (
         result,

@@ -134,16 +134,17 @@ def _compute_delta(
 
 
 def _valid_mask(eta_1, eta_bar, eta_tilde, den) -> np.ndarray:
-    valid_dx = (
-        ~np.isclose(eta_1, 0.0, atol=DX_TOL)
-        & ~np.isclose(eta_bar, 0.0, atol=DX_TOL)
-        & ~np.isclose(eta_tilde, 0.0, atol=DX_TOL)
-        & (eta_1 > 0.0)
-        & (eta_bar > 0.0)
-        & (eta_tilde > 0.0)
-    )
-    valid_den = np.abs(den) > DEN_TOL
-    return valid_dx & valid_den
+    # valid_dx = (
+    #     ~np.isclose(eta_1, 0.0, atol=DX_TOL)
+    #     & ~np.isclose(eta_bar, 0.0, atol=DX_TOL)
+    #     & ~np.isclose(eta_tilde, 0.0, atol=DX_TOL)
+    #     & (eta_1 > 0.0)
+    #     & (eta_bar > 0.0)
+    #     & (eta_tilde > 0.0)
+    # )
+    # valid_den = np.abs(den) > DEN_TOL
+    # return valid_dx & valid_den
+    return np.abs(den) > DEN_TOL
 
 
 def _maybe_log_stats(delta: np.ndarray, info: bool, label: str = "") -> None:
