@@ -8,6 +8,17 @@ higher-level workflows for dispersive momentum estimation, n-BPM BLUE
 combination, AC-dipole reconstruction, lattice helpers, and accelerator
 descriptors used by the MAD-NG drivers.
 
+## Requirements
+
+- Python 3.11 or newer
+- `numpy`, `pandas`, `scipy`, `tfs-pandas`, `omc3`
+
+Optional workflows need extra packages:
+
+- AC-dipole reconstruction and MAD-NG-driven tests also rely on `pymadng_utils`
+  and `xtrack-tools`
+- local development uses `pytest`, `pytest-cov`, `ruff`, and `pre-commit`
+
 ## Install
 
 Base install:
@@ -27,6 +38,9 @@ With development dependencies:
 ```bash
 python -m pip install -e '.[dev,test]'
 ```
+
+If you plan to use the AC-dipole reconstruction helpers, install the external
+tracking stack in the same environment as well.
 
 ## Public API
 
@@ -50,7 +64,7 @@ Main modules:
 - `tmom_recon.physics`: two-BPM transverse and dispersive momentum formulae.
 - `tmom_recon.measurements`: measured `delta p / p` and Twiss reconstruction helpers.
 - `tmom_recon.nbpm`: n-BPM transverse reconstruction.
-- `tmom_recon.acd`: AC-dipole reconstruction and MAD-NG integration helpers.
+- `tmom_recon.acd`: AC-dipole reconstruction, BPM override, and MAD-NG integration helpers.
 - `tmom_recon.kalman`: Kalman-based reconstruction utilities.
 - `tmom_recon.lattice`: neighbor and lattice helper functions.
 
@@ -66,6 +80,10 @@ result = calculate_transverse_pz(
     twiss_df,
 )
 ```
+
+`tracking_df` is expected to contain turn-by-turn BPM rows with at least
+`name`, `turn`, `x`, `y`, `var_x`, and `var_y`. The Twiss frame is expected to
+be indexed by BPM element name.
 
 Dispersive momentum reconstruction:
 
@@ -92,7 +110,7 @@ nbpm_result = calculate_transverse_pz_nbpm(
 AC-dipole workflow:
 
 ```python
-from tmom_recon import calculate_ac_dipole_momentum
+from tmom_recon import ACDipoleConfig, calculate_ac_dipole_momentum
 
 acd_result = calculate_ac_dipole_momentum(
     tracking_df,
@@ -101,6 +119,11 @@ acd_result = calculate_ac_dipole_momentum(
     model=acd_model,
 )
 ```
+
+The `model` object must provide the MAD-NG tracking interface used by
+`tmom_recon.acd.madng_driver.ACDipoleMadDriver`. If you are integrating the
+result back into transverse or n-BPM reconstruction, use `ACDipoleConfig`
+through the higher-level APIs rather than wiring the BPM overrides yourself.
 
 Accelerator descriptors for driver setup:
 
@@ -113,6 +136,23 @@ accelerator = LHC(
     kinetic_energy=6800,
 )
 ```
+
+## Testing
+
+Fast unit tests:
+
+```bash
+pytest -m "not slow"
+```
+
+Full suite:
+
+```bash
+pytest
+```
+
+Some slow integration tests require the external MAD-NG / xtrack toolchain and
+machine sequence data to be available in the active environment.
 
 ## Momentum Reconstruction Formulae
 
@@ -225,3 +265,16 @@ Run linting:
 ```bash
 ruff check .
 ```
+
+Build the documentation:
+
+```bash
+python -m pip install -e '.[docs]'
+sphinx-build -b html docs docs/_build/html
+```
+
+Deploy the documentation with GitHub Pages:
+
+- the repository includes [`.github/workflows/docs-pages.yml`](/afs/cern.ch/work/j/jmgray/private/tmom-recon/.github/workflows/docs-pages.yml)
+- GitHub Pages should be configured to deploy from `GitHub Actions`
+- pushes to `main` trigger a fresh docs build and publish
