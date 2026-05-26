@@ -15,3 +15,8 @@ tmom_recon.lattice
    :members:
    :undoc-members:
    :show-inheritance:
+
+.. automodule:: tmom_recon.lattice.transport
+   :members:
+   :undoc-members:
+   :show-inheritance:

@@ -65,8 +65,9 @@ Main modules:
 - `tmom_recon.measurements`: measured `delta p / p` and Twiss reconstruction helpers.
 - `tmom_recon.nbpm`: n-BPM transverse reconstruction.
 - `tmom_recon.acd`: AC-dipole reconstruction, BPM override, and MAD-NG integration helpers.
+- `tmom_recon.kicker`: single-kick reconstruction helpers based on kicker-to-BPM transport.
 - `tmom_recon.kalman`: Kalman-based reconstruction utilities.
-- `tmom_recon.lattice`: neighbor and lattice helper functions.
+- `tmom_recon.lattice`: neighbor, lattice, and transport-matrix helper functions.
 
 ## Usage
 
@@ -124,6 +125,24 @@ The `model` object must provide the MAD-NG tracking interface used by
 `tmom_recon.acd.madng_driver.ACDipoleMadDriver`. If you are integrating the
 result back into transverse or n-BPM reconstruction, use `ACDipoleConfig`
 through the higher-level APIs rather than wiring the BPM overrides yourself.
+
+Kicker-based single-turn reconstruction:
+
+```python
+from tmom_recon.kicker.core import reconstruct_momentum_kick
+
+kicker_result = reconstruct_momentum_kick(
+    tracking_df,
+    twiss_df,
+    n_turns_free=1000,
+    n_turns_after_kick=3,
+)
+```
+
+This lower-level helper is intended for datasets with a single clear kicker
+excitation. It removes the closed orbit, identifies the kick turn, and solves
+the kicker-to-BPM transport equation using the Twiss-parameterized transfer
+matrix between the kicker and the first downstream BPM response.
 
 Accelerator descriptors for driver setup:
 
@@ -245,7 +264,7 @@ var(p^) = 1 / (1 / \sigma_a^2 + 1 / \sigma_b^2)
 Install the editable development environment first:
 
 ```bash
-python -m pip install -e '.[dev,test]'
+python -m pip install -e '.[dev,test,docs]'
 ```
 
 Set up hooks:

@@ -9,6 +9,7 @@ reconstruction:
 - two-BPM transverse and dispersive reconstruction
 - n-BPM combination
 - AC-dipole reconstruction and BPM override helpers
+- kicker-based single-turn reconstruction
 - lattice and measurement utilities
 - Kalman-based reconstruction helpers
 

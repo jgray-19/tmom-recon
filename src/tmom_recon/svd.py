@@ -193,14 +193,19 @@ def _prepare_column_scales(
     """
     invalid_mask = observed_mask & (~np.isfinite(variance_matrix) | (variance_matrix <= 0.0))
     if np.any(invalid_mask):
-        raise ValueError(
-            f"Weighted SVD cleaning requires finite positive {component} variances for all observed values"
+        n_invalid_bpms = int(np.any(invalid_mask, axis=0).sum())
+        logger.warning(
+            "Ignoring %d BPM(s) with non-finite or non-positive %s variances in weighted SVD",
+            n_invalid_bpms,
+            component,
         )
+        observed_mask = observed_mask & ~invalid_mask
 
     column_scales = np.full((1, variance_matrix.shape[1]), np.nan, dtype=float)
     for column_index in range(variance_matrix.shape[1]):
         column_variances = variance_matrix[:, column_index][observed_mask[:, column_index]]
-        column_scales[0, column_index] = np.sqrt(float(np.median(column_variances)))
+        if column_variances.size > 0:
+            column_scales[0, column_index] = np.sqrt(float(np.median(column_variances)))
     return column_scales
 
 
@@ -241,6 +246,10 @@ def _svd_clean_matrix(
         column_scales = _prepare_column_scales(
             variance_matrix, ~missing_mask, component=variance_name
         )
+        invalid_columns = np.isnan(column_scales[0])
+        if np.any(invalid_columns):
+            missing_mask[:, invalid_columns] = True
+            filled_matrix[:, invalid_columns] = np.nan
         weights = np.broadcast_to(1.0 / (column_scales**2), filled_matrix.shape)
         centre_offset = _compute_centre(filled_matrix, centre, weights=weights)
         centred_matrix = filled_matrix - centre_offset

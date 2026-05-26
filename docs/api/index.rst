@@ -9,6 +9,7 @@ The pages are grouped by subsystem:
 - ``physics`` for the main reconstruction formulae
 - ``measurements`` for measurement-pipeline helpers
 - ``nbpm`` and ``acd`` for higher-level reconstruction workflows
+- ``kicker`` for single-turn kick reconstruction
 - ``lattice``, ``kalman``, and ``data`` for supporting infrastructure
 
 .. toctree::
@@ -19,6 +20,7 @@ The pages are grouped by subsystem:
    measurements
    nbpm
    acd
+   kicker
    lattice
    kalman
    data

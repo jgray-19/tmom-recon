@@ -33,6 +33,7 @@ Development dependencies
 ------------------------
 
 This is the usual working environment for editing code in the repository.
+It installs the development and test extras, but not the docs toolchain.
 
 .. code-block:: bash
 
@@ -67,6 +68,7 @@ Once the docs extra is installed, build the HTML site with:
 
 .. code-block:: bash
 
+   python -m pip install -e '.[docs]'
    sphinx-build -b html docs docs/_build/html
 
 The generated site is written to ``docs/_build/html``.

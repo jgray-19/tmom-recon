@@ -127,6 +127,27 @@ Using ``ACDipoleConfig`` in higher-level reconstruction
 This pattern is preferable when AC-dipole-corrected BPM momenta are only an
 intermediate step inside a larger reconstruction call.
 
+Kicker-based single-turn reconstruction
+---------------------------------------
+
+The package also contains a lower-level helper for single-kick datasets:
+
+.. code-block:: python
+
+   from tmom_recon.kicker.core import reconstruct_momentum_kick
+
+   kicker_result = reconstruct_momentum_kick(
+       tracking_df,
+       twiss_df,
+       n_turns_free=1000,
+       n_turns_after_kick=3,
+   )
+
+This workflow is intended for turn-by-turn data with one clear kicker
+excitation. It subtracts the closed orbit, detects the kick turn, then solves
+the linear transport equation from the kicker to the first downstream BPM
+response using the Twiss-parameterized transfer matrix.
+
 Measurement-driven Twiss reconstruction
 ---------------------------------------
 
@@ -135,10 +156,26 @@ measurement data:
 
 .. code-block:: python
 
-   from tmom_recon import build_twiss_from_measurements, calculate_pz_measurement
+   from tmom_recon import calculate_pz_measurement
 
-   measurement_twiss = build_twiss_from_measurements(measurement_df)
-   pz_measurement = calculate_pz_measurement(measurement_df, model_twiss)
+   pz_measurement = calculate_pz_measurement(
+       tracking_df,
+       measurement_folder,
+       model_twiss,
+       reverse_meas_tws=False,
+   )
+
+To build a Twiss-like dataframe directly from optics measurement files:
+
+.. code-block:: python
+
+   from pathlib import Path
+   from tmom_recon import build_twiss_from_measurements
+
+   measurement_twiss, dispersion_found = build_twiss_from_measurements(
+       Path(measurement_folder),
+       include_errors=False,
+   )
 
 Building the docs
 -----------------
