@@ -13,45 +13,6 @@ KICK_TURN = 10
 NTURNS = 20
 
 
-def build_twiss_for_recon(tws, tkicker_name: str) -> pd.DataFrame:
-    """Convert xtrack TwissTable to the format expected by reconstruct_momentum_kick.
-
-    Renames Twiss columns to the internal convention (``beta11``, ``alfa11``,
-    ``mu1`` etc.), uppercases element names, filters to BPM rows, and appends a
-    row named ``"kicker"`` at the tkicker position.
-
-    Args:
-        tws: xtrack ``TwissTable`` returned by ``line.twiss()``.
-        tkicker_name: Name of the tkicker element as it appears in the xtrack
-            line (case-insensitive; will be upper-cased internally).
-
-    Returns:
-        DataFrame indexed by element name with all BPM rows plus a
-        ``"kicker"`` row carrying the Twiss parameters at the kick location.
-    """
-    df = tws.to_pandas()
-    df["name"] = df["name"].str.upper()
-    df = df.rename(
-        columns={
-            "betx": "beta11",
-            "bety": "beta22",
-            "alfx": "alfa11",
-            "alfy": "alfa22",
-            "mux": "mu1",
-            "muy": "mu2",
-        }
-    )
-    df = df.set_index("name")
-
-    kicker_row = df.loc[tkicker_name.upper()].copy()
-    kicker_row.name = "kicker"
-
-    bpm_df = df[df.index.str.match(r"(?i)^BPM")]
-    result = pd.concat([bpm_df, kicker_row.to_frame().T])
-    result.index.name = "name"
-    return result
-
-
 @dataclass
 class KickerTrackResult:
     """Cached output of a single-turn kicker tracking run.
