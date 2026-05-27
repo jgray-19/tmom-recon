@@ -6,13 +6,14 @@ from pathlib import Path
 
 import pytest
 
+from tmom_recon.kicker import build_twiss_for_recon
+
 from .kicker_test_utils import (
     KICK_TURN,
     KICKER_CASES,
     NTURNS,
     TKICKER_NAME,
     KickerTrackResult,
-    build_twiss_for_recon,
 )
 
 
