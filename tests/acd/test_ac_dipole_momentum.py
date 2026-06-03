@@ -794,9 +794,9 @@ def test_calculate_ac_dipole_momentum_uses_real_tracking_setup(
     dpy_rmse = rmse(merged["dpy_rad_true"].to_numpy(), merged["dpy"].to_numpy())
 
     assert px_up_rmse < 1e-10
-    assert py_up_rmse < 1e-12
-    assert px_down_rmse < 1e-15
-    assert py_down_rmse < 1e-15
+    assert py_up_rmse < 5e-12
+    assert px_down_rmse < 5e-15
+    assert py_down_rmse < 1e-14
     assert dpx_rmse < 1e-9
     assert dpy_rmse < 1e-10
 

@@ -251,7 +251,7 @@ class TestWeightedSvdCleanMeasurements:
         with pytest.raises(ValueError, match=r"requires columns: var_x, var_y"):
             weighted_svd_clean_measurements(meas_df, rank=1)
 
-    def test_requires_positive_finite_variances_for_observed_values(self) -> None:
+    def test_ignores_non_positive_or_non_finite_variances_for_observed_values(self) -> None:
         meas_df = pd.DataFrame(
             {
                 "turn": [0, 0],
@@ -263,10 +263,11 @@ class TestWeightedSvdCleanMeasurements:
             }
         )
 
-        with pytest.raises(
-            ValueError, match=r"requires finite positive horizontal measurement variances"
-        ):
-            weighted_svd_clean_measurements(meas_df, rank=1)
+        result = weighted_svd_clean_measurements(meas_df, rank=1)
+
+        assert len(result) == len(meas_df)
+        assert np.isfinite(result.loc[result["name"] == "BPM1", "x"]).all()
+        assert pd.isna(result.loc[result["name"] == "BPM2", "x"]).all()
 
     def test_heteroskedastic_weighting_improves_trusted_bpms(self) -> None:
         rng = np.random.default_rng(123)

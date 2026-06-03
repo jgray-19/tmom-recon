@@ -67,12 +67,12 @@ def test_dispersive_measurement_with_uncertainties(
 
     # Generate fake measurements from the twiss
     temp_dir = tmp_path / "dispersive_measurement_uncertainties"
-    rel_errors = [1e-2] if add_noise else [0.0]
+    rel_errors = [1e-2] if add_noise else [1e-12]
     generate_fake_measurement(
         twiss=madx_tws,
         outputdir=temp_dir,
         parameters=["BETX", "BETY", "DX", "DY", "PHASEX", "PHASEY", "X", "Y"],
-        relative_errors=rel_errors,  # Add 1% relative errors if noisy
+        relative_errors=rel_errors,  # Keep tiny positive errors in the no-noise branch for compatibility
         randomize=["values", "errors"] if add_noise else [],
         seed=1234,
     )
