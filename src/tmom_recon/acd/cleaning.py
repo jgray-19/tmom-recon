@@ -33,10 +33,7 @@ def _align_estimate_component(
     variances = []
     for table in estimate_tables:
         aligned = pd.DataFrame({"turn": turns}).merge(
-            table[["turn", value_col, variance_col]],
-            on="turn",
-            how="left",
-            copy=False,
+            table[["turn", value_col, variance_col]], on="turn", how="left"
         )
         values.append(aligned[value_col].to_numpy(dtype=float))
         variances.append(aligned[variance_col].to_numpy(dtype=float))
@@ -112,7 +109,6 @@ def _align_table_columns(
         table[["turn", value_col, variance_col]],
         on="turn",
         how="left",
-        copy=False,
     )
     return (
         aligned[value_col].to_numpy(dtype=float),

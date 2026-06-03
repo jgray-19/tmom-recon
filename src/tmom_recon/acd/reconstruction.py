@@ -219,8 +219,8 @@ def _merge_prev_neighbor_data(
         columns={"turn": "turn_y_p", "name": PREV.bpm_y, "y": PREV.y, "var_y": PREV.var_y}
     )
 
-    rows = rows.merge(x_coords, on=["turn_x_p", PREV.bpm_x], how="left", copy=False)
-    rows = rows.merge(y_coords, on=["turn_y_p", PREV.bpm_y], how="left", copy=False)
+    rows = rows.merge(x_coords, on=["turn_x_p", PREV.bpm_x], how="left")
+    rows = rows.merge(y_coords, on=["turn_y_p", PREV.bpm_y], how="left")
     return rows.drop(columns=["turn_x_p", "turn_y_p"])
 
 
@@ -243,8 +243,8 @@ def _merge_next_neighbor_data(
         columns={"turn": "turn_y_n", "name": NEXT.bpm_y, "y": NEXT.y, "var_y": NEXT.var_y}
     )
 
-    rows = rows.merge(x_coords, on=["turn_x_n", NEXT.bpm_x], how="left", copy=False)
-    rows = rows.merge(y_coords, on=["turn_y_n", NEXT.bpm_y], how="left", copy=False)
+    rows = rows.merge(x_coords, on=["turn_x_n", NEXT.bpm_x], how="left")
+    rows = rows.merge(y_coords, on=["turn_y_n", NEXT.bpm_y], how="left")
     return rows.drop(columns=["turn_x_n", "turn_y_n"])
 
 
@@ -544,7 +544,7 @@ def _merge_primary_bpm_results(
     downstream_out = downstream_frame[["turn", "px", "py"]].rename(
         columns={"px": "px_bpm_downstream", "py": "py_bpm_downstream"}
     )
-    return result.merge(downstream_out, on="turn", how="inner", copy=False)
+    return result.merge(downstream_out, on="turn", how="inner")
 
 
 def _build_ac_dipole_headers(
