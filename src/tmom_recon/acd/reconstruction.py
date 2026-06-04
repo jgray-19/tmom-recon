@@ -100,25 +100,34 @@ def _estimate_dominant_tune(turns: np.ndarray, values: np.ndarray) -> float:
         257,
     )
 
-    best_sse = float("inf")
-    best_tune = tune_guess
-    for tune in tune_grid:
-        omega = 2.0 * np.pi * tune
-        design = np.column_stack(
-            [
-                np.sin(omega * turn_array),
-                np.cos(omega * turn_array),
-                np.ones_like(turn_array),
-            ]
-        )
-        coeffs, *_ = np.linalg.lstsq(design, value_array, rcond=None)
-        residual = value_array - design @ coeffs
-        sse = float(np.dot(residual, residual))
-        if sse < best_sse:
-            best_sse = sse
-            best_tune = float(tune)
+    omega_grid = 2.0 * np.pi * tune_grid  # (257,)
+    sin_t = np.sin(np.outer(omega_grid, turn_array))  # (257, T)
+    cos_t = np.cos(np.outer(omega_grid, turn_array))  # (257, T)
 
-    return best_tune
+    # Normal equations D^T D (257 × 3×3) without building (257, T, 3) intermediate.
+    # D columns: [sin, cos, 1].  Unique symmetric entries:
+    ss = (sin_t * sin_t).sum(axis=1)  # (257,)
+    sc = (sin_t * cos_t).sum(axis=1)
+    s1 = sin_t.sum(axis=1)
+    cc = (cos_t * cos_t).sum(axis=1)
+    c1 = cos_t.sum(axis=1)
+    nn = float(len(turn_array))
+    dtd = np.array([[ss, sc, s1], [sc, cc, c1], [s1, c1, np.full(len(tune_grid), nn)]]).transpose(
+        2, 0, 1
+    )  # (257, 3, 3)
+    dty = np.column_stack(
+        [
+            sin_t @ value_array,
+            cos_t @ value_array,
+            np.full(len(tune_grid), value_array.sum()),
+        ]
+    )  # (257, 3)
+
+    theta = np.linalg.solve(dtd, dty[:, :, None]).squeeze(-1)  # (257, 3)
+    # SSE = ||y||^2 - y^T D theta  (no need to compute fitted explicitly)
+    yty = float(np.dot(value_array, value_array))
+    sse = yty - np.einsum("gi,gi->g", dty, theta)  # (257,)
+    return float(tune_grid[int(np.argmin(sse))])
 
 
 def _normalise_measurement_names(data: pd.DataFrame, tws_names: list[str]) -> pd.DataFrame:
@@ -432,12 +441,8 @@ def _transport_to_marker(
         raise ValueError(f"direction must be +/- 1, got {direction}")
 
     source_state = frame[["x", "px", "y", "py"]].to_numpy(dtype=float)
-    marker_state = model.track_particles(
-        source_name,
-        marker_name,
-        source_state,
-        direction=direction,
-    )
+    transfer_mat = model.transfer_matrix(source_name, marker_name, direction=direction)
+    marker_state = source_state @ transfer_mat
     return ACDipoleStateSeries(
         marker_state[:, 0],
         marker_state[:, 1],

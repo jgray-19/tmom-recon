@@ -5,33 +5,23 @@ from __future__ import annotations
 import pytest
 from omc3.scripts.fake_measurement_from_model import generate as generate_fake_measurement
 from pymadng_utils.madx import convert_tfs_to_madx
-from xtrack_tools.acd import run_acd_track
 
 from tmom_recon import calculate_pz_measurement
 
-from .momentum_test_utils import add_error_to_orbit_measurement, get_truth, rmse, xsuite_to_ngtws
+from .momentum_test_utils import add_error_to_orbit_measurement, rmse
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize("seq_file", ["lhcb1.seq", "b1_120cm_crossing.seq"])
 @pytest.mark.parametrize("delta_p", [0.0, 4e-4])
 def test_dispersive_measurement_recovers_dpp(
-    data_dir, seq_file, tmp_path, delta_p, xsuite_json_path
+    data_dir, seq_file, tmp_path, delta_p, acd_tracking_setup
 ):
     """Test that calculate_pz_measurement recovers the true DPP from measurements."""
-    seq = data_dir / "sequences" / seq_file
-    json_path = xsuite_json_path(seq_file)
-
-    tracking_df, full_tws, baseline_line = run_acd_track(
-        sequence_file=seq,
-        delta_p=delta_p,
-        ramp_turns=1000,
-        flattop_turns=100,
-        json_path=json_path,
-    )
-
-    ng_tws = xsuite_to_ngtws(full_tws)
-    truth = get_truth(tracking_df, ng_tws)
+    setup = acd_tracking_setup(seq_file, data_dir, delta_p=delta_p)
+    tracking_df = setup["tracking_df"]
+    ng_tws = setup["tws"]
+    truth = setup["truth"]
 
     # Since the above gets only BPMs, we disable drift removal to keep names consistent
     # Drop mu1 and mu2 to avoid issues in conversion

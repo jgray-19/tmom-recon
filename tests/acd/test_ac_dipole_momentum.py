@@ -13,7 +13,6 @@ import pytest
 import tfs
 from matplotlib import pyplot as plt
 from pymadng_utils.accelerators import LHC
-from xtrack_tools.acd import run_acd_track
 
 pytest.importorskip("pymadng_utils")
 pytest.importorskip("xtrack_tools")
@@ -69,28 +68,39 @@ class _IdentityAcdModel:
         del source_name, marker_name, direction
         return np.asarray(source_state, dtype=float)
 
+    def transfer_matrix(
+        self,
+        source_name: str,
+        marker_name: str,
+        *,
+        direction: int,
+    ) -> np.ndarray:
+        del source_name, marker_name, direction
+        return np.eye(4)
+
 
 def _get_setup(
     seq_file: str,
     data_dir: Path,
-    xsuite_json_path,
+    acd_tracking_setup,
     *,
     delta_p: float = 0.0,
     ramp_turns: int = 1000,
     flattop_turns: int = 1000,
 ):
-    seq = data_dir / "sequences" / seq_file
-    json_path = xsuite_json_path(seq_file)
-    tracking_df, tws, baseline_line = run_acd_track(
-        json_path=json_path,
-        sequence_file=seq,
+    setup = acd_tracking_setup(
+        seq_file,
+        data_dir,
         delta_p=delta_p,
         ramp_turns=ramp_turns,
         flattop_turns=flattop_turns,
     )
-    tws = xsuite_to_ngtws(tws)
-    truth = get_truth(tracking_df, tws)
-    return tracking_df, tws, truth, baseline_line.twiss(method="4d")
+    return (
+        setup["tracking_df"],
+        setup["tws"],
+        setup["truth"],
+        setup["baseline_twiss_4d"],
+    )
 
 
 def _get_setup_with_magnetic_errors(
@@ -586,11 +596,11 @@ def test_prepare_neighbor_tables_immediate_bpm_flag(
 
 
 @pytest.mark.slow
-def test_select_ac_dipole_bpms_matches_real_lattice_neighbors(data_dir, xsuite_json_path) -> None:
+def test_select_ac_dipole_bpms_matches_real_lattice_neighbors(data_dir, acd_tracking_setup) -> None:
     tracking_df, _tws, _truth, _full_tws = _get_setup(
         SEQ_FILE,
         data_dir,
-        xsuite_json_path,
+        acd_tracking_setup,
         flattop_turns=64,
     )
     model = _get_driver(data_dir / "sequences" / SEQ_FILE, debug=False)
@@ -613,12 +623,12 @@ def test_select_ac_dipole_bpms_matches_real_lattice_neighbors(data_dir, xsuite_j
 @pytest.mark.slow
 def test_madng_track_range_and_direction_match_source_target_convention(
     data_dir,
-    xsuite_json_path,
+    acd_tracking_setup,
 ) -> None:
     tracking_df, _tws, _truth, _full_tws = _get_setup(
         SEQ_FILE,
         data_dir,
-        xsuite_json_path,
+        acd_tracking_setup,
         flattop_turns=20,
     )
     model = _get_driver(
@@ -681,11 +691,11 @@ def test_madng_track_range_and_direction_match_source_target_convention(
 
 
 @pytest.mark.slow
-def test_select_ac_dipole_bpm_window_returns_primary_pair(data_dir, xsuite_json_path) -> None:
+def test_select_ac_dipole_bpm_window_returns_primary_pair(data_dir, acd_tracking_setup) -> None:
     tracking_df, _tws, _truth, _full_tws = _get_setup(
         SEQ_FILE,
         data_dir,
-        xsuite_json_path,
+        acd_tracking_setup,
         flattop_turns=64,
     )
     model = _get_driver(data_dir / "sequences" / SEQ_FILE, debug=False)
@@ -706,15 +716,54 @@ def test_select_ac_dipole_bpm_window_returns_primary_pair(data_dir, xsuite_json_
 
 
 @pytest.mark.slow
+def test_transfer_matrix_matches_track_particles_row_vector_convention(
+    data_dir,
+    acd_tracking_setup,
+) -> None:
+    tracking_df, _tws, _truth, _full_tws = _get_setup(
+        SEQ_FILE,
+        data_dir,
+        acd_tracking_setup,
+        flattop_turns=8,
+    )
+    model = _get_driver(data_dir / "sequences" / SEQ_FILE, debug=False)
+    bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
+        model.twiss_elements,
+        available_bpms=tracking_df["name"].unique().tolist(),
+        element_name=AC_DIPOLE_ELEMENT,
+    )
+
+    for source_name, direction in ((bpm_upstream, 1), (bpm_downstream, -1)):
+        source_states = (
+            tracking_df.loc[tracking_df["name"] == source_name, ["x", "px", "y", "py"]]
+            .head(5)
+            .to_numpy(dtype=float)
+        )
+        tracked_states = model.track_particles(
+            source_name,
+            AC_DIPOLE_ELEMENT,
+            source_states,
+            direction=direction,
+        )
+        matrix_states = source_states @ model.transfer_matrix(
+            source_name,
+            AC_DIPOLE_ELEMENT,
+            direction=direction,
+        )
+        assert rmse(tracked_states[:, 1], matrix_states[:, 1]) < 1e-12
+        assert rmse(tracked_states[:, 3], matrix_states[:, 3]) < 1e-9
+
+
+@pytest.mark.slow
 def test_calculate_ac_dipole_momentum_uses_real_tracking_setup(
     data_dir,
-    xsuite_json_path,
+    acd_tracking_setup,
     tmp_path,
 ) -> None:
     tracking_df, tws, _truth, _full_tws = _get_setup(
         SEQ_FILE,
         data_dir,
-        xsuite_json_path,
+        acd_tracking_setup,
         flattop_turns=100,
     )
     bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
@@ -817,7 +866,7 @@ def test_calculate_ac_dipole_momentum_uses_real_tracking_setup(
 )
 def test_ac_dipole_kick_fit_improves_noisy_reconstruction(
     data_dir,
-    xsuite_json_path,
+    acd_tracking_setup,
     tmp_path,
     use_svd_cleaning: bool,
     include_magnetic_errors: bool,
@@ -832,7 +881,7 @@ def test_ac_dipole_kick_fit_improves_noisy_reconstruction(
         tracking_df, tws, _truth, _full_tws = _get_setup(
             SEQ_FILE,
             data_dir,
-            xsuite_json_path,
+            acd_tracking_setup,
             flattop_turns=100,
         )
     model = _get_driver(
@@ -916,7 +965,7 @@ def test_ac_dipole_kick_fit_improves_noisy_reconstruction(
 @pytest.mark.slow
 def test_ac_dipole_kick_fit_improves_with_more_turns(
     data_dir,
-    xsuite_json_path,
+    acd_tracking_setup,
     tmp_path,
 ) -> None:
     flattop_turns_grid = [50, 100, 200]
@@ -927,7 +976,7 @@ def test_ac_dipole_kick_fit_improves_with_more_turns(
         tracking_df, tws, _truth, _full_tws = _get_setup(
             SEQ_FILE,
             data_dir,
-            xsuite_json_path,
+            acd_tracking_setup,
             flattop_turns=flattop_turns,
         )
         model = _get_driver(
@@ -979,13 +1028,13 @@ def test_ac_dipole_kick_fit_improves_with_more_turns(
 @pytest.mark.slow
 def test_ac_dipole_reports_selected_bpms(
     data_dir,
-    xsuite_json_path,
+    acd_tracking_setup,
     tmp_path,
 ) -> None:
     tracking_df, _tws, _truth, _full_tws = _get_setup(
         SEQ_FILE,
         data_dir,
-        xsuite_json_path,
+        acd_tracking_setup,
         flattop_turns=100,
     )
     model = _get_driver(

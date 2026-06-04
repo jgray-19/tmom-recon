@@ -15,6 +15,7 @@ import logging
 import numpy as np
 import pandas as pd
 from scipy import sparse as sp
+from scipy.linalg import solveh_banded
 from scipy.sparse import linalg as spla
 
 from .models import ACDipoleHarmonicFit, ACDipoleStateEstimate, ACDipoleStateSeries
@@ -152,11 +153,10 @@ def _refine_known_kick_fit(
     n_turns = len(turns)
     n_params = n_turns + design.shape[1]
 
-    turn_indices: list[int] = []
-    rhs_list: list[float] = []
-    weights_list: list[float] = []
-    design_components: list[np.ndarray] = []
-
+    # Collect upstream observations in bulk — no Python element loop.
+    up_turn_idx_parts: list[np.ndarray] = []
+    up_rhs_parts: list[np.ndarray] = []
+    up_weight_parts: list[np.ndarray] = []
     for table in upstream_tables:
         values, variances = _align_table_columns(
             turns,
@@ -165,12 +165,15 @@ def _refine_known_kick_fit(
             variance_col=variance_col,
         )
         valid = np.isfinite(values) & np.isfinite(variances) & (variances > 0.0)
-        for idx in np.flatnonzero(valid):
-            turn_indices.append(int(idx))
-            rhs_list.append(float(values[idx]))
-            weights_list.append(float(1.0 / np.sqrt(variances[idx])))
-            design_components.append(np.zeros(design.shape[1], dtype=float))
+        idxs = np.flatnonzero(valid)
+        up_turn_idx_parts.append(idxs)
+        up_rhs_parts.append(values[idxs])
+        up_weight_parts.append(1.0 / np.sqrt(variances[idxs]))
 
+    # Collect downstream observations in bulk.
+    dn_turn_idx_parts: list[np.ndarray] = []
+    dn_rhs_parts: list[np.ndarray] = []
+    dn_weight_parts: list[np.ndarray] = []
     for table in downstream_tables:
         values, variances = _align_table_columns(
             turns,
@@ -179,46 +182,51 @@ def _refine_known_kick_fit(
             variance_col=variance_col,
         )
         valid = np.isfinite(values) & np.isfinite(variances) & (variances > 0.0)
-        for idx in np.flatnonzero(valid):
-            turn_indices.append(int(idx))
-            rhs_list.append(float(values[idx]))
-            weights_list.append(float(1.0 / np.sqrt(variances[idx])))
-            design_components.append(design[idx].copy())
+        idxs = np.flatnonzero(valid)
+        dn_turn_idx_parts.append(idxs)
+        dn_rhs_parts.append(values[idxs])
+        dn_weight_parts.append(1.0 / np.sqrt(variances[idxs]))
 
-    if not turn_indices:
+    up_turn_idx = np.concatenate(up_turn_idx_parts) if up_turn_idx_parts else np.empty(0, int)
+    dn_turn_idx = np.concatenate(dn_turn_idx_parts) if dn_turn_idx_parts else np.empty(0, int)
+    up_rhs = np.concatenate(up_rhs_parts) if up_rhs_parts else np.empty(0, float)
+    dn_rhs = np.concatenate(dn_rhs_parts) if dn_rhs_parts else np.empty(0, float)
+    up_weights = np.concatenate(up_weight_parts) if up_weight_parts else np.empty(0, float)
+    dn_weights = np.concatenate(dn_weight_parts) if dn_weight_parts else np.empty(0, float)
+
+    n_up = len(up_turn_idx)
+    n_dn = len(dn_turn_idx)
+
+    if n_up + n_dn == 0:
         raise ValueError(
             f"No valid {value_col} observations were available for AC-dipole kick fitting"
         )
 
-    n_obs = len(turn_indices)
+    n_obs = n_up + n_dn
+    turn_array = np.concatenate([up_turn_idx, dn_turn_idx])
 
-    # Build sparse matrix: each row has 1 identity + 3 design columns
-    # Using COO format initially for easy construction, then convert to CSR for solving
-    row_indices = []
-    col_indices = []
-    data = []
+    # Build sparse COO data with pure numpy — no Python element loop.
+    # Identity block: one entry per observation (col = turn index).
+    obs_rows = np.arange(n_obs)
+    # Design block: 3 entries per downstream observation (cols = n_turns+0/1/2).
+    dn_obs_rows = np.arange(n_up, n_obs)
+    dn_design = design[dn_turn_idx]  # (n_dn, 3)
+    design_obs_rows = np.repeat(dn_obs_rows, 3)  # (n_dn*3,)
+    design_cols = np.tile(np.arange(n_turns, n_turns + 3), n_dn)  # (n_dn*3,)
+    design_vals = dn_design.ravel()  # (n_dn*3,)
 
-    for obs_idx, turn_idx in enumerate(turn_indices):
-        # Identity column for this turn
-        row_indices.append(obs_idx)
-        col_indices.append(turn_idx)
-        data.append(1.0)
-
-        # Design columns (sin, cos, offset) for downstream only
-        for design_idx, value in enumerate(design_components[obs_idx]):
-            if value != 0.0:
-                row_indices.append(obs_idx)
-                col_indices.append(n_turns + design_idx)
-                data.append(value)
+    coo_rows = np.concatenate([obs_rows, design_obs_rows])
+    coo_cols = np.concatenate([turn_array, design_cols])
+    coo_data = np.concatenate([np.ones(n_obs), design_vals])
 
     # Build sparse matrix in COO format, then convert to CSR for efficient operations
     matrix_sparse = sp.coo_matrix(
-        (data, (row_indices, col_indices)), shape=(n_obs, n_params), dtype=float
+        (coo_data, (coo_rows, coo_cols)), shape=(n_obs, n_params), dtype=float
     ).tocsr()
 
     # Apply weights and build weighted system
-    weight_array = np.asarray(weights_list, dtype=float)
-    rhs_array = np.asarray(rhs_list, dtype=float)
+    weight_array = np.concatenate([up_weights, dn_weights])
+    rhs_array = np.concatenate([up_rhs, dn_rhs])
     weighted_rhs = rhs_array * weight_array
 
     # Weight the sparse matrix rows
@@ -247,6 +255,20 @@ def _refine_known_kick_fit(
         offset=float(offset),
         fitted=fitted,
     )
+
+
+def _sparse_to_upper_banded(mat: sp.csr_matrix, bandwidth: int) -> np.ndarray:
+    """Extract the upper banded form of a symmetric sparse matrix.
+
+    Returns ab with shape (bandwidth+1, n) in the format expected by
+    scipy.linalg.solveh_banded (lower=False): ab[bandwidth-k, k:] = diagonal k.
+    """
+    n = mat.shape[0]
+    ab = np.zeros((bandwidth + 1, n), dtype=float)
+    for k in range(bandwidth + 1):
+        diag = mat.diagonal(k)
+        ab[bandwidth - k, k:] = diag
+    return ab
 
 
 def _build_second_difference_operator(n_turns: int) -> sp.csr_matrix:
@@ -348,13 +370,16 @@ def _solve_smoothed_pre_momentum_with_known_kick(
     pre_values = spla.spsolve(system_matrix, rhs)
     post_values = pre_values + kick_values
 
-    # We only propagate per-turn variances here, so extract diag(cov) = diag(A^{-1}).
-    # inv() is much faster than pinv() for the typical well-conditioned system.
+    # Extract diagonal of A^{-1} using the banded SPD structure.
+    # system_matrix = W + λD2^T D2 is pentadiagonal (bandwidth 2), so Cholesky
+    # factorization and back-substitution are O(bandwidth × T) per RHS, giving
+    # O(bandwidth × T^2) total vs O(T^3) for dense inversion.
     try:
-        system_dense = system_matrix.toarray()
-        var_pre = np.clip(np.diag(np.linalg.inv(system_dense)), 0.0, None)
-    except np.linalg.LinAlgError:
-        # Robust fallback for singular systems.
+        ab = _sparse_to_upper_banded(system_matrix.tocsr(), bandwidth=2)
+        inv_cols = solveh_banded(ab, np.eye(n_turns), lower=False, check_finite=False)
+        var_pre = np.clip(np.diag(inv_cols), 0.0, None)
+    except (np.linalg.LinAlgError, ValueError):
+        # Robust fallback for singular/near-singular systems.
         covariance = np.linalg.pinv(system_matrix.toarray(), hermitian=True)
         var_pre = np.clip(np.diag(covariance), 0.0, None)
 

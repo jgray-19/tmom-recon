@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-from functools import cache
-from pathlib import Path
-
 import numpy as np
 import pytest
-from xtrack_tools.acd import run_acd_track
 
 from tests.acd.acd_test_helpers import (
     AC_DIPOLE_ELEMENT,
@@ -19,51 +15,21 @@ from tmom_recon import calculate_dispersive_pz as dispersive_calc
 from tmom_recon import calculate_transverse_pz as transverse_calc
 from tmom_recon.svd import svd_clean_measurements  # noqa: E402
 
-from .momentum_test_utils import get_truth, rmse, xsuite_to_ngtws
-
-
-@cache
-def _cached_tracking_setup(
-    seq_path: str,
-    json_path: str,
-    delta_p: float,
-    ramp_turns: int,
-    flattop_turns: int,
-):
-    tracking_df, tws, _baseline_line = run_acd_track(
-        json_path=Path(json_path),
-        sequence_file=Path(seq_path),
-        delta_p=delta_p,
-        ramp_turns=ramp_turns,
-        flattop_turns=flattop_turns,
-    )
-    tws = xsuite_to_ngtws(tws)
-    truth = get_truth(tracking_df, tws)
-    return tracking_df, tws, truth
-
-
-def _get_tracking_setup(seq: Path, json_path: Path, delta_p: float) -> tuple:
-    tracking_df, tws, truth = _cached_tracking_setup(
-        str(seq),
-        str(json_path),
-        delta_p,
-        1000,
-        100,
-    )
-    return tracking_df.copy(deep=True), tws.copy(deep=True), truth.copy(deep=True)
+from .momentum_test_utils import rmse
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize("seq_file", ["lhcb1.seq", "b1_120cm_crossing.seq"])
-def test_dispersive_momentum_on_momentum(seq_file, data_dir, xsuite_json_path):
+def test_dispersive_momentum_on_momentum(seq_file, data_dir, acd_tracking_setup):
     """Test dispersive momentum reconstruction for on-momentum beam.
 
     For on-momentum particles (δp=0), dispersive and transverse methods
     should produce nearly identical results.
     """
-    seq = data_dir / "sequences" / seq_file
-    json_path = xsuite_json_path(seq_file)
-    tracking_df, tws, truth = _get_tracking_setup(seq, json_path, 0.0)
+    setup = acd_tracking_setup(seq_file, data_dir, delta_p=0.0)
+    tracking_df = setup["tracking_df"]
+    tws = setup["tws"]
+    truth = setup["truth"]
 
     # Transverse reconstruction (baseline)
     trans_result = transverse_calc(
@@ -120,21 +86,15 @@ def test_dispersive_momentum_on_momentum(seq_file, data_dir, xsuite_json_path):
 def test_dispersive_momentum_on_momentum_with_ac_dipole_config(
     seq_file,
     data_dir,
-    xsuite_json_path,
+    acd_tracking_setup,
 ):
     pytest.importorskip("pymadng_utils")
 
+    setup = acd_tracking_setup(seq_file, data_dir, delta_p=0.0)
+    tracking_df = setup["tracking_df"]
+    tws = setup["tws"]
+    truth = setup["truth"]
     seq = data_dir / "sequences" / seq_file
-    json_path = xsuite_json_path(seq_file)
-    tracking_df, tws_xsuite, baseline_line = run_acd_track(
-        json_path=json_path,
-        sequence_file=seq,
-        delta_p=0.0,
-        ramp_turns=1000,
-        flattop_turns=100,
-    )
-    tws = xsuite_to_ngtws(tws_xsuite)
-    truth = get_truth(tracking_df, tws)
     model = _get_driver(seq, deltap=0.0)
     bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
         model.twiss_elements,
@@ -208,7 +168,7 @@ def test_dispersive_momentum_on_momentum_with_ac_dipole_config(
 @pytest.mark.slow
 @pytest.mark.parametrize("seq_file", ["lhcb1.seq", "b1_120cm_crossing.seq"])
 @pytest.mark.parametrize("delta_p", [-5e-4, 4e-4])
-def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, xsuite_json_path):
+def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, acd_tracking_setup):
     """Validate off-momentum dispersive momentum reconstruction for clean, noisy, and SVD-cleaned data.
 
     This test uses a single tracked off-momentum beam (non-zero δp) and performs:
@@ -226,9 +186,10 @@ def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, xsu
     between clean, noisy, and SVD-cleaned dispersive reconstructions for each
     sequence and δp value.
     """
-    seq = data_dir / "sequences" / seq_file
-    json_path = xsuite_json_path(seq_file)
-    tracking_df, tws, truth = _get_tracking_setup(seq, json_path, delta_p)
+    setup = acd_tracking_setup(seq_file, data_dir, delta_p=delta_p)
+    tracking_df = setup["tracking_df"]
+    tws = setup["tws"]
+    truth = setup["truth"]
 
     trans_result = transverse_calc(
         tracking_df.copy(deep=True),

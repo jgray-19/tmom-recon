@@ -182,3 +182,74 @@ py:send(flw.tpar == flw.npar)
                 f"Tracked particle batch must have shape ({len(x0_particles)}, {N_COORD}), got {tracked_states.shape}"
             )
         return tracked_states
+
+    def transfer_matrix(
+        self,
+        source_element: str,
+        target_element: str,
+        *,
+        direction: int = 1,
+    ) -> np.ndarray:
+        """Return the cached 4x4 linear transfer matrix from source to target.
+
+        Tracks four unit-vector particles once and caches the result keyed on
+        (source, target, direction).  Subsequent calls for the same triple are
+        pure dict lookups; the actual tracking is a single 4-particle MAD-NG
+        call instead of a T-particle call per BPM.
+
+        The matrix M satisfies: tracked_states = source_states @ M
+        (source_states has shape (T, 4), result has shape (T, 4)).
+        """
+        key = (source_element, target_element, direction)
+        try:
+            return self._transfer_matrix_cache[key]
+        except AttributeError:
+            self._transfer_matrix_cache: dict[tuple[str, str, int], np.ndarray] = {}
+        except KeyError:
+            pass
+
+        range_name = f"{source_element}/{target_element}"
+        self.mad.send(
+            """
+--begin
+local damap in MAD
+range_name = py:recv()
+dir_val    = py:recv()
+
+-- First-order DA map over the 6 phase-space coordinates
+local x0 = damap { nv=6, mo=1 }
+
+local tbl, flw = track {
+    sequence = loaded_sequence,
+    range    = range_name,
+    X0       = x0,
+    nturn    = 1,
+    dir      = dir_val,
+    observe  = 1,
+    savemap  = true,
+    deltap   = DELTAP
+}
+py:send(flw[1]:get1())
+--end
+"""
+        ).send(range_name).send(direction)
+        try:
+            mat_6d = self.mad.recv()
+        except Exception as exc:
+            raise ACDipoleTrackingError(
+                source_element=source_element,
+                target_element=target_element,
+                direction=direction,
+                range_name=range_name,
+                mad_logfile=self._mad_logfile,
+                error=f"{type(exc).__name__}: {exc}",
+            ) from exc
+
+        # MAD-NG returns the linear map in the conventional column-vector form
+        # x_f = M @ x_i. The reconstruction code uses row vectors, so cache the
+        # transposed 4D block such that tracked_states = source_states @ M.
+        if mat_6d.shape != (6, 6):
+            raise ValueError(f"MAD-NG transfer matrix must have shape (6, 6), got {mat_6d.shape}")
+        mat_4d = mat_6d[np.ix_([0, 1, 2, 3], [0, 1, 2, 3])].T
+        self._transfer_matrix_cache[key] = mat_4d
+        return mat_4d

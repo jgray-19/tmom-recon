@@ -9,21 +9,20 @@ from omc3.scripts.fake_measurement_from_model import generate as generate_fake_m
 pytest.importorskip("xtrack_tools")
 
 from pymadng_utils.madx import convert_tfs_to_madx
-from xtrack_tools.acd import run_acd_track
 
 from tmom_recon import calculate_pz_measurement, inject_noise_xy_inplace
 from tmom_recon.svd import svd_clean_measurements
 
-from .momentum_test_utils import add_error_to_orbit_measurement, get_truth, rmse, xsuite_to_ngtws
+from .momentum_test_utils import add_error_to_orbit_measurement, rmse
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize("add_noise", [False, True], ids=["no_noise", "with_noise"])
 def test_dispersive_measurement_with_uncertainties(
-    seq_b1,
+    data_dir,
     tmp_path,
     add_noise,
-    xsuite_json_path,
+    acd_tracking_setup,
 ):
     """Test momentum reconstruction with uncertainty propagation from measurements.
 
@@ -36,22 +35,13 @@ def test_dispersive_measurement_with_uncertainties(
     6. Verifies RMSE within expected bounds
 
     Args:
-        seq_b1: Sequence file fixture for Beam 1.
         tmp_path: Temporary path fixture.
         add_noise: If True, adds noise and performs SVD cleaning before calculating pz.
     """
-    json_path = xsuite_json_path("lhcb1.seq")
-
-    tracking_df, x_tws, baseline_line = run_acd_track(
-        json_path=json_path,
-        sequence_file=seq_b1,
-        delta_p=0.0,
-        ramp_turns=1000,
-        flattop_turns=100,
-    )
-
-    ng_tws = xsuite_to_ngtws(x_tws)
-    truth = get_truth(tracking_df, ng_tws)
+    setup = acd_tracking_setup("lhcb1.seq", data_dir, delta_p=0.0)
+    tracking_df = setup["tracking_df"]
+    ng_tws = setup["tws"]
+    truth = setup["truth"]
 
     # Since the above gets only BPMs, we disable drift removal to keep names consistent
     # Drop mu1 and mu2 to avoid issues in conversion
@@ -64,6 +54,10 @@ def test_dispersive_measurement_with_uncertainties(
         madx_tws["DY"] = madx_tws["DY"] + rng_dy.normal(0.0, 1e-6, size=len(madx_tws))
     if "DPY" in madx_tws.columns:
         madx_tws["DPY"] = madx_tws["DPY"] + rng_dy.normal(0.0, 1e-6, size=len(madx_tws))
+    if "X" in madx_tws.columns:
+        madx_tws["X"] = madx_tws["X"] + rng_dy.normal(0.0, 1e-12, size=len(madx_tws))
+    if "Y" in madx_tws.columns:
+        madx_tws["Y"] = madx_tws["Y"] + rng_dy.normal(0.0, 1e-12, size=len(madx_tws))
 
     # Generate fake measurements from the twiss
     temp_dir = tmp_path / "dispersive_measurement_uncertainties"
