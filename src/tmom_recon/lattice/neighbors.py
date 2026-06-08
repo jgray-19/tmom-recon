@@ -164,10 +164,10 @@ def merge_neighbor_coords(
     data_n["turn_y_n"] = turn_y_n
 
     # Perform merges
-    data_p = data_p.merge(coord_frames["p_x"], on=["turn_x_p", PREV.bpm_x], how="left", copy=False)
-    data_p = data_p.merge(coord_frames["p_y"], on=["turn_y_p", PREV.bpm_y], how="left", copy=False)
-    data_n = data_n.merge(coord_frames["n_x"], on=["turn_x_n", NEXT.bpm_x], how="left", copy=False)
-    data_n = data_n.merge(coord_frames["n_y"], on=["turn_y_n", NEXT.bpm_y], how="left", copy=False)
+    data_p = data_p.merge(coord_frames["p_x"], on=["turn_x_p", PREV.bpm_x], how="left")
+    data_p = data_p.merge(coord_frames["p_y"], on=["turn_y_p", PREV.bpm_y], how="left")
+    data_n = data_n.merge(coord_frames["n_x"], on=["turn_x_n", NEXT.bpm_x], how="left")
+    data_n = data_n.merge(coord_frames["n_y"], on=["turn_y_n", NEXT.bpm_y], how="left")
 
     # Fill NaNs
     for col in (PREV.x, PREV.y):

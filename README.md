@@ -118,6 +118,8 @@ acd_result = calculate_ac_dipole_momentum(
     twiss_df,
     ac_dipole_marker="MKQA.6L4.B1",
     model=acd_model,
+    dpx_tune=0.27,
+    dpy_tune=0.322,
 )
 ```
 
@@ -125,6 +127,11 @@ The `model` object must provide the MAD-NG tracking interface used by
 `tmom_recon.acd.madng_driver.ACDipoleMadDriver`. If you are integrating the
 result back into transverse or n-BPM reconstruction, use `ACDipoleConfig`
 through the higher-level APIs rather than wiring the BPM overrides yourself.
+
+The ACD workflow fits `dpx` and `dpy` at the marker itself, treats the marker
+position `x/y` as shared across the kick for the same turn, and then
+transports the cleaned pre-/post-kick marker states back to the selected
+adjacent BPMs.
 
 Kicker-based single-turn reconstruction:
 

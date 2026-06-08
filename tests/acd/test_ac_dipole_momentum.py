@@ -25,6 +25,7 @@ from xtrack_tools.monitors import process_tracking_data
 from tests.momentum.momentum_test_utils import get_truth, rmse, xsuite_to_ngtws
 from tmom_recon import inject_noise_xy_inplace
 from tmom_recon.acd import reconstruction as acd_reconstruction
+from tmom_recon.acd.cleaning import _clean_ac_dipole_states, _refine_known_kick_fit
 from tmom_recon.acd.madng_driver import ACDipoleMadDriver
 from tmom_recon.acd.models import (
     ACDipoleBPMWindow,
@@ -47,6 +48,7 @@ from .acd_test_helpers import (
 )
 
 SEQ_FILE = "lhcb1.seq"
+DRIVEN_TUNES = (0.27, 0.322)
 
 
 def _should_plot_test_results() -> bool:
@@ -64,19 +66,27 @@ class _IdentityAcdModel:
         source_state: np.ndarray,
         *,
         direction: int,
+        deltap: float | None = None,
     ) -> np.ndarray:
-        del source_name, marker_name, direction
+        del source_name, marker_name, direction, deltap
         return np.asarray(source_state, dtype=float)
 
-    def transfer_matrix(
+
+class _ShiftedAcdModel(_IdentityAcdModel):
+    def track_particles(
         self,
         source_name: str,
         marker_name: str,
+        source_state: np.ndarray,
         *,
         direction: int,
+        deltap: float | None = None,
     ) -> np.ndarray:
-        del source_name, marker_name, direction
-        return np.eye(4)
+        del source_name, marker_name, deltap
+        state = np.asarray(source_state, dtype=float).copy()
+        state[:, 1] += 3.0 * float(direction)
+        state[:, 3] -= 2.0 * float(direction)
+        return state
 
 
 def _get_setup(
@@ -225,7 +235,7 @@ tbl, flw = track {
     save=true,
     nturn=1,
     dir=direction,
-    observe=1,
+    observe=0,
     deltap=DELTAP
 }
 py:send(true)
@@ -235,7 +245,7 @@ py:send(true)
     assert model.mad.recv()
     track_df = model.mad.tbl.to_df(force_pandas=True)
     return (
-        track_df.sort_values(["id", "turn", "s"], kind="stable")
+        track_df.reset_index(drop=True)
         .groupby("id", sort=False, as_index=False)
         .tail(1)
         .sort_values("id", kind="stable")
@@ -435,6 +445,140 @@ def _minimal_bpm_state_frame(name: str) -> pd.DataFrame:
     )
 
 
+def _harmonic_bpm_state_frame(
+    name: str,
+    *,
+    turns: np.ndarray,
+    px: np.ndarray,
+    py: np.ndarray,
+) -> pd.DataFrame:
+    turns = np.asarray(turns, dtype=int)
+    px = np.asarray(px, dtype=float)
+    py = np.asarray(py, dtype=float)
+    zeros = np.zeros_like(px, dtype=float)
+    ones = np.ones_like(px, dtype=float)
+    return pd.DataFrame(
+        {
+            "turn": turns,
+            "x": zeros,
+            "px": px,
+            "y": zeros,
+            "py": py,
+            "var_x": ones,
+            "var_px": ones,
+            "var_y": ones,
+            "var_py": ones,
+            "source_bpm": [name] * len(turns),
+        }
+    )
+
+
+def test_refine_known_kick_fit_refines_tune_to_improve_phase_and_amplitude() -> None:
+    turns = np.arange(256, dtype=int)
+    true_tune = 0.322
+    tune_hint = true_tune - 0.003
+    true_amplitude = 7.5e-6
+    true_phase = 0.63
+    true_offset = -1.2e-6
+    signal = true_amplitude * np.sin(2.0 * np.pi * true_tune * turns + true_phase) + true_offset
+
+    upstream = _harmonic_bpm_state_frame(
+        "BPMU",
+        turns=turns,
+        px=np.zeros_like(signal),
+        py=np.zeros_like(signal),
+    )
+    downstream = _harmonic_bpm_state_frame(
+        "BPMD",
+        turns=turns,
+        px=signal,
+        py=signal,
+    )
+
+    fit = _refine_known_kick_fit(
+        turns.astype(float),
+        [upstream],
+        [downstream],
+        value_col="py",
+        variance_col="var_py",
+        tune_hint=tune_hint,
+    )
+
+    hint_design = np.column_stack(
+        [
+            np.sin(2.0 * np.pi * tune_hint * turns),
+            np.cos(2.0 * np.pi * tune_hint * turns),
+            np.ones_like(turns, dtype=float),
+        ]
+    )
+    hint_coeffs, *_ = np.linalg.lstsq(hint_design, signal, rcond=None)
+    hint_fit = hint_design @ hint_coeffs
+
+    refined_rmse = rmse(signal, fit.fitted)
+    hinted_rmse = rmse(signal, hint_fit)
+    phase_error = np.angle(np.exp(1j * (fit.phase - true_phase)))
+
+    assert fit.tune == pytest.approx(true_tune, abs=5.0e-4)
+    assert fit.amplitude == pytest.approx(true_amplitude, rel=0.02)
+    assert phase_error == pytest.approx(0.0, abs=0.03)
+    assert fit.offset == pytest.approx(true_offset, abs=5.0e-8)
+    assert refined_rmse < hinted_rmse
+    assert refined_rmse < 1.0e-7
+
+
+def test_clean_ac_dipole_states_uses_one_common_marker_xy_per_turn() -> None:
+    turns = np.array([0.0, 1.0], dtype=float)
+    upstream = pd.DataFrame(
+        {
+            "turn": [0, 1],
+            "x": [1.0, 3.0],
+            "px": [0.0, 0.0],
+            "y": [2.0, 4.0],
+            "py": [0.0, 0.0],
+            "var_x": [1.0, 1.0],
+            "var_px": [1.0, 1.0],
+            "var_y": [1.0, 1.0],
+            "var_py": [1.0, 1.0],
+            "source_bpm": ["BPMU", "BPMU"],
+        }
+    )
+    downstream = pd.DataFrame(
+        {
+            "turn": [0, 1],
+            "x": [5.0, 7.0],
+            "px": [0.0, 0.0],
+            "y": [8.0, 10.0],
+            "py": [0.0, 0.0],
+            "var_x": [1.0, 1.0],
+            "var_px": [1.0, 1.0],
+            "var_y": [1.0, 1.0],
+            "var_py": [1.0, 1.0],
+            "source_bpm": ["BPMD", "BPMD"],
+        }
+    )
+
+    pre_kick, post_kick, dpx_fit, dpy_fit = _clean_ac_dipole_states(
+        turns,
+        [upstream],
+        [downstream],
+        dpx_tune=DRIVEN_TUNES[0],
+        dpy_tune=DRIVEN_TUNES[1],
+        smooth_lambda=0.0,
+    )
+
+    expected_x = np.array([3.0, 5.0])
+    expected_y = np.array([5.0, 7.0])
+
+    assert np.allclose(pre_kick.state.x, expected_x)
+    assert np.allclose(post_kick.state.x, expected_x)
+    assert np.allclose(pre_kick.state.y, expected_y)
+    assert np.allclose(post_kick.state.y, expected_y)
+    assert np.allclose(pre_kick.state.x, post_kick.state.x)
+    assert np.allclose(pre_kick.state.y, post_kick.state.y)
+    assert np.allclose(dpx_fit.fitted, 0.0)
+    assert np.allclose(dpy_fit.fitted, 0.0)
+
+
 def _estimate_from_table(table: pd.DataFrame) -> ACDipoleStateEstimate:
     ordered = table.sort_values("turn").reset_index(drop=True)
     return ACDipoleStateEstimate(
@@ -482,6 +626,7 @@ def test_calculate_ac_dipole_momentum_uses_direct_bpm_seed(
         "select_ac_dipole_bpm_window",
         lambda *args, **kwargs: ACDipoleBPMWindow(("BPMU",), ("BPMD",)),
     )
+    monkeypatch.setattr(acd_reconstruction, "_resolve_name", lambda name, candidates: name)
     monkeypatch.setattr(acd_reconstruction, "remove_closed_orbit_inplace", lambda data, tws: None)
 
     def fake_prepare_neighbor_tables(
@@ -543,12 +688,422 @@ def test_calculate_ac_dipole_momentum_uses_direct_bpm_seed(
         tws,
         ac_dipole_marker="MKQA.6L4.B1",
         model=model,
+        dpx_tune=DRIVEN_TUNES[0],
+        dpy_tune=DRIVEN_TUNES[1],
         inject_noise=False,
     )
 
     assert counts == {"prev": 1, "next": 1}
     assert result.attrs["bpm_upstream"] == "BPMU"
     assert result.attrs["bpm_downstream"] == "BPMD"
+
+
+def test_reconstruct_bpm_momentum_from_cleaned_acd_backtracks_from_marker() -> None:
+    model = _ShiftedAcdModel(
+        pd.DataFrame(index=pd.Index(["BPMU", "MKQA.6L4.B1", "BPMD"], dtype=str))
+    )
+    tws = pd.DataFrame(
+        {
+            "px": [0.25, 0.0, -0.5],
+            "py": [-0.1, 0.0, 0.75],
+        },
+        index=pd.Index(["BPMU", "MKQA.6L4.B1", "BPMD"], dtype=str),
+    )
+    cleaned_upstream = ACDipoleStateEstimate(
+        state=ACDipoleStateSeries(
+            x=np.array([0.0, 0.0]),
+            px=np.array([1.0, 2.0]),
+            y=np.array([0.0, 0.0]),
+            py=np.array([5.0, 6.0]),
+        ),
+        var_x=np.ones(2),
+        var_px=np.ones(2),
+        var_y=np.ones(2),
+        var_py=np.ones(2),
+    )
+    cleaned_downstream = ACDipoleStateEstimate(
+        state=ACDipoleStateSeries(
+            x=np.array([0.0, 0.0]),
+            px=np.array([1.0, 2.0]),
+            y=np.array([0.0, 0.0]),
+            py=np.array([5.0, 6.0]),
+        ),
+        var_x=np.ones(2),
+        var_px=np.ones(2),
+        var_y=np.ones(2),
+        var_py=np.ones(2),
+    )
+
+    px_up, py_up = acd_reconstruction._reconstruct_bpm_momentum_from_cleaned_acd(
+        tws,
+        model,
+        bpm_name="BPMU",
+        cleaned_acd=cleaned_upstream,
+        marker_name="MKQA.6L4.B1",
+        direction=-1,
+    )
+    px_down, py_down = acd_reconstruction._reconstruct_bpm_momentum_from_cleaned_acd(
+        tws,
+        model,
+        bpm_name="BPMD",
+        cleaned_acd=cleaned_downstream,
+        marker_name="MKQA.6L4.B1",
+        direction=1,
+    )
+
+    assert np.allclose(px_up, [1.0 - 3.0 + 0.25, 2.0 - 3.0 + 0.25])
+    assert np.allclose(py_up, [5.0 + 2.0 - 0.1, 6.0 + 2.0 - 0.1])
+    assert np.allclose(px_down, [1.0 + 3.0 - 0.5, 2.0 + 3.0 - 0.5])
+    assert np.allclose(py_down, [5.0 - 2.0 + 0.75, 6.0 - 2.0 + 0.75])
+
+
+def test_calculate_ac_dipole_momentum_uses_explicit_acd_tunes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tws = tfs.TfsDataFrame(
+        {
+            "s": [0.0, 1.0],
+            "x": [0.0, 0.0],
+            "px": [0.0, 0.0],
+            "y": [0.0, 0.0],
+            "py": [0.0, 0.0],
+            "betx": [1.0, 1.0],
+            "bety": [1.0, 1.0],
+            "mux": [0.0, 0.1],
+            "muy": [0.0, 0.1],
+            "mu1": [0.0, 0.1],
+            "mu2": [0.0, 0.1],
+        },
+        index=pd.Index(["BPMU", "BPMD"], dtype=str),
+        headers={"q1": 0.28, "q2": 0.31},
+    )
+    model = _IdentityAcdModel(tws)
+    data = pd.DataFrame(
+        {
+            "name": ["BPMU", "BPMD", "BPMU", "BPMD"],
+            "turn": [0, 0, 1, 1],
+            "x": [0.0, 0.0, 0.0, 0.0],
+            "y": [0.0, 0.0, 0.0, 0.0],
+            "var_x": [1.0, 1.0, 1.0, 1.0],
+            "var_y": [1.0, 1.0, 1.0, 1.0],
+        }
+    )
+    captured_tunes: dict[str, float] = {}
+
+    monkeypatch.setattr(
+        acd_reconstruction,
+        "select_ac_dipole_bpm_window",
+        lambda *args, **kwargs: ACDipoleBPMWindow(("BPMU",), ("BPMD",)),
+    )
+    monkeypatch.setattr(acd_reconstruction, "_resolve_name", lambda name, candidates: name)
+    monkeypatch.setattr(acd_reconstruction, "remove_closed_orbit_inplace", lambda data, tws: None)
+    monkeypatch.setattr(
+        acd_reconstruction,
+        "_prepare_neighbor_tables",
+        lambda *args, **kwargs: (object(), object(), object(), object()),
+    )
+    monkeypatch.setattr(
+        acd_reconstruction,
+        "_prepare_prev_reconstruction",
+        lambda *args, **kwargs: _minimal_bpm_state_frame("BPMU"),
+    )
+    monkeypatch.setattr(
+        acd_reconstruction,
+        "_prepare_next_reconstruction",
+        lambda *args, **kwargs: _minimal_bpm_state_frame("BPMD"),
+    )
+
+    def fake_clean_ac_dipole_states(
+        turns: np.ndarray,
+        upstream_tables: list[pd.DataFrame],
+        downstream_tables: list[pd.DataFrame],
+        *,
+        dpx_tune: float,
+        dpy_tune: float,
+        smooth_lambda: float,
+    ) -> tuple[
+        ACDipoleStateEstimate, ACDipoleStateEstimate, ACDipoleHarmonicFit, ACDipoleHarmonicFit
+    ]:
+        del turns, smooth_lambda
+        captured_tunes["dpx"] = dpx_tune
+        captured_tunes["dpy"] = dpy_tune
+        fit_x = ACDipoleHarmonicFit(
+            tune=dpx_tune,
+            amplitude=1.0,
+            phase=0.0,
+            offset=0.0,
+            fitted=np.zeros(2, dtype=float),
+        )
+        fit_y = ACDipoleHarmonicFit(
+            tune=dpy_tune,
+            amplitude=1.0,
+            phase=0.0,
+            offset=0.0,
+            fitted=np.zeros(2, dtype=float),
+        )
+        return (
+            _estimate_from_table(upstream_tables[0]),
+            _estimate_from_table(downstream_tables[0]),
+            fit_x,
+            fit_y,
+        )
+
+    monkeypatch.setattr(acd_reconstruction, "_clean_ac_dipole_states", fake_clean_ac_dipole_states)
+
+    result = calculate_ac_dipole_momentum(
+        data,
+        tws,
+        ac_dipole_marker="MKQA.6L4.B1",
+        model=model,
+        dpx_tune=DRIVEN_TUNES[0],
+        dpy_tune=DRIVEN_TUNES[1],
+        inject_noise=False,
+    )
+
+    assert captured_tunes == {
+        "dpx": pytest.approx(DRIVEN_TUNES[0]),
+        "dpy": pytest.approx(DRIVEN_TUNES[1]),
+    }
+    assert result.headers["ACD_DPX_TUNE"] == pytest.approx(DRIVEN_TUNES[0])
+    assert result.headers["ACD_DPY_TUNE"] == pytest.approx(DRIVEN_TUNES[1])
+
+
+def test_calculate_ac_dipole_momentum_uses_supplied_tunes_without_fft_precheck(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    turns = np.arange(64, dtype=int)
+    dpx_signal_tune = 0.27
+    dpy_signal_tune = 0.322
+    dpx_signal = np.sin(2.0 * np.pi * dpx_signal_tune * turns)
+    dpy_signal = np.sin(2.0 * np.pi * dpy_signal_tune * turns)
+
+    tws = tfs.TfsDataFrame(
+        {
+            "s": [0.0, 1.0],
+            "x": [0.0, 0.0],
+            "px": [0.0, 0.0],
+            "y": [0.0, 0.0],
+            "py": [0.0, 0.0],
+            "betx": [1.0, 1.0],
+            "bety": [1.0, 1.0],
+            "mux": [0.0, 0.1],
+            "muy": [0.0, 0.1],
+            "mu1": [0.0, 0.1],
+            "mu2": [0.0, 0.1],
+        },
+        index=pd.Index(["BPMU", "BPMD"], dtype=str),
+        headers={"q1": 0.28, "q2": 0.31},
+    )
+    model = _IdentityAcdModel(tws)
+    data = pd.DataFrame(
+        {
+            "name": np.repeat(["BPMU", "BPMD"], len(turns)),
+            "turn": np.tile(turns, 2),
+            "x": 0.0,
+            "y": 0.0,
+            "var_x": 1.0,
+            "var_y": 1.0,
+        }
+    )
+
+    monkeypatch.setattr(
+        acd_reconstruction,
+        "select_ac_dipole_bpm_window",
+        lambda *args, **kwargs: ACDipoleBPMWindow(("BPMU",), ("BPMD",)),
+    )
+    monkeypatch.setattr(acd_reconstruction, "_resolve_name", lambda name, candidates: name)
+    monkeypatch.setattr(acd_reconstruction, "remove_closed_orbit_inplace", lambda data, tws: None)
+    monkeypatch.setattr(
+        acd_reconstruction,
+        "_prepare_neighbor_tables",
+        lambda *args, **kwargs: (object(), object(), object(), object()),
+    )
+    monkeypatch.setattr(
+        acd_reconstruction,
+        "_prepare_prev_reconstruction",
+        lambda *args, **kwargs: _harmonic_bpm_state_frame(
+            "BPMU",
+            turns=turns,
+            px=np.zeros_like(dpx_signal),
+            py=np.zeros_like(dpy_signal),
+        ),
+    )
+    monkeypatch.setattr(
+        acd_reconstruction,
+        "_prepare_next_reconstruction",
+        lambda *args, **kwargs: _harmonic_bpm_state_frame(
+            "BPMD",
+            turns=turns,
+            px=dpx_signal,
+            py=dpy_signal,
+        ),
+    )
+
+    def fake_clean_ac_dipole_states(
+        turns: np.ndarray,
+        upstream_tables: list[pd.DataFrame],
+        downstream_tables: list[pd.DataFrame],
+        *,
+        dpx_tune: float,
+        dpy_tune: float,
+        smooth_lambda: float,
+    ) -> tuple[
+        ACDipoleStateEstimate, ACDipoleStateEstimate, ACDipoleHarmonicFit, ACDipoleHarmonicFit
+    ]:
+        del turns, smooth_lambda
+        fit_x = ACDipoleHarmonicFit(
+            tune=dpx_tune,
+            amplitude=1.0,
+            phase=0.0,
+            offset=0.0,
+            fitted=dpx_signal,
+        )
+        fit_y = ACDipoleHarmonicFit(
+            tune=dpy_tune,
+            amplitude=1.0,
+            phase=0.0,
+            offset=0.0,
+            fitted=dpy_signal,
+        )
+        return (
+            _estimate_from_table(upstream_tables[0]),
+            _estimate_from_table(downstream_tables[0]),
+            fit_x,
+            fit_y,
+        )
+
+    monkeypatch.setattr(acd_reconstruction, "_clean_ac_dipole_states", fake_clean_ac_dipole_states)
+
+    result = calculate_ac_dipole_momentum(
+        data,
+        tws,
+        ac_dipole_marker="MKQA.6L4.B1",
+        model=model,
+        dpx_tune=0.27,
+        dpy_tune=0.322,
+        inject_noise=False,
+    )
+
+    assert result.headers["ACD_DPX_TUNE"] == pytest.approx(0.27)
+    assert result.headers["ACD_DPY_TUNE"] == pytest.approx(0.322)
+
+
+def test_calculate_ac_dipole_momentum_does_not_reject_mismatched_raw_signal_before_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    turns = np.arange(64, dtype=int)
+    dpx_signal = np.sin(2.0 * np.pi * 0.27 * turns)
+    dpy_signal = np.sin(2.0 * np.pi * 0.322 * turns)
+
+    tws = tfs.TfsDataFrame(
+        {
+            "s": [0.0, 1.0],
+            "x": [0.0, 0.0],
+            "px": [0.0, 0.0],
+            "y": [0.0, 0.0],
+            "py": [0.0, 0.0],
+            "betx": [1.0, 1.0],
+            "bety": [1.0, 1.0],
+            "mux": [0.0, 0.1],
+            "muy": [0.0, 0.1],
+            "mu1": [0.0, 0.1],
+            "mu2": [0.0, 0.1],
+        },
+        index=pd.Index(["BPMU", "BPMD"], dtype=str),
+        headers={"q1": 0.28, "q2": 0.31},
+    )
+    model = _IdentityAcdModel(tws)
+    data = pd.DataFrame(
+        {
+            "name": np.repeat(["BPMU", "BPMD"], len(turns)),
+            "turn": np.tile(turns, 2),
+            "x": 0.0,
+            "y": 0.0,
+            "var_x": 1.0,
+            "var_y": 1.0,
+        }
+    )
+
+    monkeypatch.setattr(
+        acd_reconstruction,
+        "select_ac_dipole_bpm_window",
+        lambda *args, **kwargs: ACDipoleBPMWindow(("BPMU",), ("BPMD",)),
+    )
+    monkeypatch.setattr(acd_reconstruction, "_resolve_name", lambda name, candidates: name)
+    monkeypatch.setattr(acd_reconstruction, "remove_closed_orbit_inplace", lambda data, tws: None)
+    monkeypatch.setattr(
+        acd_reconstruction,
+        "_prepare_neighbor_tables",
+        lambda *args, **kwargs: (object(), object(), object(), object()),
+    )
+    monkeypatch.setattr(
+        acd_reconstruction,
+        "_prepare_prev_reconstruction",
+        lambda *args, **kwargs: _harmonic_bpm_state_frame(
+            "BPMU",
+            turns=turns,
+            px=np.zeros_like(dpx_signal),
+            py=np.zeros_like(dpy_signal),
+        ),
+    )
+    monkeypatch.setattr(
+        acd_reconstruction,
+        "_prepare_next_reconstruction",
+        lambda *args, **kwargs: _harmonic_bpm_state_frame(
+            "BPMD",
+            turns=turns,
+            px=dpx_signal,
+            py=dpy_signal,
+        ),
+    )
+
+    def fake_clean_ac_dipole_states(
+        turns: np.ndarray,
+        upstream_tables: list[pd.DataFrame],
+        downstream_tables: list[pd.DataFrame],
+        *,
+        dpx_tune: float,
+        dpy_tune: float,
+        smooth_lambda: float,
+    ) -> tuple[
+        ACDipoleStateEstimate, ACDipoleStateEstimate, ACDipoleHarmonicFit, ACDipoleHarmonicFit
+    ]:
+        del turns, smooth_lambda
+        fit_x = ACDipoleHarmonicFit(
+            tune=dpx_tune,
+            amplitude=1.0,
+            phase=0.0,
+            offset=0.0,
+            fitted=dpx_signal,
+        )
+        fit_y = ACDipoleHarmonicFit(
+            tune=dpy_tune,
+            amplitude=1.0,
+            phase=0.0,
+            offset=0.0,
+            fitted=dpy_signal,
+        )
+        return (
+            _estimate_from_table(upstream_tables[0]),
+            _estimate_from_table(downstream_tables[0]),
+            fit_x,
+            fit_y,
+        )
+
+    monkeypatch.setattr(acd_reconstruction, "_clean_ac_dipole_states", fake_clean_ac_dipole_states)
+
+    result = calculate_ac_dipole_momentum(
+        data,
+        tws,
+        ac_dipole_marker="MKQA.6L4.B1",
+        model=model,
+        dpx_tune=0.20,
+        dpy_tune=0.322,
+        inject_noise=False,
+    )
+
+    assert result.headers["ACD_DPX_TUNE"] == pytest.approx(0.20)
+    assert result.headers["ACD_DPY_TUNE"] == pytest.approx(0.322)
 
 
 @pytest.mark.parametrize("use_immediate_neighbors_for_bpms", [False, True])
@@ -578,8 +1133,9 @@ def test_prepare_neighbor_tables_immediate_bpm_flag(
         expected_prev_delta = [0.35, -0.15, -0.15, -0.15, -0.15]
         expected_next_delta = [-0.15, -0.15, -0.15, -0.15, 0.35]
     else:
-        expected_prev_table = acd_reconstruction.prev_bpm_to_pi_2(tws_bpm["mu1"], 1.0)
-        expected_next_table = acd_reconstruction.next_bpm_to_pi_2(tws_bpm["mu1"], 1.0)
+        mu1_series = pd.Series(np.asarray(tws_bpm["mu1"], dtype=float), index=tws_bpm.index)
+        expected_prev_table = acd_reconstruction.prev_bpm_to_pi_2(mu1_series, 1.0)
+        expected_next_table = acd_reconstruction.next_bpm_to_pi_2(mu1_series, 1.0)
         expected_prev = expected_prev_table["prev_bpm"].tolist()
         expected_next = expected_next_table["next_bpm"].tolist()
         expected_prev_delta = expected_prev_table["delta"].tolist()
@@ -621,7 +1177,7 @@ def test_select_ac_dipole_bpms_matches_real_lattice_neighbors(data_dir, acd_trac
 
 
 @pytest.mark.slow
-def test_madng_track_range_and_direction_match_source_target_convention(
+def test_madng_track_range_and_direction_follow_shortest_path_convention(
     data_dir,
     acd_tracking_setup,
 ) -> None:
@@ -686,8 +1242,61 @@ def test_madng_track_range_and_direction_match_source_target_convention(
         backward_swapped_range[["x", "px", "y", "py"]].to_numpy(dtype=float).reshape(-1),
     )
 
+    acd_forward = _raw_mad_track(
+        model,
+        range_name=f"{bpm_upstream}/{AC_DIPOLE_ELEMENT}",
+        direction=1,
+        states=up_states,
+    )
+    acd_backward = _raw_mad_track(
+        model,
+        range_name=f"{bpm_downstream}/{AC_DIPOLE_ELEMENT}",
+        direction=-1,
+        states=down_states,
+    )
+    acd_wrong_forward = _raw_mad_track(
+        model,
+        range_name=f"{bpm_downstream}/{AC_DIPOLE_ELEMENT}",
+        direction=1,
+        states=down_states,
+    )
+
+    model_forward = model.track_particles(
+        bpm_upstream,
+        AC_DIPOLE_ELEMENT,
+        up_states,
+        direction=1,
+    )
+    model_backward = model.track_particles(
+        bpm_downstream,
+        AC_DIPOLE_ELEMENT,
+        down_states,
+        direction=-1,
+    )
+
     assert forward_rmse < 1e-4
     assert backward_same_range_rmse < backward_swapped_range_rmse
+    assert (
+        rmse(
+            model_forward.reshape(-1),
+            acd_forward[["x", "px", "y", "py"]].to_numpy(dtype=float).reshape(-1),
+        )
+        < 1e-12
+    )
+    assert (
+        rmse(
+            model_backward.reshape(-1),
+            acd_backward[["x", "px", "y", "py"]].to_numpy(dtype=float).reshape(-1),
+        )
+        < 1e-12
+    )
+    assert rmse(
+        model_backward.reshape(-1),
+        acd_backward[["x", "px", "y", "py"]].to_numpy(dtype=float).reshape(-1),
+    ) < rmse(
+        model_backward.reshape(-1),
+        acd_wrong_forward[["x", "px", "y", "py"]].to_numpy(dtype=float).reshape(-1),
+    )
 
 
 @pytest.mark.slow
@@ -713,45 +1322,6 @@ def test_select_ac_dipole_bpm_window_returns_primary_pair(data_dir, acd_tracking
         ac_dipole_marker=AC_DIPOLE_ELEMENT,
         bpm_names=tracking_df["name"].unique(),
     )
-
-
-@pytest.mark.slow
-def test_transfer_matrix_matches_track_particles_row_vector_convention(
-    data_dir,
-    acd_tracking_setup,
-) -> None:
-    tracking_df, _tws, _truth, _full_tws = _get_setup(
-        SEQ_FILE,
-        data_dir,
-        acd_tracking_setup,
-        flattop_turns=8,
-    )
-    model = _get_driver(data_dir / "sequences" / SEQ_FILE, debug=False)
-    bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
-        model.twiss_elements,
-        available_bpms=tracking_df["name"].unique().tolist(),
-        element_name=AC_DIPOLE_ELEMENT,
-    )
-
-    for source_name, direction in ((bpm_upstream, 1), (bpm_downstream, -1)):
-        source_states = (
-            tracking_df.loc[tracking_df["name"] == source_name, ["x", "px", "y", "py"]]
-            .head(5)
-            .to_numpy(dtype=float)
-        )
-        tracked_states = model.track_particles(
-            source_name,
-            AC_DIPOLE_ELEMENT,
-            source_states,
-            direction=direction,
-        )
-        matrix_states = source_states @ model.transfer_matrix(
-            source_name,
-            AC_DIPOLE_ELEMENT,
-            direction=direction,
-        )
-        assert rmse(tracked_states[:, 1], matrix_states[:, 1]) < 1e-12
-        assert rmse(tracked_states[:, 3], matrix_states[:, 3]) < 1e-9
 
 
 @pytest.mark.slow
@@ -806,6 +1376,8 @@ def test_calculate_ac_dipole_momentum_uses_real_tracking_setup(
         tws,
         ac_dipole_marker=AC_DIPOLE_ELEMENT,
         model=model,
+        dpx_tune=DRIVEN_TUNES[0],
+        dpy_tune=DRIVEN_TUNES[1],
         bpm_upstream=bpm_upstream,
         bpm_downstream=bpm_downstream,
         inject_noise=False,
@@ -848,6 +1420,14 @@ def test_calculate_ac_dipole_momentum_uses_real_tracking_setup(
     assert py_down_rmse < 1e-14
     assert dpx_rmse < 1e-9
     assert dpy_rmse < 1e-10
+    assert np.allclose(
+        merged["x_acd_upstream_cleaned"].to_numpy(),
+        merged["x_acd_downstream_cleaned"].to_numpy(),
+    )
+    assert np.allclose(
+        merged["y_acd_upstream_cleaned"].to_numpy(),
+        merged["y_acd_downstream_cleaned"].to_numpy(),
+    )
 
     plot_path = tmp_path / "ac_dipole_momentum_debug.png"
     _plot_ac_dipole_reconstruction(merged, plot_path)
@@ -917,6 +1497,8 @@ def test_ac_dipole_kick_fit_improves_noisy_reconstruction(
         tws,
         ac_dipole_marker=AC_DIPOLE_ELEMENT,
         model=model,
+        dpx_tune=DRIVEN_TUNES[0],
+        dpy_tune=DRIVEN_TUNES[1],
         bpm_upstream=bpm_upstream,
         bpm_downstream=bpm_downstream,
         inject_noise=False,
@@ -927,9 +1509,52 @@ def test_ac_dipole_kick_fit_improves_noisy_reconstruction(
     dpy_rmse_raw = rmse(merged["dpy_rad_true"].to_numpy(), merged["dpy"].to_numpy())
     dpx_rmse_fit = rmse(merged["dpx_rad_true"].to_numpy(), merged["dpx_fit_rad"].to_numpy())
     dpy_rmse_fit = rmse(merged["dpy_rad_true"].to_numpy(), merged["dpy_fit_rad"].to_numpy())
+    bpm_rmse_raw = np.mean(
+        [
+            rmse(merged["px_bpm_upstream_true"].to_numpy(), merged["px_bpm_upstream"].to_numpy()),
+            rmse(merged["py_bpm_upstream_true"].to_numpy(), merged["py_bpm_upstream"].to_numpy()),
+            rmse(
+                merged["px_bpm_downstream_true"].to_numpy(),
+                merged["px_bpm_downstream"].to_numpy(),
+            ),
+            rmse(
+                merged["py_bpm_downstream_true"].to_numpy(),
+                merged["py_bpm_downstream"].to_numpy(),
+            ),
+        ]
+    )
+    bpm_rmse_cleaned = np.mean(
+        [
+            rmse(
+                merged["px_bpm_upstream_true"].to_numpy(),
+                merged["px_bpm_upstream_cleaned"].to_numpy(),
+            ),
+            rmse(
+                merged["py_bpm_upstream_true"].to_numpy(),
+                merged["py_bpm_upstream_cleaned"].to_numpy(),
+            ),
+            rmse(
+                merged["px_bpm_downstream_true"].to_numpy(),
+                merged["px_bpm_downstream_cleaned"].to_numpy(),
+            ),
+            rmse(
+                merged["py_bpm_downstream_true"].to_numpy(),
+                merged["py_bpm_downstream_cleaned"].to_numpy(),
+            ),
+        ]
+    )
 
     assert dpx_rmse_fit < dpx_rmse_raw
     assert dpy_rmse_fit < dpy_rmse_raw
+    assert bpm_rmse_cleaned < bpm_rmse_raw
+    assert np.allclose(
+        merged["x_acd_upstream_cleaned"].to_numpy(),
+        merged["x_acd_downstream_cleaned"].to_numpy(),
+    )
+    assert np.allclose(
+        merged["y_acd_upstream_cleaned"].to_numpy(),
+        merged["y_acd_downstream_cleaned"].to_numpy(),
+    )
 
     if use_svd_cleaning or include_magnetic_errors:
         assert dpx_rmse_fit < ratio_limit * dpx_rmse_raw
@@ -1009,6 +1634,8 @@ def test_ac_dipole_kick_fit_improves_with_more_turns(
             tws,
             ac_dipole_marker=AC_DIPOLE_ELEMENT,
             model=model,
+            dpx_tune=DRIVEN_TUNES[0],
+            dpy_tune=DRIVEN_TUNES[1],
             bpm_upstream=bpm_upstream,
             bpm_downstream=bpm_downstream,
             inject_noise=False,
@@ -1052,6 +1679,8 @@ def test_ac_dipole_reports_selected_bpms(
         _tws,
         ac_dipole_marker=AC_DIPOLE_ELEMENT,
         model=model,
+        dpx_tune=DRIVEN_TUNES[0],
+        dpy_tune=DRIVEN_TUNES[1],
         inject_noise=False,
     )
 

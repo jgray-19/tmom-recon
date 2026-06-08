@@ -1,9 +1,29 @@
 import logging
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 
 LOGGER = logging.getLogger(__name__)
+
+
+def phase_advance_difference(
+    mu_from: npt.ArrayLike | float, mu_to: npt.ArrayLike | float, tune: float
+) -> np.ndarray:
+    """Return the wrapped forward phase advance from ``mu_from`` to ``mu_to`` in turns."""
+    return (np.asarray(mu_to, dtype=float) - np.asarray(mu_from, dtype=float) + tune) % tune
+
+
+def phase_advance_matrix(mu: pd.Series, tune: float, *, forward: bool) -> np.ndarray:
+    """Build the BPM-to-BPM phase-advance matrix in turns."""
+    values = mu.to_numpy(float)
+    n = len(values)
+    if forward:
+        diff = phase_advance_difference(values.reshape(n, 1), values.reshape(1, n), tune)
+    else:
+        diff = phase_advance_difference(values.reshape(1, n), values.reshape(n, 1), tune)
+    np.fill_diagonal(diff, np.nan)
+    return diff
 
 
 def _phase_pair_var_forward(
@@ -62,12 +82,7 @@ def _find_bpm_phase(
     n = len(v)
 
     # Compute phase advance matrix: diff[i, j] = phase from BPM_i to BPM_j
-    if forward:
-        diff = (v.reshape(1, n) - v.reshape(n, 1) + tune) % tune
-    else:
-        diff = (v.reshape(n, 1) - v.reshape(1, n) + tune) % tune
-
-    np.fill_diagonal(diff, np.nan)
+    diff = phase_advance_matrix(mu, tune, forward=forward)
 
     # Find best match for each BPM
     stable_width = 0.125  # Only consider candidates within ±0.125 rotations of target

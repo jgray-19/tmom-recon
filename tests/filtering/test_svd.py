@@ -154,7 +154,7 @@ class TestSvdCleanMeasurements:
 
         clean_df = pd.DataFrame(
             clean_signal,
-            columns=["turn", "name", "x", "y"],  # ty:ignore[invalid-argument-type]
+            columns=["turn", "name", "x", "y"],
         )
 
         # Add noise

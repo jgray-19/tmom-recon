@@ -11,16 +11,39 @@ Two key numerical building blocks are implemented here:
 from __future__ import annotations
 
 import logging
+import warnings
 
 import numpy as np
 import pandas as pd
 from scipy import sparse as sp
 from scipy.linalg import solveh_banded
+from scipy.optimize import minimize_scalar
 from scipy.sparse import linalg as spla
 
 from .models import ACDipoleHarmonicFit, ACDipoleStateEstimate, ACDipoleStateSeries
 
 LOGGER = logging.getLogger(__name__)
+_MIN_TUNE = 1.0e-6
+_MAX_TUNE = 0.5 - 1.0e-6
+_TUNE_REFINE_GRID_POINTS = 17
+
+
+def _align_table_columns(
+    turns: np.ndarray,
+    table: pd.DataFrame,
+    *,
+    value_col: str,
+    variance_col: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    aligned = pd.DataFrame({"turn": turns}).merge(
+        table[["turn", value_col, variance_col]],
+        on="turn",
+        how="left",
+    )
+    return (
+        aligned[value_col].to_numpy(dtype=float),
+        aligned[variance_col].to_numpy(dtype=float),
+    )
 
 
 def _align_estimate_component(
@@ -30,14 +53,16 @@ def _align_estimate_component(
     value_col: str,
     variance_col: str,
 ) -> tuple[np.ndarray, np.ndarray]:
-    values = []
-    variances = []
-    for table in estimate_tables:
-        aligned = pd.DataFrame({"turn": turns}).merge(
-            table[["turn", value_col, variance_col]], on="turn", how="left"
+    aligned_pairs = [
+        _align_table_columns(
+            turns,
+            table,
+            value_col=value_col,
+            variance_col=variance_col,
         )
-        values.append(aligned[value_col].to_numpy(dtype=float))
-        variances.append(aligned[variance_col].to_numpy(dtype=float))
+        for table in estimate_tables
+    ]
+    values, variances = zip(*aligned_pairs)
     return np.vstack(values), np.vstack(variances)
 
 
@@ -88,6 +113,40 @@ def _combine_state_tables(
     )
 
 
+def _combine_marker_transverse_positions(
+    turns: np.ndarray,
+    upstream_tables: list[pd.DataFrame],
+    downstream_tables: list[pd.DataFrame],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Combine the ACD marker transverse positions into one common same-turn state.
+
+    The AC dipole is modeled as an instantaneous kick at the marker: it changes
+    ``px``/``py`` but not ``x``/``y``.  That means upstream- and
+    downstream-transported states for the same turn should refer to the same
+    marker position, modulo reconstruction noise.  We therefore average all
+    available ``x`` and ``y`` marker estimates into a single common position
+    per turn and use that shared trajectory for both the pre-kick and
+    post-kick ACD states.
+    """
+    x_common, var_x_common = _combine_many_estimates(
+        *_align_estimate_component(
+            turns,
+            upstream_tables + downstream_tables,
+            value_col="x",
+            variance_col="var_x",
+        )
+    )
+    y_common, var_y_common = _combine_many_estimates(
+        *_align_estimate_component(
+            turns,
+            upstream_tables + downstream_tables,
+            value_col="y",
+            variance_col="var_y",
+        )
+    )
+    return x_common, y_common, var_x_common, var_y_common
+
+
 def _build_harmonic_design(turns: np.ndarray, tune: float) -> np.ndarray:
     omega_turn = 2.0 * np.pi * float(tune)
     return np.column_stack(
@@ -99,61 +158,15 @@ def _build_harmonic_design(turns: np.ndarray, tune: float) -> np.ndarray:
     )
 
 
-def _align_table_columns(
-    turns: np.ndarray,
-    table: pd.DataFrame,
-    *,
-    value_col: str,
-    variance_col: str,
-) -> tuple[np.ndarray, np.ndarray]:
-    aligned = pd.DataFrame({"turn": turns}).merge(
-        table[["turn", value_col, variance_col]],
-        on="turn",
-        how="left",
-    )
-    return (
-        aligned[value_col].to_numpy(dtype=float),
-        aligned[variance_col].to_numpy(dtype=float),
-    )
-
-
-def _refine_known_kick_fit(
+def _collect_kick_fit_observations(
     turns: np.ndarray,
     upstream_tables: list[pd.DataFrame],
     downstream_tables: list[pd.DataFrame],
     *,
     value_col: str,
     variance_col: str,
-    tune_hint: float,
-) -> ACDipoleHarmonicFit:
-    """Fit the harmonic kick waveform using a sparse weighted least-squares model.
-
-    Model construction (one equation per valid observation):
-    - Upstream BPM estimate at turn ``t``: ``m_t = p_t + e_t``
-    - Downstream BPM estimate at turn ``t``: ``m_t = p_t + h_t(theta) + e_t``
-
-    where:
-    - ``p_t`` is the unknown per-turn pre-kick momentum,
-    - ``h_t(theta)`` is a 3-parameter harmonic model (sin, cos, offset),
-    - ``e_t`` is measurement noise.
-
-    Unknown vector layout is ``[p_0, ..., p_{T-1}, sin_coeff, cos_coeff, offset]``.
-
-        Why sparse:
-        - Each observation row touches exactly one per-turn variable and at most three
-            harmonic columns, so the system matrix is extremely sparse.
-        - Solving this in dense form is unnecessarily expensive for long turn series.
-
-    Solve strategy:
-    - Build weighted sparse system ``A x ~= b``.
-    - Solve normal equations ``(A^T A) x = A^T b`` with ``scipy.sparse.linalg.spsolve``.
-    - Fall back to dense ``np.linalg.lstsq`` only if sparse solve fails.
-    """
-    design = _build_harmonic_design(turns, tune_hint)
-    n_turns = len(turns)
-    n_params = n_turns + design.shape[1]
-
-    # Collect upstream observations in bulk — no Python element loop.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
+    """Return consolidated weighted observations for the harmonic kick fit."""
     up_turn_idx_parts: list[np.ndarray] = []
     up_rhs_parts: list[np.ndarray] = []
     up_weight_parts: list[np.ndarray] = []
@@ -170,7 +183,6 @@ def _refine_known_kick_fit(
         up_rhs_parts.append(values[idxs])
         up_weight_parts.append(1.0 / np.sqrt(variances[idxs]))
 
-    # Collect downstream observations in bulk.
     dn_turn_idx_parts: list[np.ndarray] = []
     dn_rhs_parts: list[np.ndarray] = []
     dn_weight_parts: list[np.ndarray] = []
@@ -196,65 +208,164 @@ def _refine_known_kick_fit(
 
     n_up = len(up_turn_idx)
     n_dn = len(dn_turn_idx)
-
     if n_up + n_dn == 0:
         raise ValueError(
             f"No valid {value_col} observations were available for AC-dipole kick fitting"
         )
 
-    n_obs = n_up + n_dn
     turn_array = np.concatenate([up_turn_idx, dn_turn_idx])
+    rhs_array = np.concatenate([up_rhs, dn_rhs])
+    weight_array = np.concatenate([up_weights, dn_weights])
+    return turn_array, rhs_array, weight_array, dn_turn_idx, n_up
 
-    # Build sparse COO data with pure numpy — no Python element loop.
-    # Identity block: one entry per observation (col = turn index).
+
+def _solve_known_kick_fit(
+    turns: np.ndarray,
+    *,
+    tune: float,
+    turn_array: np.ndarray,
+    rhs_array: np.ndarray,
+    weight_array: np.ndarray,
+    downstream_turn_idx: np.ndarray,
+    n_upstream_obs: int,
+) -> tuple[ACDipoleHarmonicFit, float]:
+    """Solve the weighted sparse harmonic fit for a specific tune value."""
+    design = _build_harmonic_design(turns, tune)
+    n_turns = len(turns)
+    n_obs = len(turn_array)
+    n_params = n_turns + design.shape[1]
+
     obs_rows = np.arange(n_obs)
-    # Design block: 3 entries per downstream observation (cols = n_turns+0/1/2).
-    dn_obs_rows = np.arange(n_up, n_obs)
-    dn_design = design[dn_turn_idx]  # (n_dn, 3)
-    design_obs_rows = np.repeat(dn_obs_rows, 3)  # (n_dn*3,)
-    design_cols = np.tile(np.arange(n_turns, n_turns + 3), n_dn)  # (n_dn*3,)
-    design_vals = dn_design.ravel()  # (n_dn*3,)
+    dn_obs_rows = np.arange(n_upstream_obs, n_obs)
+    dn_design = design[downstream_turn_idx]
+    design_obs_rows = np.repeat(dn_obs_rows, 3)
+    design_cols = np.tile(np.arange(n_turns, n_turns + 3), len(downstream_turn_idx))
+    design_vals = dn_design.ravel()
 
     coo_rows = np.concatenate([obs_rows, design_obs_rows])
     coo_cols = np.concatenate([turn_array, design_cols])
     coo_data = np.concatenate([np.ones(n_obs), design_vals])
 
-    # Build sparse matrix in COO format, then convert to CSR for efficient operations
     matrix_sparse = sp.coo_matrix(
         (coo_data, (coo_rows, coo_cols)), shape=(n_obs, n_params), dtype=float
     ).tocsr()
 
-    # Apply weights and build weighted system
-    weight_array = np.concatenate([up_weights, dn_weights])
-    rhs_array = np.concatenate([up_rhs, dn_rhs])
     weighted_rhs = rhs_array * weight_array
 
-    # Weight the sparse matrix rows
     weights_diag = sp.diags(weight_array, format="csr")
     weighted_matrix = weights_diag @ matrix_sparse
 
-    # Solve weighted normal equations using sparse direct solve.
-    # This removes the dense lstsq hotspot for long turn counts.
     try:
         ata = weighted_matrix.T @ weighted_matrix
         atb = weighted_matrix.T @ weighted_rhs
-        solution = spla.spsolve(ata.tocsr(), atb)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", spla.MatrixRankWarning)
+            solution = spla.spsolve(ata.tocsr(), atb)
         if isinstance(solution, np.matrix):
             solution = np.asarray(solution).ravel()
-    except (RuntimeError, ValueError):
-        # Fallback to dense lstsq if sparse solve fails
+        if not np.all(np.isfinite(solution)):
+            raise ValueError("Sparse harmonic fit produced non-finite coefficients")
+    except (RuntimeError, ValueError, spla.MatrixRankWarning):
         weighted_matrix_dense = weighted_matrix.toarray()
         solution, *_ = np.linalg.lstsq(weighted_matrix_dense, weighted_rhs, rcond=None)
 
+    residual = weighted_matrix @ solution - weighted_rhs
+    weighted_rss = float(np.dot(residual, residual))
     sin_coeff, cos_coeff, offset = solution[n_turns:]
     fitted = design @ solution[n_turns:]
-    return ACDipoleHarmonicFit(
-        tune=float(tune_hint),
-        amplitude=float(np.hypot(sin_coeff, cos_coeff)),
-        phase=float(np.arctan2(cos_coeff, sin_coeff)),
-        offset=float(offset),
-        fitted=fitted,
+    return (
+        ACDipoleHarmonicFit(
+            tune=float(tune),
+            amplitude=float(np.hypot(sin_coeff, cos_coeff)),
+            phase=float(np.arctan2(cos_coeff, sin_coeff)),
+            offset=float(offset),
+            fitted=fitted,
+        ),
+        weighted_rss,
     )
+
+
+def _local_tune_refinement_window(turns: np.ndarray) -> float:
+    """Choose a conservative local tune-search half-width around the supplied tune."""
+    n_turns = max(int(len(turns)), 1)
+    fft_resolution = 1.0 / float(n_turns)
+    return min(0.02, max(4.0 * fft_resolution, 0.002))
+
+
+def _refine_known_kick_fit(
+    turns: np.ndarray,
+    upstream_tables: list[pd.DataFrame],
+    downstream_tables: list[pd.DataFrame],
+    *,
+    value_col: str,
+    variance_col: str,
+    tune_hint: float,
+) -> ACDipoleHarmonicFit:
+    """Fit the harmonic kick waveform, refining tune locally to improve phase/amplitude."""
+    turn_array, rhs_array, weight_array, dn_turn_idx, n_up = _collect_kick_fit_observations(
+        turns,
+        upstream_tables,
+        downstream_tables,
+        value_col=value_col,
+        variance_col=variance_col,
+    )
+
+    tune_centre = float(np.clip(tune_hint, _MIN_TUNE, _MAX_TUNE))
+    half_width = _local_tune_refinement_window(turns)
+    lower = max(_MIN_TUNE, tune_centre - half_width)
+    upper = min(_MAX_TUNE, tune_centre + half_width)
+
+    def solve_for_tune(candidate_tune: float) -> tuple[ACDipoleHarmonicFit, float]:
+        return _solve_known_kick_fit(
+            turns,
+            tune=float(np.clip(candidate_tune, _MIN_TUNE, _MAX_TUNE)),
+            turn_array=turn_array,
+            rhs_array=rhs_array,
+            weight_array=weight_array,
+            downstream_turn_idx=dn_turn_idx,
+            n_upstream_obs=n_up,
+        )
+
+    if upper <= lower:
+        best_fit, _ = solve_for_tune(tune_centre)
+        return best_fit
+
+    coarse_grid = np.linspace(lower, upper, _TUNE_REFINE_GRID_POINTS)
+    coarse_scores = np.empty_like(coarse_grid)
+    coarse_fits: list[ACDipoleHarmonicFit] = []
+    for idx, candidate in enumerate(coarse_grid):
+        fit, score = solve_for_tune(float(candidate))
+        coarse_fits.append(fit)
+        coarse_scores[idx] = score
+
+    best_idx = int(np.argmin(coarse_scores))
+    best_fit = coarse_fits[best_idx]
+    best_score = float(coarse_scores[best_idx])
+
+    bracket_low_idx = max(best_idx - 1, 0)
+    bracket_high_idx = min(best_idx + 1, len(coarse_grid) - 1)
+    bracket_low = float(coarse_grid[bracket_low_idx])
+    bracket_high = float(coarse_grid[bracket_high_idx])
+
+    if bracket_high > bracket_low:
+        optimum = minimize_scalar(
+            lambda tune: solve_for_tune(float(tune))[1],
+            bounds=(bracket_low, bracket_high),
+            method="bounded",
+            options={"xatol": max(1.0e-6, (bracket_high - bracket_low) / 200.0)},
+        )
+        refined_fit, refined_score = solve_for_tune(float(optimum.x))
+        if refined_score <= best_score:
+            best_fit = refined_fit
+
+    LOGGER.info(
+        "Refined %s harmonic tune from %.6f to %.6f (local window +/- %.6f)",
+        value_col,
+        tune_hint,
+        best_fit.tune,
+        half_width,
+    )
+    return best_fit
 
 
 def _sparse_to_upper_banded(mat: sp.csr_matrix, bandwidth: int) -> np.ndarray:
@@ -400,26 +511,16 @@ def _clean_ac_dipole_states(
     """Produce physically consistent pre-/post-kick state estimates.
 
     Pipeline:
-    1. Combine x/y state estimates from all selected BPM reconstructions.
+    1. Combine x/y marker estimates from all selected BPM reconstructions into
+       one common same-turn ACD position.
     2. Fit harmonic kick waveforms for px and py.
     3. Solve smoothed pre-kick momentum with fitted kick constraint.
     4. Reconstruct post-kick momentum via ``post = pre + fitted_kick``.
     """
-    x_common, var_x_common = _combine_many_estimates(
-        *_align_estimate_component(
-            turns,
-            upstream_tables + downstream_tables,
-            value_col="x",
-            variance_col="var_x",
-        )
-    )
-    y_common, var_y_common = _combine_many_estimates(
-        *_align_estimate_component(
-            turns,
-            upstream_tables + downstream_tables,
-            value_col="y",
-            variance_col="var_y",
-        )
+    x_common, y_common, var_x_common, var_y_common = _combine_marker_transverse_positions(
+        turns,
+        upstream_tables,
+        downstream_tables,
     )
     dpx_fit = _refine_known_kick_fit(
         turns,

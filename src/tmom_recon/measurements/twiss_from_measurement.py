@@ -321,27 +321,25 @@ def _compute_cumulative_phase(
     var_dict = {}
     step_variances = []
 
-    # Build forward chain order and edge data
+    # Build forward chain order and edge data without duplicating the ring-closure BPM.
     current_bpm = phase_df.index[0]
-    order = [current_bpm]
+    order = []
     edge_phase = {}
     edge_var = {}
 
-    for name in phase_df.index:
-        if name == current_bpm:
-            next_bpm = phase_df.loc[name, "NAME2"]
-            phase_advance = phase_df.loc[name, phase_col]
-            phase_error = phase_df.loc[name, f"{ERR}{phase_col}"]
+    for _ in range(len(phase_df)):
+        order.append(current_bpm)
+        next_bpm = phase_df.loc[current_bpm, "NAME2"]
+        phase_advance = phase_df.loc[current_bpm, phase_col]
+        phase_error = phase_df.loc[current_bpm, f"{ERR}{phase_col}"]
 
-            if pd.isna(phase_advance) or pd.isna(phase_error):
-                raise ValueError(f"NaN phase advance or error for {current_bpm} -> {next_bpm}")
+        if pd.isna(phase_advance) or pd.isna(phase_error):
+            raise ValueError(f"NaN phase advance or error for {current_bpm} -> {next_bpm}")
 
-            edge_phase[(current_bpm, next_bpm)] = phase_advance
-            edge_var[(current_bpm, next_bpm)] = phase_error**2
-            step_variances.append(phase_error**2)
-
-            current_bpm = next_bpm
-            order.append(current_bpm)
+        edge_phase[(current_bpm, next_bpm)] = phase_advance
+        edge_var[(current_bpm, next_bpm)] = phase_error**2
+        step_variances.append(phase_error**2)
+        current_bpm = next_bpm
 
     # Choose accumulation direction
     if reverse:

@@ -20,7 +20,11 @@ from tmom_recon.lattice.core import (
     remove_closed_orbit_inplace,
     validate_input,
 )
-from tmom_recon.physics.bpm_phases import next_bpm_to_pi_2, prev_bpm_to_pi_2
+from tmom_recon.physics.bpm_phases import (
+    next_bpm_to_pi_2,
+    phase_advance_difference,
+    prev_bpm_to_pi_2,
+)
 from tmom_recon.physics.momenta import momenta_from_next, momenta_from_prev
 
 from .cleaning import _clean_ac_dipole_states, _combine_state_tables
@@ -68,66 +72,19 @@ def _restore_reference_momenta(
     return values + float(tws.at[element_name, column])
 
 
-def _estimate_dominant_tune(turns: np.ndarray, values: np.ndarray) -> float:
-    turn_array = np.asarray(turns, dtype=float)
-    value_array = np.asarray(values, dtype=float)
-    if turn_array.ndim != 1 or value_array.ndim != 1 or len(turn_array) != len(value_array):
-        return 0.0
-    if len(turn_array) < 4:
-        return 0.0
+def _normalise_supplied_tune(label: str, tune: float) -> float:
+    tune_value = float(tune)
+    if not np.isfinite(tune_value):
+        raise ValueError(f"Provided {label} AC-dipole tune must be finite")
 
-    deltas = np.diff(turn_array)
-    if np.any(deltas <= 0):
-        return 0.0
-
-    step = float(np.median(deltas))
-    centered = value_array - np.mean(value_array)
-    spectrum = np.fft.rfft(centered)
-    freqs = np.fft.rfftfreq(len(centered), d=step)
-    if len(freqs) <= 1:
-        return 0.0
-
-    peak_idx = int(np.argmax(np.abs(spectrum[1:])) + 1)
-    tune_guess = float(freqs[peak_idx])
-    if tune_guess <= 0.0:
-        return 0.0
-
-    span = max(float(turn_array[-1] - turn_array[0]), 1.0)
-    tune_step = 1.0 / span
-    tune_grid = np.linspace(
-        max(1e-6, tune_guess - 2.0 * tune_step),
-        min(0.5 - 1e-6, tune_guess + 2.0 * tune_step),
-        257,
-    )
-
-    omega_grid = 2.0 * np.pi * tune_grid  # (257,)
-    sin_t = np.sin(np.outer(omega_grid, turn_array))  # (257, T)
-    cos_t = np.cos(np.outer(omega_grid, turn_array))  # (257, T)
-
-    # Normal equations D^T D (257 × 3×3) without building (257, T, 3) intermediate.
-    # D columns: [sin, cos, 1].  Unique symmetric entries:
-    ss = (sin_t * sin_t).sum(axis=1)  # (257,)
-    sc = (sin_t * cos_t).sum(axis=1)
-    s1 = sin_t.sum(axis=1)
-    cc = (cos_t * cos_t).sum(axis=1)
-    c1 = cos_t.sum(axis=1)
-    nn = float(len(turn_array))
-    dtd = np.array([[ss, sc, s1], [sc, cc, c1], [s1, c1, np.full(len(tune_grid), nn)]]).transpose(
-        2, 0, 1
-    )  # (257, 3, 3)
-    dty = np.column_stack(
-        [
-            sin_t @ value_array,
-            cos_t @ value_array,
-            np.full(len(tune_grid), value_array.sum()),
-        ]
-    )  # (257, 3)
-
-    theta = np.linalg.solve(dtd, dty[:, :, None]).squeeze(-1)  # (257, 3)
-    # SSE = ||y||^2 - y^T D theta  (no need to compute fitted explicitly)
-    yty = float(np.dot(value_array, value_array))
-    sse = yty - np.einsum("gi,gi->g", dty, theta)  # (257,)
-    return float(tune_grid[int(np.argmin(sse))])
+    fractional = tune_value % 1.0
+    if np.isclose(fractional, 0.0):
+        raise ValueError(f"Provided {label} AC-dipole tune must have a non-zero fractional part")
+    if fractional > 0.5:
+        fractional = 1.0 - fractional
+    if not (0.0 < fractional < 0.5):
+        raise ValueError(f"Provided {label} AC-dipole tune must map to 0 < tune < 0.5")
+    return float(fractional)
 
 
 def _normalise_measurement_names(data: pd.DataFrame, tws_names: list[str]) -> pd.DataFrame:
@@ -137,6 +94,61 @@ def _normalise_measurement_names(data: pd.DataFrame, tws_names: list[str]) -> pd
     }
     data["name"] = data["name"].astype(str).map(raw_name_map)
     return data
+
+
+def _log_harmonic_fit_quality(
+    *,
+    label: str,
+    turns: np.ndarray,
+    observed: np.ndarray,
+    fitted: np.ndarray,
+) -> None:
+    observed_arr = np.asarray(observed, dtype=float)
+    fitted_arr = np.asarray(fitted, dtype=float)
+    valid = np.isfinite(observed_arr) & np.isfinite(fitted_arr)
+    if not np.any(valid):
+        LOGGER.info("AC-dipole %s fit quality: no valid samples", label)
+        return
+
+    obs = observed_arr[valid]
+    fit = fitted_arr[valid]
+    residual = obs - fit
+    rmse = float(np.sqrt(np.mean(residual**2)))
+    mae = float(np.mean(np.abs(residual)))
+
+    obs_centered = obs - np.mean(obs)
+    sst = float(np.dot(obs_centered, obs_centered))
+    r_squared = float("nan") if sst <= 0.0 else 1.0 - float(np.dot(residual, residual)) / sst
+
+    peak_to_peak = float(np.ptp(obs))
+    nrmse = float("nan") if peak_to_peak <= 0.0 else rmse / peak_to_peak
+
+    LOGGER.info(
+        "AC-dipole %s fit quality over %d turns: RMSE=%.3e rad, MAE=%.3e rad, NRMSE=%.3e, R^2=%.6f",
+        label,
+        int(np.count_nonzero(valid)),
+        rmse,
+        mae,
+        nrmse,
+        r_squared,
+    )
+
+
+def _log_harmonic_fit_parameters(
+    *,
+    label: str,
+    reference_tune: float,
+    fit,
+) -> None:
+    LOGGER.info(
+        "AC-dipole %s harmonic fit: reference tune=%.6f, fitted tune=%.6f, amplitude=%.3e rad, phase=%.6f rad, offset=%.3e rad",
+        label,
+        reference_tune,
+        fit.tune,
+        fit.amplitude,
+        fit.phase,
+        fit.offset,
+    )
 
 
 def _normalise_twiss_index(tws: pd.DataFrame, lattice_names: list[str]) -> pd.DataFrame:
@@ -151,6 +163,21 @@ def _require_neighbor_name(value: object, bpm_name: str, plane: str, direction: 
             f"No {direction} pi/2 BPM was found for {plane}-plane reconstruction at {bpm_name!r}"
         )
     return str(value)
+
+
+def _build_local_reconstruction_rows(
+    data: pd.DataFrame,
+    tws_bpm: pd.DataFrame,
+    bpm_name: str,
+    *,
+    dpp_est: float,
+) -> tuple[pd.DataFrame, object]:
+    maps = build_lattice_maps(tws_bpm, include_dispersion=not np.isclose(dpp_est, 0.0))
+    rows = data.loc[data["name"] == bpm_name, ["name", "turn", "x", "y", "var_x", "var_y"]].copy(
+        deep=True
+    )
+    attach_lattice_columns(rows, maps)
+    return rows, maps
 
 
 def _prepare_neighbor_tables(
@@ -196,10 +223,10 @@ def _prepare_neighbor_tables(
         q1 = _get_tune(tws_bpm, "q1")
         q2 = _get_tune(tws_bpm, "q2")
 
-        prev_phase_x = (mu1 - mu1.shift(1).fillna(mu1.iloc[-1]) + q1) % q1
-        prev_phase_y = (mu2 - mu2.shift(1).fillna(mu2.iloc[-1]) + q2) % q2
-        next_phase_x = (mu1.shift(-1).fillna(mu1.iloc[0]) - mu1 + q1) % q1
-        next_phase_y = (mu2.shift(-1).fillna(mu2.iloc[0]) - mu2 + q2) % q2
+        prev_phase_x = phase_advance_difference(mu1.shift(1).fillna(mu1.iloc[-1]), mu1, q1)
+        prev_phase_y = phase_advance_difference(mu2.shift(1).fillna(mu2.iloc[-1]), mu2, q2)
+        next_phase_x = phase_advance_difference(mu1, mu1.shift(-1).fillna(mu1.iloc[0]), q1)
+        next_phase_y = phase_advance_difference(mu2, mu2.shift(-1).fillna(mu2.iloc[0]), q2)
 
         prev_x[PREV.delta_x] = prev_phase_x - 0.25
         prev_y[PREV.delta_y] = prev_phase_y - 0.25
@@ -264,12 +291,10 @@ def _prepare_prev_reconstruction(
     prev_x: pd.DataFrame,
     prev_y: pd.DataFrame,
     bpm_index: dict[str, int],
+    *,
+    dpp_est: float = 0.0,
 ) -> pd.DataFrame:
-    maps = build_lattice_maps(tws_bpm)
-    rows = data.loc[data["name"] == bpm_name, ["name", "turn", "x", "y", "var_x", "var_y"]].copy(
-        deep=True
-    )
-    attach_lattice_columns(rows, maps)
+    rows, maps = _build_local_reconstruction_rows(data, tws_bpm, bpm_name, dpp_est=dpp_est)
 
     rows[PREV.bpm_x] = _require_neighbor_name(
         prev_x.at[bpm_name, PREV.bpm_x], bpm_name, "x", "previous"
@@ -281,9 +306,12 @@ def _prepare_prev_reconstruction(
     rows[PREV.delta_y] = float(prev_y.at[bpm_name, PREV.delta_y])
     rows["sqrt_betax_p"] = rows[PREV.bpm_x].map(maps.sqrt_betax)
     rows["sqrt_betay_p"] = rows[PREV.bpm_y].map(maps.sqrt_betay)
+    if maps.dx is not None and maps.dy is not None:
+        rows[PREV.dx] = rows[PREV.bpm_x].map(maps.dx)
+        rows[PREV.dy] = rows[PREV.bpm_y].map(maps.dy)
 
     rows = _merge_prev_neighbor_data(rows, data, bpm_index)
-    return momenta_from_prev(rows)
+    return momenta_from_prev(rows, dpp_est=dpp_est)
 
 
 def _prepare_next_reconstruction(
@@ -293,12 +321,10 @@ def _prepare_next_reconstruction(
     next_x: pd.DataFrame,
     next_y: pd.DataFrame,
     bpm_index: dict[str, int],
+    *,
+    dpp_est: float = 0.0,
 ) -> pd.DataFrame:
-    maps = build_lattice_maps(tws_bpm)
-    rows = data.loc[data["name"] == bpm_name, ["name", "turn", "x", "y", "var_x", "var_y"]].copy(
-        deep=True
-    )
-    attach_lattice_columns(rows, maps)
+    rows, maps = _build_local_reconstruction_rows(data, tws_bpm, bpm_name, dpp_est=dpp_est)
 
     rows[NEXT.bpm_x] = _require_neighbor_name(
         next_x.at[bpm_name, NEXT.bpm_x], bpm_name, "x", "next"
@@ -310,9 +336,12 @@ def _prepare_next_reconstruction(
     rows[NEXT.delta_y] = float(next_y.at[bpm_name, NEXT.delta_y])
     rows["sqrt_betax_n"] = rows[NEXT.bpm_x].map(maps.sqrt_betax)
     rows["sqrt_betay_n"] = rows[NEXT.bpm_y].map(maps.sqrt_betay)
+    if maps.dx is not None and maps.dy is not None:
+        rows[NEXT.dx] = rows[NEXT.bpm_x].map(maps.dx)
+        rows[NEXT.dy] = rows[NEXT.bpm_y].map(maps.dy)
 
     rows = _merge_next_neighbor_data(rows, data, bpm_index)
-    return momenta_from_next(rows)
+    return momenta_from_next(rows, dpp_est=dpp_est)
 
 
 def _prepare_direct_bpm_reconstruction(
@@ -321,33 +350,43 @@ def _prepare_direct_bpm_reconstruction(
     *,
     window: ACDipoleBPMWindow,
     bpm_index: dict[str, int],
+    dpp_est: float = 0.0,
     use_immediate_neighbors_for_bpms: bool = False,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
     prev_x, prev_y, next_x, next_y = _prepare_neighbor_tables(
         tws_bpm, use_immediate_neighbors_for_bpms=use_immediate_neighbors_for_bpms
     )
-    upstream_frames = {
-        bpm_name: _prepare_prev_reconstruction(
-            data,
-            tws_bpm,
-            bpm_name,
+    side_builders = (
+        (
+            window.upstream,
+            _prepare_prev_reconstruction,
             prev_x,
             prev_y,
-            bpm_index,
-        )
-        for bpm_name in window.upstream
-    }
-    downstream_frames = {
-        bpm_name: _prepare_next_reconstruction(
-            data,
-            tws_bpm,
-            bpm_name,
+        ),
+        (
+            window.downstream,
+            _prepare_next_reconstruction,
             next_x,
             next_y,
-            bpm_index,
+        ),
+    )
+    prepared_frames: list[dict[str, pd.DataFrame]] = []
+    for bpm_names, builder, plane_x, plane_y in side_builders:
+        prepared_frames.append(
+            {
+                bpm_name: builder(
+                    data,
+                    tws_bpm,
+                    bpm_name,
+                    plane_x,
+                    plane_y,
+                    bpm_index,
+                    dpp_est=dpp_est,
+                )
+                for bpm_name in bpm_names
+            }
         )
-        for bpm_name in window.downstream
-    }
+    upstream_frames, downstream_frames = prepared_frames
     return upstream_frames, downstream_frames
 
 
@@ -358,6 +397,8 @@ def _fit_ac_dipole_from_frames(
     marker_name: str,
     model: ACDipoleMadDriver,
     smooth_lambda: float,
+    dpx_tune: float,
+    dpy_tune: float,
     upstream_frames: dict[str, pd.DataFrame],
     downstream_frames: dict[str, pd.DataFrame],
 ) -> tuple[
@@ -407,13 +448,44 @@ def _fit_ac_dipole_from_frames(
     raw_downstream = _combine_state_tables(turns, downstream_tables)
     dpx_raw = raw_downstream.state.px - raw_upstream.state.px
     dpy_raw = raw_downstream.state.py - raw_upstream.state.py
+    dpx_tune_fractional = _normalise_supplied_tune("dpx", dpx_tune)
+    dpy_tune_fractional = _normalise_supplied_tune("dpy", dpy_tune)
+    LOGGER.info(
+        "Using supplied AC-dipole tunes: dpx tune=%.6f -> %.6f, dpy tune=%.6f -> %.6f",
+        float(dpx_tune),
+        dpx_tune_fractional,
+        float(dpy_tune),
+        dpy_tune_fractional,
+    )
     cleaned_upstream, cleaned_downstream, dpx_fit, dpy_fit = _clean_ac_dipole_states(
         turns,
         upstream_tables,
         downstream_tables,
-        dpx_tune=_estimate_dominant_tune(turns, dpx_raw),
-        dpy_tune=_estimate_dominant_tune(turns, dpy_raw),
+        dpx_tune=dpx_tune_fractional,
+        dpy_tune=dpy_tune_fractional,
         smooth_lambda=smooth_lambda,
+    )
+    _log_harmonic_fit_parameters(
+        label="dpx",
+        reference_tune=dpx_tune_fractional,
+        fit=dpx_fit,
+    )
+    _log_harmonic_fit_parameters(
+        label="dpy",
+        reference_tune=dpy_tune_fractional,
+        fit=dpy_fit,
+    )
+    _log_harmonic_fit_quality(
+        label="dpx",
+        turns=turns,
+        observed=dpx_raw,
+        fitted=dpx_fit.fitted,
+    )
+    _log_harmonic_fit_quality(
+        label="dpy",
+        turns=turns,
+        observed=dpy_raw,
+        fitted=dpy_fit.fitted,
     )
     return (
         result,
@@ -441,8 +513,12 @@ def _transport_to_marker(
         raise ValueError(f"direction must be +/- 1, got {direction}")
 
     source_state = frame[["x", "px", "y", "py"]].to_numpy(dtype=float)
-    transfer_mat = model.transfer_matrix(source_name, marker_name, direction=direction)
-    marker_state = source_state @ transfer_mat
+    marker_state = model.track_particles(
+        source_name,
+        marker_name,
+        source_state,
+        direction=direction,
+    )
     return ACDipoleStateSeries(
         marker_state[:, 0],
         marker_state[:, 1],
@@ -475,58 +551,56 @@ def _build_tracked_state_table(
     return tracked_table.sort_values("turn").reset_index(drop=True)
 
 
-def _blend_bpm_momentum_component(
-    raw_values: np.ndarray,
-    raw_variances: np.ndarray,
-    raw_acd_values: np.ndarray,
-    raw_acd_variances: np.ndarray,
-    cleaned_acd_values: np.ndarray,
-    cleaned_acd_variances: np.ndarray,
-) -> np.ndarray:
-    correction = np.asarray(cleaned_acd_values, dtype=float) - np.asarray(
-        raw_acd_values, dtype=float
-    )
-    raw_var = np.clip(np.asarray(raw_variances, dtype=float), 0.0, None)
-    correction_var = np.clip(
-        np.asarray(raw_acd_variances, dtype=float) + np.asarray(cleaned_acd_variances, dtype=float),
-        0.0,
-        None,
-    )
-    denominator = 2.0 * raw_var + correction_var
-    shrinkage = np.divide(
-        raw_var,
-        denominator,
-        out=np.zeros_like(raw_var, dtype=float),
-        where=denominator > 0.0,
-    )
-    return np.asarray(raw_values, dtype=float) + shrinkage * correction
-
-
-def _blend_bpm_momentum_estimate(
-    frame: pd.DataFrame,
-    tws: pd.DataFrame,
+def _transport_marker_state_to_bpm(
+    state: ACDipoleStateSeries,
+    model: ACDipoleMadDriver,
     *,
     bpm_name: str,
-    raw_acd: ACDipoleStateEstimate,
-    cleaned_acd: ACDipoleStateEstimate,
-) -> tuple[np.ndarray, np.ndarray]:
-    raw_px = _restore_reference_momenta(frame["px"].to_numpy(dtype=float), tws, bpm_name, "px")
-    raw_py = _restore_reference_momenta(frame["py"].to_numpy(dtype=float), tws, bpm_name, "py")
-    cleaned_px = _blend_bpm_momentum_component(
-        raw_px,
-        frame["var_px"].to_numpy(dtype=float),
-        raw_acd.state.px,
-        raw_acd.var_px,
-        cleaned_acd.state.px,
-        cleaned_acd.var_px,
+    marker_name: str,
+    direction: int,
+) -> ACDipoleStateSeries:
+    marker_state = np.column_stack([state.x, state.px, state.y, state.py])
+    bpm_state = model.track_particles(
+        marker_name,
+        bpm_name,
+        marker_state,
+        direction=direction,
     )
-    cleaned_py = _blend_bpm_momentum_component(
-        raw_py,
-        frame["var_py"].to_numpy(dtype=float),
-        raw_acd.state.py,
-        raw_acd.var_py,
-        cleaned_acd.state.py,
-        cleaned_acd.var_py,
+    return ACDipoleStateSeries(
+        bpm_state[:, 0],
+        bpm_state[:, 1],
+        bpm_state[:, 2],
+        bpm_state[:, 3],
+    )
+
+
+def _reconstruct_bpm_momentum_from_cleaned_acd(
+    tws: pd.DataFrame,
+    model: ACDipoleMadDriver,
+    *,
+    bpm_name: str,
+    cleaned_acd: ACDipoleStateEstimate,
+    marker_name: str,
+    direction: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    bpm_state = _transport_marker_state_to_bpm(
+        cleaned_acd.state,
+        model,
+        bpm_name=bpm_name,
+        marker_name=marker_name,
+        direction=direction,
+    )
+    cleaned_px = _restore_reference_momenta(
+        bpm_state.px,
+        tws,
+        bpm_name,
+        "px",
+    )
+    cleaned_py = _restore_reference_momenta(
+        bpm_state.py,
+        tws,
+        bpm_name,
+        "py",
     )
     return cleaned_px, cleaned_py
 
@@ -583,6 +657,8 @@ def calculate_ac_dipole_momentum(
     *,
     ac_dipole_marker: str,
     model: ACDipoleMadDriver,
+    dpx_tune: float,
+    dpy_tune: float,
     bpm_upstream: str | None = None,
     bpm_downstream: str | None = None,
     smooth_lambda: float = 1,
@@ -598,8 +674,11 @@ def calculate_ac_dipole_momentum(
     2. solving a global weighted linear least-squares problem for the pre/post
          ACD momenta constrained by the fitted kick waveform, with tunable
          smoothness strength ``smooth_lambda``, and
-    3. using the ACD-side momentum correction as a variance-weighted update to
-       the raw BPM momentum estimates.
+    3. transporting the cleaned pre-/post-kick ACD states back to the selected
+       adjacent BPMs to obtain physically consistent BPM momenta.
+
+    The supplied tunes are used as the starting point for the harmonic kick
+    fit, which refines the final fitted tune locally in each plane.
     """
 
     validate_input(orig_data)
@@ -616,6 +695,7 @@ def calculate_ac_dipole_momentum(
     marker_name = _resolve_name(ac_dipole_marker, lattice_names)
     data = _normalise_measurement_names(data, lattice_names)
     tws = _normalise_twiss_index(tws, lattice_names)
+    dpp_est = float(getattr(model, "deltap", 0.0))
 
     measured_bpm_names = [str(name) for name in data["name"].unique()]
     available_bpm_names = [name for name in measured_bpm_names if name in set(tws.index)]
@@ -648,6 +728,7 @@ def calculate_ac_dipole_momentum(
         tws_bpm,
         window=window,
         bpm_index=bpm_index,
+        dpp_est=dpp_est,
         use_immediate_neighbors_for_bpms=use_immediate_neighbors_for_bpms,
     )
     (
@@ -667,25 +748,28 @@ def calculate_ac_dipole_momentum(
         marker_name=marker_name,
         model=model,
         smooth_lambda=smooth_lambda,
+        dpx_tune=float(dpx_tune),
+        dpy_tune=float(dpy_tune),
         upstream_frames=upstream_frames,
         downstream_frames=downstream_frames,
     )
-    primary_upstream = upstream_frames[selection.upstream]
-    primary_downstream = downstream_frames[selection.downstream]
-
-    px_bpm_upstream_cleaned, py_bpm_upstream_cleaned = _blend_bpm_momentum_estimate(
-        primary_upstream,
+    px_bpm_upstream_cleaned, py_bpm_upstream_cleaned = _reconstruct_bpm_momentum_from_cleaned_acd(
         tws,
+        model,
         bpm_name=selection.upstream,
-        raw_acd=raw_upstream,
         cleaned_acd=cleaned_upstream,
+        marker_name=marker_name,
+        direction=-1,
     )
-    px_bpm_downstream_cleaned, py_bpm_downstream_cleaned = _blend_bpm_momentum_estimate(
-        primary_downstream,
-        tws,
-        bpm_name=selection.downstream,
-        raw_acd=raw_downstream,
-        cleaned_acd=cleaned_downstream,
+    px_bpm_downstream_cleaned, py_bpm_downstream_cleaned = (
+        _reconstruct_bpm_momentum_from_cleaned_acd(
+            tws,
+            model,
+            bpm_name=selection.downstream,
+            cleaned_acd=cleaned_downstream,
+            marker_name=marker_name,
+            direction=1,
+        )
     )
 
     bpm_elements = {

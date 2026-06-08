@@ -33,6 +33,8 @@ def calculate_pz_measurement(
     include_errors: bool = False,
     include_optics_errors: bool = False,
     dpp_override: float | None = None,
+    use_model_optics: bool = False,
+    use_measurement_dispersion: bool = True,
     ac_dipole_config: ACDipoleConfig | None = None,
 ) -> pd.DataFrame:
     """Calculate transverse momenta from dispersive measurements.
@@ -49,6 +51,10 @@ def calculate_pz_measurement(
         include_optics_errors: Whether to include optical function uncertainties in error propagation.
         dpp_override: If provided, use this $\\Delta p / p$
             instead of estimating it from the model.
+        use_model_optics: If True, keep measured phase advances but take beta and alpha
+            from ``model_tws``.
+        use_measurement_dispersion: If True, use measured dispersion when available.
+            If False, always use model dispersion from ``model_tws``.
 
     Returns:
         DataFrame with calculated px and py columns, with closed orbit and reference
@@ -71,7 +77,13 @@ def calculate_pz_measurement(
 
     # Stage 2: Process twiss
     tws, has_errors, dispersion_found = process_twiss(
-        Path(measurement_folder), bpm_list, include_errors, reverse_meas_tws
+        Path(measurement_folder),
+        bpm_list,
+        include_errors,
+        reverse_meas_tws,
+        model_tws=model_tws,
+        use_model_optics=use_model_optics,
+        use_measurement_dispersion=use_measurement_dispersion,
     )
 
     # Filter data to only BPMs present in the twiss

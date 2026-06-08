@@ -117,6 +117,8 @@ def test_dispersive_momentum_on_momentum_with_ac_dipole_config(
         ac_dipole_config=ACDipoleConfig(
             ac_dipole_marker=AC_DIPOLE_ELEMENT,
             model=model,
+            dpx_tune=0.27,
+            dpy_tune=0.322,
             bpm_upstream=bpm_upstream,
             bpm_downstream=bpm_downstream,
         ),
@@ -161,6 +163,85 @@ def test_dispersive_momentum_on_momentum_with_ac_dipole_config(
     )
 
     # At the BPMs near the AC dipole, corrected estimates should improve.
+    assert px_rmse_acd_local < px_rmse_base_local
+    assert py_rmse_acd_local < py_rmse_base_local
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("seq_file", ["lhcb1.seq", "b1_120cm_crossing.seq"])
+@pytest.mark.parametrize("delta_p", [-5e-4, 4e-4])
+def test_dispersive_momentum_off_momentum_with_ac_dipole_config(
+    seq_file,
+    delta_p,
+    data_dir,
+    acd_tracking_setup,
+):
+    pytest.importorskip("pymadng_utils")
+
+    setup = acd_tracking_setup(seq_file, data_dir, delta_p=delta_p)
+    tracking_df = setup["tracking_df"]
+    tws = setup["tws"]
+    truth = setup["truth"]
+    seq = data_dir / "sequences" / seq_file
+    model = _get_driver(seq, deltap=delta_p)
+    bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
+        model.twiss_elements,
+        available_bpms=tracking_df["name"].unique().tolist(),
+        element_name=AC_DIPOLE_ELEMENT,
+    )
+
+    baseline = dispersive_calc(
+        tracking_df.copy(deep=True),
+        tws=tws,
+        inject_noise=False,
+        info=False,
+    ).rename(columns={"px": "px_base", "py": "py_base"})
+
+    with_acd = dispersive_calc(
+        tracking_df.copy(deep=True),
+        tws=tws,
+        inject_noise=False,
+        info=False,
+        ac_dipole_config=ACDipoleConfig(
+            ac_dipole_marker=AC_DIPOLE_ELEMENT,
+            model=model,
+            dpx_tune=0.27,
+            dpy_tune=0.322,
+            bpm_upstream=bpm_upstream,
+            bpm_downstream=bpm_downstream,
+        ),
+    ).rename(columns={"px": "px_acd", "py": "py_acd"})
+
+    merged = truth.merge(
+        baseline[["name", "turn", "px_base", "py_base"]],
+        on=["name", "turn"],
+    ).merge(
+        with_acd[["name", "turn", "px_acd", "py_acd"]],
+        on=["name", "turn"],
+    )
+
+    improved_bpms = {bpm_upstream, bpm_downstream}
+    improved_rows = merged[merged["name"].isin(improved_bpms)]
+    assert len(improved_rows) > 0
+
+    px_rmse_base_local = rmse(
+        improved_rows["px_true"].to_numpy(),
+        improved_rows["px_base"].to_numpy(),
+    )
+    py_rmse_base_local = rmse(
+        improved_rows["py_true"].to_numpy(),
+        improved_rows["py_base"].to_numpy(),
+    )
+    px_rmse_acd_local = rmse(
+        improved_rows["px_true"].to_numpy(),
+        improved_rows["px_acd"].to_numpy(),
+    )
+    py_rmse_acd_local = rmse(
+        improved_rows["py_true"].to_numpy(),
+        improved_rows["py_acd"].to_numpy(),
+    )
+
+    # Off-momentum ACD overrides should remain dispersion-aware at the local BPMs.
     assert px_rmse_acd_local < px_rmse_base_local
     assert py_rmse_acd_local < py_rmse_base_local
 

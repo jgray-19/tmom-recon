@@ -8,6 +8,7 @@ import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
+import pandas as pd
 
 from tmom_recon.data.columns import (
     CURRENT_BPM_ERRORS,
@@ -48,6 +49,8 @@ LOGGER = logging.getLogger(__name__)
 # Systematic plane definitions
 PLANES = [(PLANE_X, "X", "11"), (PLANE_Y, "Y", "22")]
 OLD_METHOD_DPP_ESTIMATION = False  # Whether to use old method for DPP estimation from model
+MODEL_OPTICS_COLUMNS = ("beta11", "beta22", "alfa11", "alfa22")
+MODEL_DISPERSION_COLUMNS = ("dx", "dy", "dpx", "dpy")
 
 
 def prepare_data(orig_data: pd.DataFrame) -> tuple[pd.DataFrame, InputFeatures]:
@@ -69,6 +72,10 @@ def process_twiss(
     bpm_list: list[str],
     include_errors: bool,
     reverse_meas_tws: bool,
+    model_tws: pd.DataFrame | None = None,
+    *,
+    use_model_optics: bool = False,
+    use_measurement_dispersion: bool = True,
 ) -> tuple[pd.DataFrame, bool, bool]:
     """Process twiss data from measurements.
 
@@ -80,8 +87,10 @@ def process_twiss(
     Returns:
         Tuple of (processed_twiss, has_errors, dispersion_found).
     """
-    tws, dispersion_found = build_twiss_from_measurements(
-        measurement_folder, include_errors=include_errors
+    tws, measurement_dispersion_found = build_twiss_from_measurements(
+        measurement_folder,
+        include_errors=include_errors,
+        reverse_bpm_order=reverse_meas_tws,
     )
     tws = tws[tws.index.isin(bpm_list)]
 
@@ -102,9 +111,9 @@ def process_twiss(
     rename_mapping = MEASUREMENT_RENAME_MAPPING.copy()
     if has_errors:
         rename_mapping.update(ERROR_RENAME_MAPPING)
-    if dispersion_found:
+    if measurement_dispersion_found:
         rename_mapping.update(DISPERSION_RENAME_MAPPING)
-    if dispersion_found and has_errors:
+    if measurement_dispersion_found and has_errors:
         rename_mapping.update(ERROR_DISPERSION_RENAME_MAPPING)
 
     # Single rename operation instead of 4
@@ -114,11 +123,59 @@ def process_twiss(
     tws.columns = [col.lower() for col in tws.columns]
     tws.headers = {key.lower(): value for key, value in tws.headers.items()}
 
+    dispersion_found = measurement_dispersion_found
+    if model_tws is not None:
+        tws, dispersion_found = _merge_phase_measurements_with_model(
+            tws,
+            model_tws,
+            use_model_optics=use_model_optics,
+            use_measurement_dispersion=use_measurement_dispersion,
+            measurement_dispersion_found=measurement_dispersion_found,
+        )
+
     # Apply error propagation for sqrt(beta) if errors exist
     if has_errors:
         _apply_sqrt_beta_error_propagation(tws)
 
     return tws, bool(has_errors), dispersion_found
+
+
+def _merge_phase_measurements_with_model(
+    tws_meas: pd.DataFrame,
+    model_tws: pd.DataFrame,
+    *,
+    use_model_optics: bool,
+    use_measurement_dispersion: bool,
+    measurement_dispersion_found: bool,
+) -> tuple[pd.DataFrame, bool]:
+    """Combine measured phase advances with selected optics columns from the model."""
+    tws = tws_meas.copy(deep=True)
+    shared_bpms = tws.index.intersection(model_tws.index)
+    tws = tws.loc[shared_bpms].copy()
+    model_view = model_tws.loc[shared_bpms]
+
+    if use_model_optics:
+        for column in MODEL_OPTICS_COLUMNS:
+            if column not in model_view.columns:
+                raise KeyError(f"Model twiss is missing required optics column {column!r}")
+            tws[column] = model_view[column].to_numpy()
+
+    if use_measurement_dispersion:
+        dispersion_found = measurement_dispersion_found
+    else:
+        missing = [
+            column for column in MODEL_DISPERSION_COLUMNS if column not in model_view.columns
+        ]
+        if missing:
+            raise KeyError(
+                "Model twiss is missing required dispersion columns "
+                f"for model-dispersion reconstruction: {missing}"
+            )
+        for column in MODEL_DISPERSION_COLUMNS:
+            tws[column] = model_view[column].to_numpy()
+        dispersion_found = True
+
+    return tws, dispersion_found
 
 
 def _apply_sqrt_beta_error_propagation(tws: pd.DataFrame) -> None:

@@ -4,7 +4,10 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING
 
-from tmom_recon.acd.integration import ACDipoleConfig, apply_ac_dipole_bpm_overrides_inplace
+from tmom_recon.acd.integration import (
+    ACDipoleConfig,
+    apply_ac_dipole_bpm_overrides_inplace,
+)
 from tmom_recon.data.config import POSITION_STD_DEV
 from tmom_recon.lattice.core import (
     OUT_COLS,

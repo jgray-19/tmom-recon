@@ -95,6 +95,8 @@ AC-dipole reconstruction
        twiss_df,
        ac_dipole_marker="MKQA.6L4.B1",
        model=acd_model,
+       dpx_tune=0.27,
+       dpy_tune=0.322,
    )
 
 The ``model`` object is expected to provide the MAD-NG tracking interface used
@@ -103,6 +105,13 @@ by ``tmom_recon.acd.madng_driver.ACDipoleMadDriver``.
 The returned dataframe includes both raw kick estimates and cleaned fit-based
 quantities such as ``dpx_fit_rad`` and ``dpy_fit_rad``, together with metadata
 describing the selected upstream and downstream BPMs.
+
+The reconstruction models the AC dipole as a thin kick at the marker:
+
+- same-turn ``x`` and ``y`` at the marker are shared across the kick,
+- the kick appears as a jump in ``px`` and ``py``, and
+- the cleaned marker-side states are transported back to the adjacent BPMs to
+  produce cleaned BPM-local momenta.
 
 If you want to apply AC-dipole-cleaned BPM momenta during higher-level
 reconstruction, prefer using :class:`tmom_recon.ACDipoleConfig` through the
@@ -119,8 +128,10 @@ Using ``ACDipoleConfig`` in higher-level reconstruction
        tracking_df,
        twiss_df,
        ac_dipole_config=ACDipoleConfig(
-           ac_dipole_marker="MKQA.6L4.B1",
-           model=acd_model,
+       ac_dipole_marker="MKQA.6L4.B1",
+       model=acd_model,
+       dpx_tune=0.27,
+       dpy_tune=0.322,
        ),
    )
 
@@ -163,7 +174,14 @@ measurement data:
        measurement_folder,
        model_twiss,
        reverse_meas_tws=False,
+       use_model_optics=True,
+       use_measurement_dispersion=False,
    )
+
+This lets you use measured phase advances together with model beta/alpha, which
+is useful for machines where the phase measurement is trusted more than the
+full measured optics table. If you want measured phase plus measured
+dispersion, keep ``use_measurement_dispersion=True``.
 
 To build a Twiss-like dataframe directly from optics measurement files:
 

@@ -1,37 +1,126 @@
 tmom_recon.acd
 ==============
 
+Overview
+--------
+
+The AC-dipole workflow reconstructs a driven transverse kick at a chosen
+marker from BPM data on both sides of the element.  The implementation follows
+the thin-kick picture:
+
+- for a given turn, the marker position ``x``/``y`` is shared before and after
+  the kick,
+- the kick appears as a jump in ``px``/``py``, and
+- the fitted marker-side state can be transported back to the adjacent BPMs to
+  obtain cleaned local momenta.
+
+In practical terms the workflow is:
+
+1. select one upstream and one downstream BPM around the marker,
+2. reconstruct local BPM states from the turn-by-turn orbit data,
+3. track those states to the marker with MAD-NG,
+4. fit harmonic ``dpx`` and ``dpy`` waveforms at the marker, and
+5. transport cleaned pre-/post-kick states back to the selected BPMs.
+
+For a more detailed design note, see ``ACD_RECONSTRUCTION_PROCESS.md`` in the
+repository root.
+
+Quick Start
+-----------
+
+Direct reconstruction:
+
+.. code-block:: python
+
+   from tmom_recon import calculate_ac_dipole_momentum
+
+   acd_result = calculate_ac_dipole_momentum(
+       tracking_df,
+       twiss_df,
+       ac_dipole_marker="MKQA.6L4.B1",
+       model=acd_model,
+       dpx_tune=0.27,
+       dpy_tune=0.322,
+   )
+
+Reusing the cleaned BPM momenta inside a higher-level reconstruction:
+
+.. code-block:: python
+
+   from tmom_recon import ACDipoleConfig, calculate_transverse_pz
+
+   result = calculate_transverse_pz(
+       tracking_df,
+       twiss_df,
+       ac_dipole_config=ACDipoleConfig(
+           ac_dipole_marker="MKQA.6L4.B1",
+           model=acd_model,
+           dpx_tune=0.27,
+           dpy_tune=0.322,
+       ),
+   )
+
+Key Outputs
+-----------
+
+The direct ACD result includes:
+
+- raw marker-side kick estimates ``dpx_rad`` and ``dpy_rad``,
+- fitted harmonic waveforms ``dpx_fit_rad`` and ``dpy_fit_rad``,
+- cleaned marker-side states such as ``x_acd_upstream_cleaned`` and
+  ``px_acd_downstream_cleaned``, and
+- cleaned BPM-side momenta such as ``px_bpm_upstream_cleaned`` and
+  ``py_bpm_downstream_cleaned``.
+
+The cleaned marker states are built so that same-turn marker ``x`` and ``y``
+match on both sides of the kick, while the fitted ``dpx``/``dpy`` describe the
+momentum jump across the marker.
+
+Public API
+----------
+
 .. automodule:: tmom_recon.acd
    :members:
-   :undoc-members:
    :show-inheritance:
+
+Integration Helpers
+-------------------
 
 .. automodule:: tmom_recon.acd.integration
    :members:
-   :undoc-members:
    :show-inheritance:
+
+Core Reconstruction
+-------------------
 
 .. automodule:: tmom_recon.acd.reconstruction
    :members:
-   :undoc-members:
    :show-inheritance:
+
+Selection
+---------
 
 .. automodule:: tmom_recon.acd.selection
    :members:
-   :undoc-members:
    :show-inheritance:
+
+Cleaning
+--------
 
 .. automodule:: tmom_recon.acd.cleaning
    :members:
-   :undoc-members:
    :show-inheritance:
+
+Data Models
+-----------
 
 .. automodule:: tmom_recon.acd.models
    :members:
-   :undoc-members:
    :show-inheritance:
+
+MAD-NG Driver
+-------------
 
 .. automodule:: tmom_recon.acd.madng_driver
    :members:
-   :undoc-members:
    :show-inheritance:
