@@ -1,20 +1,15 @@
+"""BPM selection utilities for AC-dipole reconstruction."""
+
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
+from tmom_recon.lattice.names import resolve_name
+
 from .models import ACDipoleBPMSelection, ACDipoleBPMWindow
 
-
-def resolve_name(name: str, candidates: list[str] | set[str]) -> str:
-    if name in candidates:
-        return name
-
-    lowered = {str(candidate).lower(): str(candidate) for candidate in candidates}
-    resolved = lowered.get(name.lower())
-    if resolved is None:
-        raise KeyError(f"Element {name!r} was not found")
-    return resolved
+__all__ = ["resolve_name"]
 
 
 def _collect_bpms_from_marker(
@@ -25,6 +20,22 @@ def _collect_bpms_from_marker(
     step: int,
     count: int,
 ) -> list[str]:
+    """Collect BPMs by walking away from the marker in one direction.
+
+    Starting immediately adjacent to *marker_name* and stepping by *step*
+    (``-1`` for upstream, ``+1`` for downstream), collects up to *count*
+    distinct BPMs from *bpm_set* in lattice order.
+
+    Args:
+        names: Ordered list of all lattice element names.
+        marker_name: Name of the AC-dipole marker element.
+        bpm_set: Set of available BPM names to select from.
+        step: ``+1`` to walk forward (downstream), ``-1`` to walk backward (upstream).
+        count: Maximum number of BPMs to collect.
+
+    Returns:
+        Ordered list of selected BPM names (closest first).
+    """
     marker_idx = names.index(marker_name)
     selected: list[str] = []
     for shift in range(1, len(names) + 1):
@@ -44,6 +55,22 @@ def _collect_bpms_from_anchor(
     step: int,
     count: int,
 ) -> list[str]:
+    """Collect BPMs by walking away from an anchor BPM in one direction.
+
+    Unlike :func:`_collect_bpms_from_marker`, the anchor itself is included
+    as the first candidate. If *count* BPMs cannot be found starting from
+    *anchor_name*, the walk continues around the ring.
+
+    Args:
+        names: Ordered list of all lattice element names.
+        anchor_name: Name of the anchor BPM (included as a candidate).
+        bpm_set: Set of available BPM names to select from.
+        step: ``+1`` to walk forward, ``-1`` to walk backward.
+        count: Number of BPMs to collect.
+
+    Returns:
+        Ordered list of selected BPM names (anchor first).
+    """
     anchor_idx = names.index(anchor_name)
     selected: list[str] = []
     for shift in range(count):
@@ -68,6 +95,30 @@ def select_ac_dipole_bpm_window(
     bpm_upstream: str | None = None,
     bpm_downstream: str | None = None,
 ) -> ACDipoleBPMWindow:
+    """Select the upstream and downstream BPMs bracketing the AC-dipole marker.
+
+    When *bpm_upstream* / *bpm_downstream* are omitted, the immediately
+    adjacent BPM on each side of the marker is selected automatically.
+    When an anchor is supplied the anchor BPM itself (and possibly additional
+    BPMs walking away from it) forms the window on that side.
+
+    Args:
+        tws: Twiss DataFrame whose index gives the ordered lattice element names.
+        ac_dipole_marker: Name of the AC-dipole marker element (case-insensitive
+            match against the lattice).
+        bpm_names: Optional subset of BPM names to consider. If ``None``,
+            all elements whose name starts with ``"BPM"`` (case-insensitive)
+            are used.
+        bpm_upstream: Optional explicit upstream anchor BPM name.
+        bpm_downstream: Optional explicit downstream anchor BPM name.
+
+    Returns:
+        An :class:`ACDipoleBPMWindow` with one BPM on each side.
+
+    Raises:
+        ValueError: If no BPMs are available, or if BPMs cannot be found on
+            both sides of the marker.
+    """
     names = [str(name) for name in tws.index]
     marker_name = resolve_name(ac_dipole_marker, names)
 
@@ -83,46 +134,19 @@ def select_ac_dipole_bpm_window(
     resolved_downstream = None if bpm_downstream is None else resolve_name(bpm_downstream, bpm_set)
 
     if resolved_upstream is None:
-        upstream = _collect_bpms_from_marker(
-            names,
-            marker_name,
-            bpm_set,
-            step=-1,
-            count=1,
-        )
+        upstream = _collect_bpms_from_marker(names, marker_name, bpm_set, step=-1, count=1)
     else:
-        upstream = _collect_bpms_from_anchor(
-            names,
-            resolved_upstream,
-            bpm_set,
-            step=-1,
-            count=1,
-        )
+        upstream = _collect_bpms_from_anchor(names, resolved_upstream, bpm_set, step=-1, count=1)
 
     if resolved_downstream is None:
-        downstream = _collect_bpms_from_marker(
-            names,
-            marker_name,
-            bpm_set,
-            step=1,
-            count=1,
-        )
+        downstream = _collect_bpms_from_marker(names, marker_name, bpm_set, step=1, count=1)
     else:
-        downstream = _collect_bpms_from_anchor(
-            names,
-            resolved_downstream,
-            bpm_set,
-            step=1,
-            count=1,
-        )
+        downstream = _collect_bpms_from_anchor(names, resolved_downstream, bpm_set, step=1, count=1)
 
     if len(upstream) != 1 or len(downstream) != 1:
         raise ValueError(f"Unable to find BPMs on both sides of marker {marker_name!r}")
 
-    return ACDipoleBPMWindow(
-        upstream=tuple(upstream),
-        downstream=tuple(downstream),
-    )
+    return ACDipoleBPMWindow(upstream=tuple(upstream), downstream=tuple(downstream))
 
 
 def select_ac_dipole_bpms(
@@ -133,6 +157,21 @@ def select_ac_dipole_bpms(
     bpm_upstream: str | None = None,
     bpm_downstream: str | None = None,
 ) -> ACDipoleBPMSelection:
+    """Select the single closest upstream and downstream BPMs for the AC dipole.
+
+    Convenience wrapper around :func:`select_ac_dipole_bpm_window` that
+    returns only the primary BPM pair.
+
+    Args:
+        tws: Twiss DataFrame whose index gives the ordered lattice element names.
+        ac_dipole_marker: Name of the AC-dipole marker element.
+        bpm_names: Optional subset of BPM names to consider.
+        bpm_upstream: Optional explicit upstream anchor BPM name.
+        bpm_downstream: Optional explicit downstream anchor BPM name.
+
+    Returns:
+        An :class:`ACDipoleBPMSelection` with one BPM on each side.
+    """
     return select_ac_dipole_bpm_window(
         tws,
         ac_dipole_marker,

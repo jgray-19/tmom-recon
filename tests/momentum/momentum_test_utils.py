@@ -14,7 +14,7 @@ from omc3.optics_measurements.constants import (
     ORBIT_NAME,
 )
 
-from tmom_recon import inject_noise_xy_inplace
+from tmom_recon import calculate_pz, inject_noise_xy_inplace
 from tmom_recon.svd import svd_clean_measurements
 
 if TYPE_CHECKING:
@@ -29,6 +29,28 @@ LOGGER = logging.getLogger(__name__)
 def rmse(actual: np.ndarray, predicted: np.ndarray) -> float:
     """Compute root mean squared error."""
     return float(np.sqrt(np.mean((predicted - actual) ** 2)))
+
+
+def transverse_calc(
+    df: pd.DataFrame,
+    tws: pd.DataFrame | None = None,
+    *,
+    ac_dipole_config=None,
+    **kwargs,
+) -> pd.DataFrame:
+    """Model-only reconstruction without dispersion (old transverse behaviour)."""
+    return calculate_pz(df, model_tws=tws, use_dispersion=False, acd=ac_dipole_config, **kwargs)
+
+
+def dispersive_calc(
+    df: pd.DataFrame,
+    tws: pd.DataFrame | None = None,
+    *,
+    ac_dipole_config=None,
+    **kwargs,
+) -> pd.DataFrame:
+    """Model-only reconstruction with dispersion (old dispersive behaviour)."""
+    return calculate_pz(df, model_tws=tws, use_dispersion=True, acd=ac_dipole_config, **kwargs)
 
 
 def xsuite_to_ngtws(tbl: xt.Table) -> pd.DataFrame:

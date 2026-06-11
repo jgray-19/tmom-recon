@@ -5,7 +5,7 @@ import pytest
 
 from tests.momentum.momentum_test_utils import rmse
 from tmom_recon import (
-    calculate_transverse_pz,
+    calculate_pz,
     calculate_transverse_pz_nbpm,
     inject_noise_xy_inplace,
 )
@@ -72,9 +72,9 @@ def test_nbpm_improves_noisy_local_window_over_two_bpm_baseline(data_dir, tracki
         noise_std=1e-4,
     )
 
-    baseline = calculate_transverse_pz(
+    baseline = calculate_pz(
         noisy_df.copy(deep=True),
-        tws=tws,
+        model_tws=tws,
         inject_noise=False,
         info=False,
     ).rename(columns={"px": "px_base", "py": "py_base"})

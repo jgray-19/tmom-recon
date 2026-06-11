@@ -3,8 +3,11 @@ import pandas as pd
 import pytest
 
 from tmom_recon.physics.bpm_phases import (
+    DEGENERACY_BAND,
     next_bpm_to_pi,
     next_bpm_to_pi_2,
+    phase_advance_matrix_from_edges,
+    phase_advance_matrix_from_tws,
     prev_bpm_to_pi,
     prev_bpm_to_pi_2,
 )
@@ -32,13 +35,13 @@ expected_results = {
         "deltas": [-0.05, -0.05, -0.05, -0.05, -0.05, 0.00, -0.1, 0.0],
     },
     "prev_bpm_to_pi_2": {
-        "names": ["BPM7", "BPM8", "BPM1", "BPM2", "BPM3", "BPM5", "BPM6", "BPM6"],
-        "deltas": [-0.05, -0.05, -0.05, -0.05, -0.05, -0.05, -0.05, 0.05],
+        "names": ["BPM7", "BPM7", "BPM1", "BPM1", "BPM2", "BPM4", "BPM6", "BPM6"],
+        "deltas": [-0.05, 0.05, -0.05, 0.05, 0.05, 0.05, -0.05, 0.05],
     },
     "next_bpm_to_pi": {
         # . FROM   BPM1.   BPM2.   BPM3.   BPM4.   BPM5.   BPM6.   BPM7.   BPM8
-        "names": ["BPM6", "BPM7", "BPM7", "BPM8", "BPM1", "BPM1", "BPM2", "BPM3"],
-        "deltas": [0, 0, -0.1, -0.05, 0.1, 0, 0, -0.05],
+        "names": ["BPM6", "BPM7", "BPM8", "BPM8", "BPM1", "BPM1", "BPM2", "BPM3"],
+        "deltas": [0, 0, 0.05, -0.05, 0.1, 0, 0, -0.05],
     },
     "prev_bpm_to_pi": {
         "names": ["BPM4", "BPM5", "BPM6", "BPM6", "BPM1", "BPM2", "BPM4", "BPM5"],
@@ -58,9 +61,10 @@ def test_bpm_to_pi_2(func, mu_fixture, request):
     mu = request.getfixturevalue(mu_fixture)
     tune = 1.0
 
-    result = func(mu, tune)
+    forward = "next" in func.__name__
+    result = func(phase_advance_matrix_from_tws(mu, tune, forward=forward))
 
-    key = "next_bpm" if "next" in func.__name__ else "prev_bpm"
+    key = "next_bpm" if forward else "prev_bpm"
     expected = expected_results[func.__name__]
     assert all(result[key] == expected["names"])
     assert np.allclose(result["delta"], expected["deltas"])
@@ -76,57 +80,72 @@ def test_bpm_to_pi_2(func, mu_fixture, request):
 def test_bpm_to_pi(func, mu_fixture, tune, request):
     mu = request.getfixturevalue(mu_fixture)
 
-    result = func(mu, tune)
+    forward = "next" in func.__name__
+    result = func(phase_advance_matrix_from_tws(mu, tune, forward=forward))
 
-    key = "next_bpm" if "next" in func.__name__ else "prev_bpm"
+    key = "next_bpm" if forward else "prev_bpm"
     expected = expected_results[func.__name__]
     assert all(result[key] == expected["names"])
     assert np.allclose(result["delta"], expected["deltas"])
 
 
-def test_bpm_distance_limit_pi_2():
-    """
-    Test that BPM distance limits are respected for π/2 phase advance (max 11 BPMs).
+@pytest.mark.parametrize("forward", [True, False])
+def test_edge_matrix_matches_cumulative_form(forward):
+    """Accumulating mod-1 edges around the ring reproduces the cumulative-phase matrix.
 
-    Create a scenario with many BPMs where a perfect match exists beyond the 11 BPM limit,
-    and verify it is not selected.
+    The ring closes through the final (last -> first) edge rather than a ``% tune``
+    boundary, so the closing advance is the edge value itself.
     """
-    # Create BPMs at regular intervals, the ideal next BPM at π/2 is every 13/14 bpms, it should select within 11
+    mu = pd.Series(
+        [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.75],
+        index=[f"BPM{i}" for i in range(8)],
+    )
+    tune = 1.0
+
+    # Edges in ring order, including the closing edge that returns to the first BPM.
+    edge_vals = np.diff(mu.to_numpy(), append=tune + mu.to_numpy()[0])
+    edges = pd.Series(edge_vals, index=mu.index)
+
+    from_edges = phase_advance_matrix_from_edges(edges, forward=forward)
+    from_tws = phase_advance_matrix_from_tws(mu, tune, forward=forward)
+
+    pd.testing.assert_frame_equal(from_edges, from_tws)
+
+
+def _assert_closest_within_oscillation(matrix, result, key, target):
+    """Each match must be the BPM whose cumulative phase advance (within one
+    betatron oscillation) is closest to ``target``."""
+    for bpm in matrix.index:
+        matched = result.loc[bpm, key]
+        if pd.isna(matched):
+            continue
+        advance = matrix.loc[bpm].to_numpy(dtype=float)
+        candidates = advance[np.isfinite(advance) & (advance > 0.0) & (advance <= 1.0)]
+        assert candidates.size, f"no candidate within one oscillation for {bpm}"
+        best = float(np.min(np.abs(candidates - target)))
+        chosen = abs(float(matrix.at[bpm, matched]) - target)
+        # Degenerate candidates (near a multiple of pi) may be skipped, so the
+        # chosen match is the closest non-degenerate candidate.
+        assert chosen <= best + DEGENERACY_BAND
+
+
+def test_pi_2_selects_closest_phase_within_oscillation():
+    """For π/2, the matched BPM has cumulative phase advance closest to 0.25 turns."""
     mu = pd.Series(
         np.linspace(0, 0.9, 50),  # 50 BPMs over nearly 1 full turn.
         index=[f"BPM{i}" for i in range(50)],
     )
-    tune = 1.0
-    result = next_bpm_to_pi_2(mu, tune)
-
-    # For each BPM, verify that the selected next BPM is within 11 steps
-    for i, bpm in enumerate(mu.index):
-        matched_bpm = result.loc[bpm, "next_bpm"]
-        if pd.notna(matched_bpm):
-            matched_idx = list(mu.index).index(matched_bpm)
-            distance = (matched_idx - i) % len(mu)
-            assert distance <= 11, f"BPM{i} matched with BPM at distance {distance} > 11"
+    matrix = phase_advance_matrix_from_tws(mu, 1.0, forward=True)
+    result = next_bpm_to_pi_2(matrix)
+    _assert_closest_within_oscillation(matrix, result, "next_bpm", 0.25)
 
 
-def test_bpm_distance_limit_pi():
-    """
-    Test that BPM distance limits are respected for π phase advance (max 20 BPMs).
-
-    Create a scenario with many BPMs where a perfect match exists beyond the 20 BPM limit,
-    and verify it is not selected.
-    """
-    # Create BPMs at regular intervals, the ideal next BPM at π is every 26 bpms, it should select within 20
+def test_pi_selects_closest_phase_within_oscillation():
+    """For π, the matched BPM has cumulative phase advance closest to 0.5 turns."""
     mu = pd.Series(
         np.linspace(0, 0.95, 50),  # 50 BPMs over nearly 1 full turn
         index=[f"BPM{i}" for i in range(50)],
     )
-    tune = 1.0
-    result = next_bpm_to_pi(mu, tune)
-
-    # For each BPM, verify that the selected next BPM is within 20 steps
-    for i, bpm in enumerate(mu.index):
-        matched_bpm = result.loc[bpm, "next_bpm"]
-        if pd.notna(matched_bpm):
-            matched_idx = list(mu.index).index(matched_bpm)
-            distance = (matched_idx - i) % len(mu)
-            assert distance <= 20, f"BPM{i} matched with BPM at distance {distance} > 20"
+    matrix = phase_advance_matrix_from_tws(mu, 1.0, forward=True)
+    result = next_bpm_to_pi(matrix)
+    _assert_closest_within_oscillation(matrix, result, "next_bpm", 0.5)

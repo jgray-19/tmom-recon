@@ -16,7 +16,11 @@ from tmom_recon.data.schema import (
     VARIANCE_COLS,
 )
 from tmom_recon.lattice.core import attach_lattice_columns, build_lattice_maps
-from tmom_recon.physics.bpm_phases import next_bpm_to_pi_2, prev_bpm_to_pi_2
+from tmom_recon.physics.bpm_phases import (
+    next_bpm_to_pi_2,
+    phase_advance_matrix_from_tws,
+    prev_bpm_to_pi_2,
+)
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -75,16 +79,21 @@ def build_lattice_neighbor_tables(
         mu1_var = tws["mu1_var"]
         mu2_var = tws["mu2_var"]
 
-    prev_x = prev_bpm_to_pi_2(tws["mu1"], tws.q1, mu_var=mu1_var, total_var=total_var_x).rename(
+    bwd1 = phase_advance_matrix_from_tws(tws["mu1"], tws.q1, forward=False)
+    bwd2 = phase_advance_matrix_from_tws(tws["mu2"], tws.q2, forward=False)
+    fwd1 = phase_advance_matrix_from_tws(tws["mu1"], tws.q1, forward=True)
+    fwd2 = phase_advance_matrix_from_tws(tws["mu2"], tws.q2, forward=True)
+
+    prev_x = prev_bpm_to_pi_2(bwd1, mu_var=mu1_var, total_var=total_var_x).rename(
         columns={"prev_bpm": PREV.bpm_x, "delta": PREV.delta_x, "delta_err": f"{PREV.delta_x}_err"}
     )
-    prev_y = prev_bpm_to_pi_2(tws["mu2"], tws.q2, mu_var=mu2_var, total_var=total_var_y).rename(
+    prev_y = prev_bpm_to_pi_2(bwd2, mu_var=mu2_var, total_var=total_var_y).rename(
         columns={"prev_bpm": PREV.bpm_y, "delta": PREV.delta_y, "delta_err": f"{PREV.delta_y}_err"}
     )
-    next_x = next_bpm_to_pi_2(tws["mu1"], tws.q1, mu_var=mu1_var, total_var=total_var_x).rename(
+    next_x = next_bpm_to_pi_2(fwd1, mu_var=mu1_var, total_var=total_var_x).rename(
         columns={"next_bpm": NEXT.bpm_x, "delta": NEXT.delta_x, "delta_err": f"{NEXT.delta_x}_err"}
     )
-    next_y = next_bpm_to_pi_2(tws["mu2"], tws.q2, mu_var=mu2_var, total_var=total_var_y).rename(
+    next_y = next_bpm_to_pi_2(fwd2, mu_var=mu2_var, total_var=total_var_y).rename(
         columns={"next_bpm": NEXT.bpm_y, "delta": NEXT.delta_y, "delta_err": f"{NEXT.delta_y}_err"}
     )
     return prev_x, prev_y, next_x, next_y

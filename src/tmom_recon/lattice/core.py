@@ -392,8 +392,11 @@ def restore_closed_orbit_and_reference_momenta_inplace(
     co_dict = co.to_dict()
     data["x"] = data["x"] + data["name"].map(co_dict["x"])
     data["y"] = data["y"] + data["name"].map(co_dict["y"])
-    data["px"] = data["px"] + data["name"].map(co_dict["px"])
-    data["py"] = data["py"] + data["name"].map(co_dict["py"])
+    # Reference momenta are absent from measurement-built twiss tables; the
+    # closed-orbit momentum is then taken as zero.
+    for col in ("px", "py"):
+        if col in co.columns:
+            data[col] = data[col] + data["name"].map(co_dict[col])
 
     if "var_px" in co.columns and "var_py" in co.columns:
         data["var_px"] = data["var_px"] + data["name"].map(co_dict["var_px"])

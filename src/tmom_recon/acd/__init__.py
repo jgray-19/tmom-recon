@@ -25,6 +25,8 @@ from .madng_driver import ACDipoleMadDriver, ACDipoleTrackingError
 from .models import (
     ACDipoleBPMSelection,
     ACDipoleBPMWindow,
+    ACDipoleCleaningResult,
+    ACDipoleFitResult,
     ACDipoleHarmonicFit,
     ACDipoleStateEstimate,
     ACDipoleStateSeries,
@@ -35,7 +37,9 @@ from .selection import select_ac_dipole_bpm_window, select_ac_dipole_bpms
 __all__ = [
     "ACDipoleBPMSelection",
     "ACDipoleBPMWindow",
+    "ACDipoleCleaningResult",
     "ACDipoleConfig",
+    "ACDipoleFitResult",
     "ACDipoleHarmonicFit",
     "ACDipoleMadDriver",
     "ACDipoleStateEstimate",

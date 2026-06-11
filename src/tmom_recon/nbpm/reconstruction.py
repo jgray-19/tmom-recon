@@ -571,6 +571,10 @@ def calculate_transverse_pz_nbpm(
     kick_by_turn_y: np.ndarray | None = None
     if acd_kicks is not None:
         kick_frame = acd_kicks.copy(deep=True)
+        if "row_type" in kick_frame.columns:
+            kick_frame = kick_frame.loc[kick_frame["row_type"].fillna("summary") == "summary"].copy(
+                deep=True
+            )
         kick_frame["turn"] = kick_frame["turn"].astype(int)
         kick_col_x = "dpx" if "dpx" in kick_frame.columns else "dpx_fit_rad"
         kick_col_y = "dpy" if "dpy" in kick_frame.columns else "dpy_fit_rad"

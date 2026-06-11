@@ -18,8 +18,10 @@ from xtrack_tools.env import create_xsuite_environment, initialise_env
 from xtrack_tools.monitors import process_tracking_data
 
 from tests.acd.acd_test_helpers import AC_DIPOLE_ELEMENT
-from tmom_recon import calculate_transverse_pz as calculate_pz
 
+from .momentum_test_utils import (  # noqa: E402
+    transverse_calc as calculate_pz,
+)
 from .momentum_test_utils import (  # noqa: E402
     verify_pz_reconstruction,
 )

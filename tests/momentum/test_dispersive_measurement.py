@@ -6,7 +6,7 @@ import pytest
 from omc3.scripts.fake_measurement_from_model import generate as generate_fake_measurement
 from pymadng_utils.madx import convert_tfs_to_madx
 
-from tmom_recon import calculate_pz_measurement
+from tmom_recon import calculate_pz
 
 from .momentum_test_utils import add_error_to_orbit_measurement, rmse
 
@@ -40,9 +40,9 @@ def test_dispersive_measurement_recovers_dpp(
 
     # Call the measurement-based function
     # The function now handles closed orbit removal and px/py restoration internally
-    result = calculate_pz_measurement(
-        orig_data=tracking_df.copy(deep=True),
-        measurement_folder=str(meas_dir),
+    result = calculate_pz(
+        tracking_df.copy(deep=True),
+        measurement_dir=str(meas_dir),
         model_tws=ng_tws,
         reverse_meas_tws=False,  # Always working with B4
         info=False,

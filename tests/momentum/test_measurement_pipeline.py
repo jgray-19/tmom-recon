@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import tfs
 
-from tmom_recon.measurements.measurement_pipeline import process_twiss
+from tmom_recon.optics import resolve_optics
 
 
 def _write_measurement_file(
@@ -121,22 +121,25 @@ def _build_model_twiss() -> tfs.TfsDataFrame:
     )
 
 
-def test_process_twiss_can_use_measured_phase_with_model_optics(tmp_path: Path) -> None:
+def test_resolve_optics_uses_measured_phase_with_model_optics(tmp_path: Path) -> None:
     _build_measurement_folder(tmp_path)
     model_tws = _build_model_twiss()
 
-    tws, has_errors, dispersion_found = process_twiss(
-        tmp_path,
-        ["BPM1", "BPM2", "BPM3"],
-        include_errors=False,
-        reverse_meas_tws=False,
+    # Force amplitude and dispersion from the model; phase (and tunes) stays measured.
+    resolved = resolve_optics(
         model_tws=model_tws,
-        use_model_optics=True,
-        use_measurement_dispersion=False,
+        measurement_dir=tmp_path,
+        model_optics=["amplitude", "dispersion"],
+        bpm_names=["BPM1", "BPM2", "BPM3"],
     )
+    tws = resolved.tws
 
-    assert not has_errors
-    assert dispersion_found
+    assert resolved.sources == {
+        "phase": "measurement",
+        "amplitude": "model",
+        "dispersion": "model",
+    }
+    assert resolved.use_dispersion
     assert np.allclose(tws["mu1"].to_numpy(), [0.0, 0.2, 0.5])
     assert np.allclose(tws["mu2"].to_numpy(), [0.0, 0.15, 0.4])
     assert np.allclose(tws["beta11"].to_numpy(), [101.0, 102.0, 103.0])
@@ -145,36 +148,43 @@ def test_process_twiss_can_use_measured_phase_with_model_optics(tmp_path: Path) 
     assert np.allclose(tws["dpx"].to_numpy(), [1.0, 2.0, 3.0])
 
 
-def test_process_twiss_can_keep_measured_dispersion_with_model_optics(tmp_path: Path) -> None:
+def test_resolve_optics_keeps_measured_dispersion_with_model_amplitude(tmp_path: Path) -> None:
     _build_measurement_folder(tmp_path)
     model_tws = _build_model_twiss()
 
-    tws, _, dispersion_found = process_twiss(
-        tmp_path,
-        ["BPM1", "BPM2", "BPM3"],
-        include_errors=False,
-        reverse_meas_tws=False,
+    # Only amplitude from the model; phase and dispersion stay measured.
+    resolved = resolve_optics(
         model_tws=model_tws,
-        use_model_optics=True,
-        use_measurement_dispersion=True,
+        measurement_dir=tmp_path,
+        model_optics=["amplitude"],
+        bpm_names=["BPM1", "BPM2", "BPM3"],
     )
+    tws = resolved.tws
 
-    assert dispersion_found
+    assert resolved.sources["amplitude"] == "model"
+    assert resolved.sources["dispersion"] == "measurement"
+    assert resolved.use_dispersion
     assert np.allclose(tws["beta11"].to_numpy(), [101.0, 102.0, 103.0])
     assert np.allclose(tws["dx"].to_numpy(), [1.0, 2.0, 3.0])
     assert np.allclose(tws["dpx"].to_numpy(), [0.1, 0.2, 0.3])
 
 
-def test_process_twiss_respects_reverse_phase_accumulation(tmp_path: Path) -> None:
+def test_resolve_optics_respects_reverse_phase_accumulation(tmp_path: Path) -> None:
     _build_measurement_folder(tmp_path)
 
-    tws, _, _ = process_twiss(
-        tmp_path,
-        ["BPM1", "BPM2", "BPM3"],
-        include_errors=False,
+    # No model twiss: every category comes from the measurement, phases reversed.
+    resolved = resolve_optics(
+        measurement_dir=tmp_path,
         reverse_meas_tws=True,
+        bpm_names=["BPM1", "BPM2", "BPM3"],
     )
+    tws = resolved.tws
 
+    assert resolved.sources == {
+        "phase": "measurement",
+        "amplitude": "measurement",
+        "dispersion": "measurement",
+    }
     assert list(tws.index) == ["BPM3", "BPM2", "BPM1"]
     assert np.allclose(tws["mu1"].to_numpy(), [0.0, 0.3, 0.5])
     assert np.allclose(tws["mu2"].to_numpy(), [0.0, 0.25, 0.4])

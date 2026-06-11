@@ -80,7 +80,7 @@ def build_twiss_from_measurements(
         )
         dispersion_found = False
 
-    # Compute cumulative phase advances from measurement chains
+    # Cumulative phase accumulated from the measured (mod-1) adjacent advances.
     phase_data_x = _compute_cumulative_phase(
         measurements["phase_x"], f"{PHASE}X", reverse=reverse_bpm_order
     )
@@ -123,12 +123,18 @@ def build_twiss_from_measurements(
     # Add the S column
     twiss_df[S] = measurements["beta_x"].loc[bpm_index, S].values
 
-    # Set headers
+    # Set headers. Q1/Q2 must be the *full* betatron phase around the ring (integer +
+    # fractional), because that is what the downstream phase-advance matrix uses as its
+    # modulo total against the full-tune cumulative phase. The measured phase chain is open
+    # (no last->first edge) and the OMC3 Q1 header is only the fractional tune, so the ring
+    # total is reconstructed from both: the closing edge back to the first BPM is the tune
+    # minus the summed phases, ``(Q_frac - mu_last) mod 1``, and adding it lifts the
+    # cumulative (whose integer part is already accumulated in ``mu_last``) to the full tune.
     twiss_df.headers = {
         "MU1_TOTAL_VAR": phase_data_x.total_var,
         "MU2_TOTAL_VAR": phase_data_y.total_var,
-        "Q1": measurements["beta_x"].headers.get("Q1"),
-        "Q2": measurements["beta_x"].headers.get("Q2"),
+        "Q1": _reconstruct_ring_tune(phase_data_x, measurements["beta_x"].headers.get("Q1")),
+        "Q2": _reconstruct_ring_tune(phase_data_y, measurements["beta_x"].headers.get("Q2")),
     }
 
     return twiss_df, dispersion_found
@@ -294,22 +300,25 @@ class PhaseData:
         self.index = index  # BPM names in phase chain
 
 
-def _compute_cumulative_phase(
-    phase_df: pd.DataFrame, phase_col: str, *, reverse: bool = False
-) -> PhaseData:
-    """
-    Compute cumulative phase by following NAME -> NAME2 chain.
+def _ordered_phase_edges(
+    phase_df: pd.DataFrame, phase_col: str, *, reverse: bool
+) -> tuple[list, np.ndarray, np.ndarray, float]:
+    """Read per-edge phase advances by following the NAME -> NAME2 chain.
 
-    The phase_df contains rows with phase advances from NAME -> NAME2.
-    Cumulative phase starts at 0 for the first BPM and accumulates around the ring.
+    The phase measurement files give the phase *advance between adjacent BPMs*, so this
+    returns those measured differences directly (in accumulation order) rather than a
+    pre-accumulated cumulative phase.
 
     Args:
         phase_df: TFS dataframe with phase measurements (index=NAME, contains NAME2 column).
         phase_col: Column name for phase values (e.g., "PHASEX").
-        reverse: If True, start accumulation at the last BPM and step backwards.
+        reverse: If True, order the chain from the last BPM stepping backwards.
 
     Returns:
-        PhaseData object with cumulative phase information.
+        ``(order, diffs, variances, total_var)`` where ``order`` is the BPM-name sequence,
+        ``diffs[i]`` / ``variances[i]`` are the measured advance and variance between
+        ``order[i]`` and ``order[i + 1]``, and ``total_var`` is the summed edge variance
+        around the ring.
 
     Raises:
         ValueError: If phase_df is empty or contains NaN values.
@@ -317,18 +326,15 @@ def _compute_cumulative_phase(
     if len(phase_df) == 0:
         raise ValueError("Phase DataFrame is empty, cannot compute cumulative phase.")
 
-    mu_dict = {}
-    var_dict = {}
-    step_variances = []
-
-    # Build forward chain order and edge data without duplicating the ring-closure BPM.
+    # Follow the forward NAME -> NAME2 chain once, recording each measured edge.
     current_bpm = phase_df.index[0]
-    order = []
+    forward_order = []
     edge_phase = {}
     edge_var = {}
+    step_variances = []
 
     for _ in range(len(phase_df)):
-        order.append(current_bpm)
+        forward_order.append(current_bpm)
         next_bpm = phase_df.loc[current_bpm, "NAME2"]
         phase_advance = phase_df.loc[current_bpm, phase_col]
         phase_error = phase_df.loc[current_bpm, f"{ERR}{phase_col}"]
@@ -341,36 +347,89 @@ def _compute_cumulative_phase(
         step_variances.append(phase_error**2)
         current_bpm = next_bpm
 
-    # Choose accumulation direction
-    if reverse:
-        order = list(reversed(order))
+    # The loop appended every source BPM. A real OMC3 phase file is an *open* chain: it
+    # gives the advance to each next BPM but has no row closing the last BPM back to the
+    # first, so the final NAME2 target was visited only as a destination. Append it so its
+    # cumulative phase (the sum of every measured edge) is kept rather than dropped. A
+    # *closed* chain instead lands back on the first BPM, which is already in the order.
+    if current_bpm != forward_order[0]:
+        forward_order.append(current_bpm)
 
-    # Accumulate phase and variance
-    start_bpm = order[0]
-    mu_dict[start_bpm] = 0.0
-    var_dict[start_bpm] = 0.0
+    order = list(reversed(forward_order)) if reverse else forward_order
 
+    diffs = np.empty(len(order) - 1, dtype=float)
+    variances = np.empty(len(order) - 1, dtype=float)
     for i in range(len(order) - 1):
-        prev_bpm = order[i]
-        next_bpm = order[i + 1]
+        # In reverse the measured edge between order[i] and order[i+1] was stored in the
+        # forward direction (order[i+1] -> order[i]); the advance magnitude is the same.
+        key = (order[i + 1], order[i]) if reverse else (order[i], order[i + 1])
+        diffs[i] = edge_phase[key]
+        variances[i] = edge_var[key]
 
-        # Get edge in correct direction
-        if reverse:
-            phase_advance = edge_phase[(next_bpm, prev_bpm)]
-            phase_var = edge_var[(next_bpm, prev_bpm)]
-        else:
-            phase_advance = edge_phase[(prev_bpm, next_bpm)]
-            phase_var = edge_var[(prev_bpm, next_bpm)]
+    return order, diffs, variances, float(sum(step_variances))
 
-        mu_dict[next_bpm] = mu_dict[prev_bpm] + phase_advance
-        var_dict[next_bpm] = var_dict[prev_bpm] + phase_var
+
+def _compute_cumulative_phase(
+    phase_df: pd.DataFrame, phase_col: str, *, reverse: bool = False
+) -> PhaseData:
+    """
+    Compute cumulative phase by accumulating the measured (mod-1) edge advances.
+
+    The phase measurement gives each adjacent advance modulo one turn (the FFT phase).
+    The cumulative phase is the running sum of those advances, starting at 0 for the
+    first BPM in the chain; this is what later restricts neighbour candidates to within
+    one betatron oscillation (the cumulative advance staying below one turn). Variances
+    accumulate the per-edge measurement variances.
+
+    Args:
+        phase_df: TFS dataframe with phase measurements (index=NAME, contains NAME2 column).
+        phase_col: Column name for phase values (e.g., "PHASEX").
+        reverse: If True, start accumulation at the last BPM and step backwards.
+
+    Returns:
+        PhaseData object with cumulative phase information.
+
+    Raises:
+        ValueError: If phase_df is empty or contains NaN values.
+    """
+    order, diffs, variances, total_var = _ordered_phase_edges(phase_df, phase_col, reverse=reverse)
+
+    mu_values = np.concatenate(([0.0], np.cumsum(diffs)))
+    var_values = np.concatenate(([0.0], np.cumsum(variances)))
 
     return PhaseData(
-        mu=mu_dict,
-        var=var_dict,
-        total_var=float(sum(step_variances)),
-        index=pd.Index(list(mu_dict.keys())),
+        mu=dict(zip(order, mu_values)),
+        var=dict(zip(order, var_values)),
+        total_var=total_var,
+        index=pd.Index(order),
     )
+
+
+def _reconstruct_ring_tune(phase_data: "PhaseData", q_header: float | None) -> float:
+    """Reconstruct the full ring tune (integer + fractional) from an open phase chain.
+
+    The measured phase chain runs from the first BPM to the last but does not close back to
+    the first, so the cumulative phase stops at ``mu_last`` (the sum of the measured adjacent
+    edges) rather than reaching the full tune. The OMC3 ``Q`` header carries only the
+    *fractional* tune. The closing edge from the last BPM back to the first is therefore not
+    measured directly; it is reconstructed as ``tune - sum_of_phases`` modulo one turn,
+    ``(Q_frac - mu_last) mod 1``. Adding it to ``mu_last`` (whose integer part already counts
+    the betatron oscillations accumulated around the chain) yields the full tune.
+
+    Falls back to ``mu_last`` when the header is missing (no fractional tune available),
+    which is the cumulative phase short of the unmeasured closing edge.
+    """
+    mu_last = phase_data.mu[phase_data.index[-1]]
+    if q_header is None:
+        LOGGER.warning(
+            "No Q header available to reconstruct the ring tune; using cumulative phase "
+            "(%.6f) without the unmeasured closing edge.",
+            mu_last,
+        )
+        return float(mu_last)
+    q_frac = float(q_header) % 1.0
+    closing_edge = (q_frac - mu_last) % 1.0
+    return float(mu_last + closing_edge)
 
 
 def _select_alpha_measurements(

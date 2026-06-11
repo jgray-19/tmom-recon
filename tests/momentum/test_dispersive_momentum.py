@@ -11,11 +11,9 @@ from tests.acd.acd_test_helpers import (
     _get_driver,
 )
 from tmom_recon import ACDipoleConfig, inject_noise_xy_inplace
-from tmom_recon import calculate_dispersive_pz as dispersive_calc
-from tmom_recon import calculate_transverse_pz as transverse_calc
 from tmom_recon.svd import svd_clean_measurements  # noqa: E402
 
-from .momentum_test_utils import rmse
+from .momentum_test_utils import dispersive_calc, rmse, transverse_calc
 
 
 @pytest.mark.slow

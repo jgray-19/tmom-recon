@@ -10,7 +10,7 @@ pytest.importorskip("xtrack_tools")
 
 from pymadng_utils.madx import convert_tfs_to_madx
 
-from tmom_recon import calculate_pz_measurement, inject_noise_xy_inplace
+from tmom_recon import calculate_pz, inject_noise_xy_inplace
 from tmom_recon.svd import svd_clean_measurements
 
 from .momentum_test_utils import add_error_to_orbit_measurement, rmse
@@ -88,13 +88,12 @@ def test_dispersive_measurement_with_uncertainties(
         calc_df = svd_clean_measurements(calc_df)
 
     # Call the measurement-based function with uncertainties
-    result = calculate_pz_measurement(
-        orig_data=calc_df,
-        measurement_folder=str(temp_dir),
+    result = calculate_pz(
+        calc_df,
+        measurement_dir=str(temp_dir),
         model_tws=ng_tws,
         reverse_meas_tws=False,  # Always working with B4
         info=False,
-        include_errors=True,
     )
 
     # Check that DPP_EST is close to the true delta_p (should be ~0)

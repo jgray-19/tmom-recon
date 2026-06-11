@@ -6,24 +6,74 @@ import pandas as pd
 
 LOGGER = logging.getLogger(__name__)
 
+# Half-width (turns) of the band around multiples of pi within which a
+# candidate phase advance is considered degenerate for momentum reconstruction.
+DEGENERACY_BAND = 0.05
+
 
 def phase_advance_difference(
     mu_from: npt.ArrayLike | float, mu_to: npt.ArrayLike | float, tune: float
 ) -> np.ndarray:
-    """Return the wrapped forward phase advance from ``mu_from`` to ``mu_to`` in turns."""
-    return (np.asarray(mu_to, dtype=float) - np.asarray(mu_from, dtype=float) + tune) % tune
+    """Return the forward phase advance from ``mu_from`` to ``mu_to`` in turns.
+
+    Accumulated around the ring, so the closing step from the last BPM back to the
+    first is just another phase advance (its value is ``tune`` minus the spanned
+    phase). For BPMs within one oscillation the result is ``< 1`` turn, i.e. the
+    natural mod-1 phase advance.
+    """
+    return (np.asarray(mu_to, dtype=float) - np.asarray(mu_from, dtype=float)) % tune
 
 
-def phase_advance_matrix(mu: pd.Series, tune: float, *, forward: bool) -> np.ndarray:
-    """Build the BPM-to-BPM phase-advance matrix in turns."""
-    values = mu.to_numpy(float)
-    n = len(values)
-    if forward:
-        diff = phase_advance_difference(values.reshape(n, 1), values.reshape(1, n), tune)
-    else:
-        diff = phase_advance_difference(values.reshape(1, n), values.reshape(n, 1), tune)
+def _accumulate_phase_matrix(
+    cumulative: np.ndarray, total: float, index: pd.Index, *, forward: bool
+) -> pd.DataFrame:
+    """Accumulate edge advances into the BPM-to-BPM phase-advance matrix.
+
+    ``cumulative`` is the running phase of each BPM around the ring (the prefix sum of
+    the edge advances, first BPM at 0) and ``total`` is the full phase around the ring
+    (the sum of every edge, i.e. the tune). Entry ``[i, j]`` is the phase accumulated
+    stepping from BPM ``i`` to BPM ``j`` in the requested direction; the ring closes
+    through the accumulation itself, so there is no tune boundary to special-case.
+    """
+    n = len(cumulative)
+    a = cumulative.reshape(n, 1)
+    b = cumulative.reshape(1, n)
+    diff = (b - a + total) % total if forward else (a - b + total) % total
     np.fill_diagonal(diff, np.nan)
-    return diff
+    return pd.DataFrame(diff, index=index, columns=index)
+
+
+def phase_advance_matrix_from_edges(edges: pd.Series, *, forward: bool) -> pd.DataFrame:
+    """Build the BPM-to-BPM phase-advance matrix from adjacent (edge) advances.
+
+    ``edges`` holds the mod-1 phase advance between consecutive BPMs in ring order:
+    ``edges.iloc[k]`` is the forward advance from BPM ``k`` to BPM ``k + 1``, and the
+    final entry is the closing edge from the last BPM back to the first. The ring
+    closes naturally through that edge -- the advance from the last BPM to the first is
+    simply its measured phase advance, with no tune boundary.
+
+    Entry ``[i, j]`` is the forward advance from BPM ``i`` to BPM ``j`` (backward if
+    ``forward`` is False). Advances within one betatron oscillation (the ones the
+    neighbour search keeps) are ``< 1`` turn.
+    """
+    edge_vals = edges.to_numpy(float)
+    total = float(edge_vals.sum())
+    # Running phase of each BPM relative to the first (first BPM at 0); the last edge
+    # (closing the ring) lifts the total to ``tune`` but is not a per-BPM position.
+    cumulative = np.concatenate(([0.0], np.cumsum(edge_vals)[:-1]))
+    return _accumulate_phase_matrix(cumulative, total, edges.index, forward=forward)
+
+
+def phase_advance_matrix_from_tws(mu: pd.Series, tune: float, *, forward: bool) -> pd.DataFrame:
+    """Build the phase-advance matrix from a model cumulative-phase column (turns).
+
+    The model provides the cumulative phase ``mu`` directly; ``tune`` is the total
+    betatron phase around the ring (the sum of all adjacent edge advances), i.e. the
+    value of the single closing edge that takes the last BPM back to the first. This is
+    the cumulative-phase form of :func:`phase_advance_matrix_from_edges`: ``mu`` is the
+    prefix sum of the edges, so no edges are reconstructed here.
+    """
+    return _accumulate_phase_matrix(mu.to_numpy(float), float(tune), mu.index, forward=forward)
 
 
 def _phase_pair_var_forward(
@@ -42,8 +92,7 @@ def _phase_pair_var_forward(
 
 
 def _find_bpm_phase(
-    mu: pd.Series,
-    tune: float,
+    phase_matrix: pd.DataFrame,
     target: float,
     forward: bool,
     name: str,
@@ -54,18 +103,16 @@ def _find_bpm_phase(
     """
     Find BPM pairs with phase advance closest to a target value.
 
-    For each BPM_i, finds the nearest BPM_j in the specified direction
-    (forward or backward) whose phase advance is close to the target.
-
-    Selection criteria (in order of priority):
-    1. Candidate must be within stable_width (0.125 rotations) of target phase
-    2. If any candidate has excellent phase match (< 0.01 rotations), prefer those
-    3. Among remaining candidates, select closest by directional distance
-    4. If tied on distance, select best phase match
+    For each BPM_i, finds the BPM_j in the specified direction (forward or
+    backward) within one betatron oscillation (phase advance <= 1 turn) whose
+    phase advance is closest to the target. Candidates whose phase advance is
+    degenerate (within DEGENERACY_BAND of a multiple of pi, where sin(dphi) -> 0
+    and the momentum reconstruction is singular) are avoided unless no other
+    candidate exists.
 
     Args:
-        mu: BPM phase advances (rotations)
-        tune: Machine tune (rotations per turn)
+        phase_matrix: DataFrame of BPM-to-BPM phase advances,
+        with BPM names as index and columns.
         target: Target phase advance (turns), e.g., 0.25 for π/2, 0.5 for π
         forward: If True, search forward; if False, search backward
         name: Column name for the matched BPM in output DataFrame
@@ -78,85 +125,41 @@ def _find_bpm_phase(
             - delta: Signed phase error (actual - target) in rotations
             - delta_err: Phase error uncertainty (rotations), if variance provided
     """
-    v = mu.to_numpy(float)
-    n = len(v)
+    n = len(phase_matrix.index)
 
-    # Compute phase advance matrix: diff[i, j] = phase from BPM_i to BPM_j
-    diff = phase_advance_matrix(mu, tune, forward=forward)
-
-    # Find best match for each BPM
-    stable_width = 0.125  # Only consider candidates within ±0.125 rotations of target
-
-    # Set max BPM distance based on target phase advance
-    # With ~0.125 turns per BPM average, π/2 needs ~2 BPMs, π needs ~4 BPMs
-    # Allow for local variations: π/2 uses 13 BPMs, π has no limit (filtered by stable_width)
-    max_bpm_distance = 11 if target == 0.25 else 20
+    # Multiples of pi (in turns) where sin(dphi) -> 0 and the two-BPM momentum
+    # reconstruction becomes singular; avoided unless no alternative exists.
+    degenerate_points = [p for p in (0.0, 0.5, 1.0) if not np.isclose(p, target)]
 
     idx = np.full(n, -1, dtype=int)
 
-    def _phase_distance(values: np.ndarray, center: float) -> np.ndarray:
-        """Shortest distance on unit circle (turns)."""
-        return np.abs((values - center + 0.5) % 1 - 0.5)
-
-    other_side = (target + 0.5) % 1
-    include_other_side = not np.isclose(target % 1, 0.5)
-
     for i in range(n):
-        row = diff[i, :]
+        row = phase_matrix.iloc[i].to_numpy(dtype=float)
 
-        # Filter to candidates within stable region
-        mask = _phase_distance(row, target) <= stable_width
-        # Also use the other side of the cos and sin -> target + 0.5
-        if include_other_side:
-            mask = mask | (_phase_distance(row, other_side) <= stable_width)
-        mask[i] = False  # Exclude self
-        candidates = np.where(mask)[0]
-
+        # Candidates within one betatron oscillation in the requested direction
+        candidates = np.where(np.isfinite(row) & (row > 0.0) & (row <= 1.0))[0]
         if len(candidates) == 0:
-            idx[i] = -1
             continue
 
-        # Filter to candidates within max directional distance (if limit is set)
-        directional_distance = (candidates - i) % n if forward else (i - candidates) % n
-        within_distance = directional_distance <= max_bpm_distance
-        candidates = candidates[within_distance]
+        advance = row[candidates]
+        degenerate = np.zeros(len(candidates), dtype=bool)
+        for point in degenerate_points:
+            degenerate |= np.abs(advance - point) <= DEGENERACY_BAND
+        if not np.all(degenerate):
+            candidates = candidates[~degenerate]
+            advance = advance[~degenerate]
 
-        if len(candidates) == 0:
-            idx[i] = -1
-            continue
-
-        # Calculate phase error and directional distance for each candidate
-        phase_error = _phase_distance(row[candidates], target)
-        distances = (candidates - i) % n if forward else (i - candidates) % n
-
-        # Prefer excellent phase matches (< 0.01 rotations) if any exist
-        excellent_match = phase_error < 0.02
-        if np.any(excellent_match):
-            candidates = candidates[excellent_match]
-            distances = distances[excellent_match]
-            phase_error = phase_error[excellent_match]
-
-        # Select closest by directional distance
-        min_distance = np.min(distances)
-        closest_indices = distances == min_distance
-
-        if np.sum(closest_indices) == 1:
-            # Single closest candidate
-            idx[i] = candidates[closest_indices][0]
-        else:
-            # Multiple at same distance: pick best phase match
-            best_idx = np.argmin(phase_error[closest_indices])
-            idx[i] = candidates[closest_indices][best_idx]
+        idx[i] = candidates[np.argmin(np.abs(advance - target))]
 
     # Build output DataFrame
     delta = np.full(n, np.nan)
     names = np.full(n, None, dtype=object)
     for i in range(n):
         if idx[i] != -1:
-            delta[i] = diff[i, idx[i]] - target
-            names[i] = mu.index[idx[i]]
+            delta[i] = phase_matrix.iloc[i, idx[i]] - target
+            names[i] = phase_matrix.index[idx[i]]
 
-    out = pd.DataFrame({name: names, "delta": delta}, index=mu.index)
+    out = pd.DataFrame({name: names, "delta": delta}, index=phase_matrix.index)
 
     # Add uncertainty if variance information provided
     if mu_var is not None and total_var is not None:
@@ -176,8 +179,7 @@ def _find_bpm_phase(
 
 
 def prev_bpm_to_pi_2(
-    mu: pd.Series,
-    tune: float,
+    phase_matrix: pd.DataFrame,
     *,
     mu_var: pd.Series | None = None,
     total_var: float | None = None,
@@ -195,8 +197,7 @@ def prev_bpm_to_pi_2(
             - delta_err: Phase error uncertainty (turns), if variance provided
     """
     return _find_bpm_phase(
-        mu,
-        tune,
+        phase_matrix,
         0.25,
         forward=False,
         name="prev_bpm",
@@ -206,8 +207,7 @@ def prev_bpm_to_pi_2(
 
 
 def next_bpm_to_pi_2(
-    mu: pd.Series,
-    tune: float,
+    phase_matrix: pd.DataFrame,
     *,
     mu_var: pd.Series | None = None,
     total_var: float | None = None,
@@ -225,8 +225,7 @@ def next_bpm_to_pi_2(
             - delta_err: Phase error uncertainty (turns), if variance provided
     """
     return _find_bpm_phase(
-        mu,
-        tune,
+        phase_matrix,
         0.25,
         forward=True,
         name="next_bpm",
@@ -236,8 +235,7 @@ def next_bpm_to_pi_2(
 
 
 def prev_bpm_to_pi(
-    mu: pd.Series,
-    tune: float,
+    phase_matrix: pd.DataFrame,
     *,
     mu_var: pd.Series | None = None,
     total_var: float | None = None,
@@ -255,8 +253,7 @@ def prev_bpm_to_pi(
             - delta_err: Phase error uncertainty (turns), if variance provided
     """
     return _find_bpm_phase(
-        mu,
-        tune,
+        phase_matrix,
         0.5,
         forward=False,
         name="prev_bpm",
@@ -266,8 +263,7 @@ def prev_bpm_to_pi(
 
 
 def next_bpm_to_pi(
-    mu: pd.Series,
-    tune: float,
+    phase_matrix: pd.DataFrame,
     *,
     mu_var: pd.Series | None = None,
     total_var: float | None = None,
@@ -285,8 +281,7 @@ def next_bpm_to_pi(
             - delta_err: Phase error uncertainty (turns), if variance provided
     """
     return _find_bpm_phase(
-        mu,
-        tune,
+        phase_matrix,
         0.5,
         forward=True,
         name="next_bpm",

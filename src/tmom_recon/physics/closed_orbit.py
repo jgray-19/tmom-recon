@@ -21,9 +21,13 @@ def estimate_closed_orbit(
     if "name" not in data.columns or "x" not in data.columns or "y" not in data.columns:
         raise ValueError('`data` must contain columns ["name", "x", "y"].')
 
-    # Map dispersion to each row (per BPM), then correct positions turn-by-turn
-    x_corr = data["x"] - dpp_est * data["name"].map(tws["dx"].to_dict())
-    y_corr = data["y"] - dpp_est * data["name"].map(tws["dy"].to_dict())
+    # Map dispersion to each row (per BPM), then correct positions turn-by-turn.
+    # Force float dtype: a categorical "name" column otherwise propagates a
+    # Categorical through .map(), which cannot be scaled by dpp_est.
+    dx_per_row = data["name"].map(tws["dx"].to_dict()).astype(float)
+    dy_per_row = data["name"].map(tws["dy"].to_dict()).astype(float)
+    x_corr = data["x"] - dpp_est * dx_per_row
+    y_corr = data["y"] - dpp_est * dy_per_row
 
     g = pd.DataFrame({"name": data["name"], "x_corr": x_corr, "y_corr": y_corr}).groupby(
         "name", sort=False, observed=False

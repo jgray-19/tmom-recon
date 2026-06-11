@@ -13,6 +13,7 @@ from tmom_recon.data.config import FILE_COLUMNS
 from tmom_recon.physics.bpm_phases import (
     next_bpm_to_pi,
     next_bpm_to_pi_2,
+    phase_advance_matrix_from_tws,
     prev_bpm_to_pi,
     prev_bpm_to_pi_2,
 )
@@ -43,15 +44,13 @@ def _twiss_maps(tws: pd.DataFrame) -> TwissMaps:
 
 def _partner_tables(direction: Direction, mu1, q1):
     if direction == "next":
-        tbl_pi = next_bpm_to_pi(mu1, q1).rename(columns={"next_bpm": "bpm_bar", "delta": "d_pi"})
-        tbl_pi2 = next_bpm_to_pi_2(mu1, q1).rename(
-            columns={"next_bpm": "bpm_tilde", "delta": "d_pi2"}
-        )
+        fwd = phase_advance_matrix_from_tws(mu1, q1, forward=True)
+        tbl_pi = next_bpm_to_pi(fwd).rename(columns={"next_bpm": "bpm_bar", "delta": "d_pi"})
+        tbl_pi2 = next_bpm_to_pi_2(fwd).rename(columns={"next_bpm": "bpm_tilde", "delta": "d_pi2"})
     else:
-        tbl_pi = prev_bpm_to_pi(mu1, q1).rename(columns={"prev_bpm": "bpm_bar", "delta": "d_pi"})
-        tbl_pi2 = prev_bpm_to_pi_2(mu1, q1).rename(
-            columns={"prev_bpm": "bpm_tilde", "delta": "d_pi2"}
-        )
+        bwd = phase_advance_matrix_from_tws(mu1, q1, forward=False)
+        tbl_pi = prev_bpm_to_pi(bwd).rename(columns={"prev_bpm": "bpm_bar", "delta": "d_pi"})
+        tbl_pi2 = prev_bpm_to_pi_2(bwd).rename(columns={"prev_bpm": "bpm_tilde", "delta": "d_pi2"})
     return tbl_pi, tbl_pi2
 
 
