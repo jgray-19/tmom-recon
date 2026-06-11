@@ -187,7 +187,7 @@ def _build_state_rows(
         if value is None:
             return np.full(n_turns, np.nan, dtype=float)
         if np.isscalar(value):
-            return np.full(n_turns, float(value), dtype=float)
+            return np.full(n_turns, float(value), dtype=float)  # ty:ignore[invalid-argument-type]
         return np.asarray(value, dtype=float)
 
     return pd.DataFrame(
