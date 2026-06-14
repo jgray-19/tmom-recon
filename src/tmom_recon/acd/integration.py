@@ -126,33 +126,34 @@ def _apply_cleaned_bpm_override(
     bpm_name: str,
     px_col: str,
     py_col: str,
-) -> None:
+) -> pd.DataFrame:
     """Patch ``px``/``py`` in *result* for a single BPM using cleaned ACD values.
 
     Matches on turn number; rows with no matching ACD turn are left unchanged.
 
     Args:
-        result: DataFrame to patch in-place (must have ``"name"`` and ``"turn"``
-            columns).
+        result: DataFrame to update (must have ``"name"`` and ``"turn"`` columns).
         acd_result: ACD reconstruction output DataFrame.
         bpm_name: Name of the BPM to patch.
         px_col: Column in *acd_result* carrying the cleaned horizontal momentum.
         py_col: Column in *acd_result* carrying the cleaned vertical momentum.
     """
-    mask = result["name"].astype(str) == bpm_name
+    out = result.copy(deep=True)
+    mask = out["name"].astype(str) == bpm_name
     if not mask.any():
-        return
+        return out
     side = (
         _summary_rows(acd_result)[["turn", px_col, py_col]]
         .rename(columns={px_col: "px", py_col: "py"})
         .set_index("turn")
     )
-    turns = result.loc[mask, "turn"].to_numpy()
-    result.loc[mask, "px"] = side.reindex(turns)["px"].to_numpy(dtype=float)
-    result.loc[mask, "py"] = side.reindex(turns)["py"].to_numpy(dtype=float)
+    turns = out.loc[mask, "turn"].to_numpy()
+    out.loc[mask, "px"] = side.reindex(turns)["px"].to_numpy(dtype=float)
+    out.loc[mask, "py"] = side.reindex(turns)["py"].to_numpy(dtype=float)
+    return out
 
 
-def apply_precomputed_ac_dipole_bpm_overrides_inplace(
+def apply_precomputed_ac_dipole_bpm_overrides(
     result: pd.DataFrame,
     acd_result: pd.DataFrame,
     config: ACDipoleConfig | None = None,
@@ -164,47 +165,47 @@ def apply_precomputed_ac_dipole_bpm_overrides_inplace(
     ``result.attrs``.
 
     Args:
-        result: BPM-level momentum DataFrame to patch in-place.
+        result: BPM-level momentum DataFrame to update.
         acd_result: Pre-computed ACD reconstruction output from
             :func:`run_ac_dipole_reconstruction`.
         config: Optional :class:`ACDipoleConfig` used to fill ``result.attrs``
             with the AC-dipole marker name and smooth lambda.
 
     Returns:
-        *acd_result* (unchanged), so callers can chain further ACD inspection.
+        Updated BPM-level momentum DataFrame.
     """
     bpm_upstream = acd_result.attrs["bpm_upstream"]
     bpm_downstream = acd_result.attrs["bpm_downstream"]
 
-    result.attrs["ac_dipole_marker"] = (
+    out = result.copy(deep=True)
+    out.attrs["ac_dipole_marker"] = (
         config.ac_dipole_marker if config is not None else acd_result.attrs.get("acd_marker")
     )
-    result.attrs["ac_dipole_bpm_upstream"] = bpm_upstream
-    result.attrs["ac_dipole_bpm_downstream"] = bpm_downstream
-    result.attrs["ac_dipole_smooth_lambda"] = float(
+    out.attrs["ac_dipole_bpm_upstream"] = bpm_upstream
+    out.attrs["ac_dipole_bpm_downstream"] = bpm_downstream
+    out.attrs["ac_dipole_smooth_lambda"] = float(
         config.smooth_lambda
         if config is not None
         else acd_result.attrs.get("smooth_lambda", np.nan)
     )
 
-    _apply_cleaned_bpm_override(
-        result,
+    out = _apply_cleaned_bpm_override(
+        out,
         acd_result,
         bpm_name=bpm_upstream,
         px_col="px_bpm_upstream_cleaned",
         py_col="py_bpm_upstream_cleaned",
     )
-    _apply_cleaned_bpm_override(
-        result,
+    return _apply_cleaned_bpm_override(
+        out,
         acd_result,
         bpm_name=bpm_downstream,
         px_col="px_bpm_downstream_cleaned",
         py_col="py_bpm_downstream_cleaned",
     )
-    return acd_result
 
 
-def apply_ac_dipole_bpm_overrides_inplace(
+def apply_ac_dipole_bpm_overrides(
     result: pd.DataFrame,
     data: pd.DataFrame,
     tws: pd.DataFrame,
@@ -218,7 +219,7 @@ def apply_ac_dipole_bpm_overrides_inplace(
     reused directly, skipping the reconstruction step.
 
     Args:
-        result: BPM-level momentum DataFrame to patch in-place.
+        result: BPM-level momentum DataFrame to update.
         data: Turn-by-turn BPM measurement DataFrame passed to
             :func:`run_ac_dipole_reconstruction` if *acd_result* is ``None``.
         tws: Twiss DataFrame passed to :func:`run_ac_dipole_reconstruction`.
@@ -227,11 +228,11 @@ def apply_ac_dipole_bpm_overrides_inplace(
             is run automatically.
 
     Returns:
-        *acd_result* (the reconstruction output), so callers can inspect it.
+        Updated BPM-level momentum DataFrame.
     """
     if acd_result is None:
         acd_result = run_ac_dipole_reconstruction(data, tws, config)
-    return apply_precomputed_ac_dipole_bpm_overrides_inplace(
+    return apply_precomputed_ac_dipole_bpm_overrides(
         result=result,
         acd_result=acd_result,
         config=config,

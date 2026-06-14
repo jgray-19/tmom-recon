@@ -96,7 +96,7 @@ def _compute_nominal_momenta(
     neighbor_suffix: str,
     *,
     is_prev: bool,
-    dpp_est: float = 0.0,
+    pt_est: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     r"""Compute nominal (error-free) momentum values.
 
@@ -112,17 +112,18 @@ def _compute_nominal_momenta(
 
     .. math::
 
-       \tilde x = \frac{x - \delta D_x}{\sqrt{\beta_x}},
+       \tilde x = \frac{x - p_t D_x}{\sqrt{\beta_x}},
        \qquad
-       \tilde x_n = \frac{x_n - \delta D_{x,n}}{\sqrt{\beta_{x,n}}},
+       \tilde x_n = \frac{x_n - p_t D_{x,n}}{\sqrt{\beta_{x,n}}},
 
     .. math::
 
-       \tilde y = \frac{y - \delta D_y}{\sqrt{\beta_y}},
+       \tilde y = \frac{y - p_t D_y}{\sqrt{\beta_y}},
        \qquad
-       \tilde y_n = \frac{y_n - \delta D_{y,n}}{\sqrt{\beta_{y,n}}},
+       \tilde y_n = \frac{y_n - p_t D_{y,n}}{\sqrt{\beta_{y,n}}},
 
-    where :math:`\delta = \Delta p / p`.
+    where :math:`p_t` is the MAD-NG longitudinal energy coordinate. MAD-NG
+    dispersion columns are derivatives with respect to ``pt``, not ``dp/p``.
 
     For the previous-neighbor branch the code uses :math:`s = -1` and
     :math:`a = +1`; for the next-neighbor branch it uses :math:`s = +1`
@@ -133,21 +134,21 @@ def _compute_nominal_momenta(
        p_x =
        s \frac{\tilde x_n \sec \phi_x + \tilde x (\tan \phi_x + a \alpha_x)}
        {\sqrt{\beta_x}}
-       + D_x' \delta,
+       + D_x' p_t,
 
     .. math::
 
        p_y =
        s \frac{\tilde y_n \sec \phi_y + \tilde y (\tan \phi_y + a \alpha_y)}
        {\sqrt{\beta_y}}
-       + D_y' \delta.
+       + D_y' p_t.
 
     Args:
         data: DataFrame with position and optics columns.
         names: Neighbor column names.
         neighbor_suffix: Suffix for neighbor columns ('p' or 'n').
         is_prev: Whether this is previous neighbor calculation.
-        dpp_est: Estimated DPP.
+        pt_est: Estimated MAD-NG pt.
 
     Returns:
         Tuple of (px, py) arrays.
@@ -183,23 +184,23 @@ def _compute_nominal_momenta(
     )
 
     # Vertical dispersion should be very small, or typically 0, but included for completeness
-    x_current_norm = (x_current - dpp_est * dx_current) / sqrt_beta_x
-    x_neighbor_norm = (x_neighbor - dpp_est * dx_neighbor) / sqrt_beta_x_neigh
-    y_current_norm = (y_current - dpp_est * dy_current) / sqrt_beta_y
-    y_neighbor_norm = (y_neighbor - dpp_est * dy_neighbor) / sqrt_beta_y_neigh
+    x_current_norm = (x_current - pt_est * dx_current) / sqrt_beta_x
+    x_neighbor_norm = (x_neighbor - pt_est * dx_neighbor) / sqrt_beta_x_neigh
+    y_current_norm = (y_current - pt_est * dy_current) / sqrt_beta_y
+    y_neighbor_norm = (y_neighbor - pt_est * dy_neighbor) / sqrt_beta_y_neigh
 
     # Nominal momenta
     px = (
         sign_x
         * (x_neighbor_norm * sec_phi_x + x_current_norm * (tan_phi_x + alpha_sign_x * alpha_x))
         / sqrt_beta_x
-        + dpx_current * dpp_est
+        + dpx_current * pt_est
     )
     py = (
         sign_y
         * (y_neighbor_norm * sec_phi_y + y_current_norm * (tan_phi_y + alpha_sign_y * alpha_y))
         / sqrt_beta_y
-        + dpy_current * dpp_est
+        + dpy_current * pt_est
     )
 
     return px, py
@@ -211,7 +212,7 @@ def _compute_momenta(
     neighbor_suffix: str,
     *,
     is_prev: bool,
-    dpp_est: float = 0.0,
+    pt_est: float = 0.0,
     include_optics_errors: bool = False,
 ) -> pd.DataFrame:
     r"""Compute momenta with error propagation.
@@ -238,7 +239,7 @@ def _compute_momenta(
         names: Neighbor column names.
         neighbor_suffix: Suffix for neighbor columns ('p' or 'n').
         is_prev: Whether this is previous neighbor calculation.
-        dpp_est: Estimated DPP.
+        pt_est: Estimated MAD-NG pt.
         include_optics_errors: Whether to include optics uncertainties.
 
     Returns:
@@ -252,9 +253,7 @@ def _compute_momenta(
         LOGGER.debug("Including optical function uncertainties for %s momenta", neighbor_suffix)
 
     # Compute nominal momenta
-    px, py = _compute_nominal_momenta(
-        data, names, neighbor_suffix, is_prev=is_prev, dpp_est=dpp_est
-    )
+    px, py = _compute_nominal_momenta(data, names, neighbor_suffix, is_prev=is_prev, pt_est=pt_est)
 
     # Compute measurement errors (always included)
     var_px, var_py = compute_measurement_errors(data, names, neighbor_suffix, is_prev)
@@ -262,7 +261,7 @@ def _compute_momenta(
     # Add optics errors if requested and available
     if use_optics_errors:
         var_px_opt_errors, var_py_opt_errors = compute_optics_errors(
-            data, names, neighbor_suffix, is_prev, dpp_est
+            data, names, neighbor_suffix, is_prev, pt_est
         )
         var_px = var_px + np.sum(var_px_opt_errors, axis=0)
         var_py = var_py + np.sum(var_py_opt_errors, axis=0)
@@ -276,26 +275,26 @@ def _compute_momenta(
 
 
 def momenta_from_prev(
-    data_p: pd.DataFrame, dpp_est: float = 0.0, *, include_optics_errors: bool = False
+    data_p: pd.DataFrame, pt_est: float = 0.0, *, include_optics_errors: bool = False
 ) -> pd.DataFrame:
     return _compute_momenta(
         data_p,
         PREV,
         SUFFIX_PREV,
         is_prev=True,
-        dpp_est=dpp_est,
+        pt_est=pt_est,
         include_optics_errors=include_optics_errors,
     )
 
 
 def momenta_from_next(
-    data_n: pd.DataFrame, dpp_est: float = 0.0, *, include_optics_errors: bool = False
+    data_n: pd.DataFrame, pt_est: float = 0.0, *, include_optics_errors: bool = False
 ) -> pd.DataFrame:
     return _compute_momenta(
         data_n,
         NEXT,
         SUFFIX_NEXT,
         is_prev=False,
-        dpp_est=dpp_est,
+        pt_est=pt_est,
         include_optics_errors=include_optics_errors,
     )

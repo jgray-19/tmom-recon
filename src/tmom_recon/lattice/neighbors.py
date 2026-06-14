@@ -48,8 +48,8 @@ def prepare_neighbor_views(
     data_n = data.join(next_x_df, on="name", rsuffix="_nx")
     data_n = data_n.join(next_y_df, on="name", rsuffix="_ny")
 
-    attach_lattice_columns(data_p, maps)
-    attach_lattice_columns(data_n, maps)
+    data_p = attach_lattice_columns(data_p, maps)
+    data_n = attach_lattice_columns(data_n, maps)
 
     data_p["sqrt_betax_p"] = data_p[PREV.bpm_x].map(maps.sqrt_betax)
     data_p["sqrt_betay_p"] = data_p[PREV.bpm_y].map(maps.sqrt_betay)

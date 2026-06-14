@@ -68,8 +68,7 @@ class ACDipoleMadDriver(KnobMadInterface):
 
     Args:
         accelerator: Owns sequence loading, beam parameters, and BPM patterns.
-        deltap: Momentum offset dp/p. Converted to canonical ``pt`` at
-            construction time.
+        pt: MAD-NG longitudinal energy coordinate for the tracked beam.
         observed_elements: Element name(s) to observe in addition to all BPMs.
         tune_knobs_file: Knob file applied for tune corrections.
         corrector_knobs_file: Knob file applied for corrector settings.
@@ -83,7 +82,7 @@ class ACDipoleMadDriver(KnobMadInterface):
         self,
         *,
         accelerator: Accelerator,
-        deltap: float = 0.0,
+        pt: float = 0.0,
         observed_elements: str | list[str] | None = None,
         tune_knobs_file: Path | None = None,
         corrector_knobs_file: Path | None = None,
@@ -99,12 +98,7 @@ class ACDipoleMadDriver(KnobMadInterface):
             debug=debug,
         )
         self._mad_logfile = str(mad_logfile) if mad_logfile is not None else None
-        self.deltap = float(deltap)
-        self.pt: float = (
-            self.mad.send("py:send(MAD.gphys.dp2pt(py:recv(), loaded_sequence.beam.beta))")
-            .send(self.deltap)
-            .recv()
-        )
+        self.pt = float(pt)
         if tune_knobs_file is not None:
             self.set_knobs(tune_knobs_file)
         if corrector_knobs_file is not None:

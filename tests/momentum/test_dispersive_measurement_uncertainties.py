@@ -8,9 +8,10 @@ from omc3.scripts.fake_measurement_from_model import generate as generate_fake_m
 
 pytest.importorskip("xtrack_tools")
 
+import pandas as pd
 from pymadng_utils.madx import convert_tfs_to_madx
 
-from tmom_recon import calculate_pz, inject_noise_xy_inplace
+from tmom_recon import calculate_pz, inject_noise_xy
 from tmom_recon.svd import svd_clean_measurements
 
 from .momentum_test_utils import add_error_to_orbit_measurement, rmse
@@ -45,7 +46,7 @@ def test_dispersive_measurement_with_uncertainties(
 
     # Since the above gets only BPMs, we disable drift removal to keep names consistent
     # Drop mu1 and mu2 to avoid issues in conversion
-    madx_tws = convert_tfs_to_madx(ng_tws.drop(columns=["mu1", "mu2"]), remove_drifts=False)
+    madx_tws = convert_tfs_to_madx(ng_tws, remove_drifts=False)
 
     # DY is zero in the model; add a tiny symmetric jitter so relative errors propagate
     # into non-zero absolute errors for DY (and DPY if present).
@@ -78,12 +79,7 @@ def test_dispersive_measurement_with_uncertainties(
     # Add noise if requested
     if add_noise:
         rng = np.random.default_rng(42)
-        inject_noise_xy_inplace(
-            calc_df,
-            tracking_df,
-            rng,
-            noise_std=1e-4,  # 100 um noise
-        )
+        calc_df = inject_noise_xy(calc_df, rng, noise_std=1e-4)  # 100 um noise
         # Apply SVD cleaning to noisy data
         calc_df = svd_clean_measurements(calc_df)
 
@@ -95,10 +91,11 @@ def test_dispersive_measurement_with_uncertainties(
         reverse_meas_tws=False,  # Always working with B4
         info=False,
     )
+    assert isinstance(result, pd.DataFrame), "Result should be a DataFrame"
 
-    # Check that DPP_EST is close to the true delta_p (should be ~0)
-    dpp_est = result.attrs["DPP_EST"]
-    assert abs(dpp_est - 0.0) < 1e-5, f"DPP_EST {dpp_est:.2e} not close to expected 0.0"
+    # Check that PT_EST is close to the true pt (should be ~0)
+    pt_est = result.attrs["PT_EST"]
+    assert abs(pt_est - 0.0) < 1e-5, f"PT_EST {pt_est:.2e} not close to expected 0.0"
 
     # Also check that the result has the expected columns
     expected_cols = ["name", "turn", "x", "y", "px", "py"]

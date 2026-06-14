@@ -17,8 +17,8 @@ The most useful public entry points are:
 
 from .integration import (
     ACDipoleConfig,
-    apply_ac_dipole_bpm_overrides_inplace,
-    apply_precomputed_ac_dipole_bpm_overrides_inplace,
+    apply_ac_dipole_bpm_overrides,
+    apply_precomputed_ac_dipole_bpm_overrides,
     run_ac_dipole_reconstruction,
 )
 from .madng_driver import ACDipoleMadDriver, ACDipoleTrackingError
@@ -45,8 +45,8 @@ __all__ = [
     "ACDipoleStateEstimate",
     "ACDipoleStateSeries",
     "ACDipoleTrackingError",
-    "apply_ac_dipole_bpm_overrides_inplace",
-    "apply_precomputed_ac_dipole_bpm_overrides_inplace",
+    "apply_ac_dipole_bpm_overrides",
+    "apply_precomputed_ac_dipole_bpm_overrides",
     "calculate_ac_dipole_momentum",
     "run_ac_dipole_reconstruction",
     "select_ac_dipole_bpm_window",

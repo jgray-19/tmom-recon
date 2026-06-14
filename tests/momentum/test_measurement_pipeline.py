@@ -132,7 +132,7 @@ def test_resolve_optics_uses_measured_phase_with_model_optics(tmp_path: Path) ->
         model_optics=["amplitude", "dispersion"],
         bpm_names=["BPM1", "BPM2", "BPM3"],
     )
-    tws = resolved.tws
+    tws = pd.DataFrame(resolved.tws)
 
     assert resolved.sources == {
         "phase": "measurement",
@@ -159,7 +159,7 @@ def test_resolve_optics_keeps_measured_dispersion_with_model_amplitude(tmp_path:
         model_optics=["amplitude"],
         bpm_names=["BPM1", "BPM2", "BPM3"],
     )
-    tws = resolved.tws
+    tws = pd.DataFrame(resolved.tws)
 
     assert resolved.sources["amplitude"] == "model"
     assert resolved.sources["dispersion"] == "measurement"
@@ -178,7 +178,7 @@ def test_resolve_optics_respects_reverse_phase_accumulation(tmp_path: Path) -> N
         reverse_meas_tws=True,
         bpm_names=["BPM1", "BPM2", "BPM3"],
     )
-    tws = resolved.tws
+    tws = pd.DataFrame(resolved.tws)
 
     assert resolved.sources == {
         "phase": "measurement",

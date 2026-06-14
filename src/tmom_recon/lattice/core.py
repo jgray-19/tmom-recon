@@ -129,19 +129,20 @@ def combine_two_estimates(
     return combined_value, combined_var
 
 
-def inject_noise_xy_inplace(
+def inject_noise_xy(
     df: pd.DataFrame,
-    orig_df: pd.DataFrame,
     rng: np.random.Generator,
     noise_std: float = POSITION_STD_DEV,
-) -> None:
+) -> pd.DataFrame:
+    out = df.copy(deep=True)
     n_rows = len(df)
     LOGGER.debug("Adding Gaussian noise: std=%g", noise_std)
     noise_x = rng.normal(0.0, noise_std, size=n_rows)
     noise_y = rng.normal(0.0, noise_std, size=n_rows)
 
-    df["x"] = orig_df["x"] + noise_x
-    df["y"] = orig_df["y"] + noise_y
+    out["x"] = df["x"] + noise_x
+    out["y"] = df["y"] + noise_y
+    return out
 
 
 def build_lattice_maps(
@@ -167,22 +168,24 @@ def build_lattice_maps(
     return LatticeMaps(**params)
 
 
-def attach_lattice_columns(df: pd.DataFrame, maps: LatticeMaps) -> None:
-    df["sqrt_betax"] = df["name"].map(maps.sqrt_betax)
-    df["sqrt_betay"] = df["name"].map(maps.sqrt_betay)
-    df["betax"] = df["name"].map(maps.betax)
-    df["betay"] = df["name"].map(maps.betay)
-    df["alfax"] = df["name"].map(maps.alfax)
-    df["alfay"] = df["name"].map(maps.alfay)
+def attach_lattice_columns(df: pd.DataFrame, maps: LatticeMaps) -> pd.DataFrame:
+    out = df.copy(deep=True)
+    out["sqrt_betax"] = out["name"].map(maps.sqrt_betax)
+    out["sqrt_betay"] = out["name"].map(maps.sqrt_betay)
+    out["betax"] = out["name"].map(maps.betax)
+    out["betay"] = out["name"].map(maps.betay)
+    out["alfax"] = out["name"].map(maps.alfax)
+    out["alfay"] = out["name"].map(maps.alfay)
 
     if maps.dx is not None:
-        df["dx"] = df["name"].map(maps.dx)
+        out["dx"] = out["name"].map(maps.dx)
     if maps.dpx is not None:
-        df["dpx"] = df["name"].map(maps.dpx)
+        out["dpx"] = out["name"].map(maps.dpx)
     if maps.dy is not None:
-        df["dy"] = df["name"].map(maps.dy)
+        out["dy"] = out["name"].map(maps.dy)
     if maps.dpy is not None:
-        df["dpy"] = df["name"].map(maps.dpy)
+        out["dpy"] = out["name"].map(maps.dpy)
+    return out
 
 
 def weights(psi: np.ndarray, inv_beta1: np.ndarray, inv_beta2: np.ndarray) -> np.ndarray:
@@ -286,10 +289,17 @@ def weighted_average_from_angles(
     return data_avg
 
 
-def sync_endpoints_inplace(data_p: pd.DataFrame, data_n: pd.DataFrame) -> None:
+def sync_endpoints(data_p: pd.DataFrame, data_n: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    data_p_out = data_p.copy(deep=True)
+    data_n_out = data_n.copy(deep=True)
     for col in CORE_MOM_COLS:
-        data_n.iloc[-1, data_n.columns.get_loc(col)] = data_p.iloc[-1, data_p.columns.get_loc(col)]
-        data_p.iloc[0, data_p.columns.get_loc(col)] = data_n.iloc[0, data_n.columns.get_loc(col)]
+        data_n_out.iloc[-1, data_n_out.columns.get_loc(col)] = data_p.iloc[
+            -1, data_p.columns.get_loc(col)
+        ]
+        data_p_out.iloc[0, data_p_out.columns.get_loc(col)] = data_n.iloc[
+            0, data_n.columns.get_loc(col)
+        ]
+    return data_p_out, data_n_out
 
 
 def diagnostics(
@@ -376,28 +386,32 @@ def diagnostics(
             LOGGER.info("py_diff mean (avg rel): No significant py values")
 
 
-def remove_closed_orbit_inplace(data: pd.DataFrame, co: pd.DataFrame) -> None:
-    """Remove closed orbit from tracking data in-place."""
+def remove_closed_orbit(data: pd.DataFrame, co: pd.DataFrame) -> pd.DataFrame:
+    """Return tracking data with the closed orbit removed."""
+    out = data.copy(deep=True)
     x_dict = co["x"].to_dict()
     y_dict = co["y"].to_dict()
     # Ensure arithmetic is performed on float dtype, not categorical
-    data["x"] = data["x"].astype(float) - data["name"].map(x_dict).astype(float)
-    data["y"] = data["y"].astype(float) - data["name"].map(y_dict).astype(float)
+    out["x"] = out["x"].astype(float) - out["name"].map(x_dict).astype(float)
+    out["y"] = out["y"].astype(float) - out["name"].map(y_dict).astype(float)
+    return out
 
 
-def restore_closed_orbit_and_reference_momenta_inplace(
+def restore_closed_orbit_and_reference_momenta(
     data: pd.DataFrame, co: pd.DataFrame
-) -> None:
-    """Restore closed orbit and add reference momenta to data in-place."""
+) -> pd.DataFrame:
+    """Return data with closed orbit and reference momenta restored."""
+    out = data.copy(deep=True)
     co_dict = co.to_dict()
-    data["x"] = data["x"] + data["name"].map(co_dict["x"])
-    data["y"] = data["y"] + data["name"].map(co_dict["y"])
+    out["x"] = out["x"] + out["name"].map(co_dict["x"])
+    out["y"] = out["y"] + out["name"].map(co_dict["y"])
     # Reference momenta are absent from measurement-built twiss tables; the
     # closed-orbit momentum is then taken as zero.
     for col in ("px", "py"):
         if col in co.columns:
-            data[col] = data[col] + data["name"].map(co_dict[col])
+            out[col] = out[col] + out["name"].map(co_dict[col])
 
     if "var_px" in co.columns and "var_py" in co.columns:
-        data["var_px"] = data["var_px"] + data["name"].map(co_dict["var_px"])
-        data["var_py"] = data["var_py"] + data["name"].map(co_dict["var_py"])
+        out["var_px"] = out["var_px"] + out["name"].map(co_dict["var_px"])
+        out["var_py"] = out["var_py"] + out["name"].map(co_dict["var_py"])
+    return out

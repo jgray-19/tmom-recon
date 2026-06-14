@@ -55,7 +55,7 @@ from tmom_recon import (
     calculate_pz_measurement,
     calculate_transverse_pz,
     calculate_transverse_pz_nbpm,
-    inject_noise_xy_inplace,
+    inject_noise_xy,
 )
 ```
 

@@ -101,9 +101,11 @@ def build_twiss_from_measurements(
     twiss_df.index.name = NAME
 
     # Add optics measurements
-    _add_optics_columns_inplace(twiss_df, measurements, bpm_index)
+    twiss_df = _add_optics_columns(twiss_df, measurements, bpm_index)
     if dispersion_found:
-        _add_dispersion_columns_inplace(twiss_df, measurements, bpm_index, negate=reverse_bpm_order)
+        twiss_df = _add_dispersion_columns(
+            twiss_df, measurements, bpm_index, negate=reverse_bpm_order
+        )
 
     # Extract phase data for valid BPMs
     twiss_df[f"{PHASE_ADV}X"] = np.array([phase_data_x.mu[bpm] for bpm in bpm_index])
@@ -116,9 +118,9 @@ def build_twiss_from_measurements(
 
     # Add error columns
     if include_errors:
-        _add_error_columns_inplace(twiss_df, measurements, bpm_index, var_mu_x, var_mu_y)
+        twiss_df = _add_error_columns(twiss_df, measurements, bpm_index, var_mu_x, var_mu_y)
     if dispersion_found and include_errors:
-        _add_dispersion_error_columns_inplace(twiss_df, measurements, bpm_index)
+        twiss_df = _add_dispersion_error_columns(twiss_df, measurements, bpm_index)
 
     # Add the S column
     twiss_df[S] = measurements["beta_x"].loc[bpm_index, S].values
@@ -170,23 +172,25 @@ def _get_valid_bpm_index(
     return valid_index[np.argsort(phase_values)]
 
 
-def _add_columns_inplace(
+def _add_columns(
     twiss_df: tfs.TfsDataFrame,
     mapping: dict[str, tuple[pd.DataFrame, str]],
     bpm_index: pd.Index,
     negate: bool = False,
-) -> None:
+) -> tfs.TfsDataFrame:
     """Generic function to add columns to twiss dataframe based on a mapping."""
+    out = twiss_df.copy(deep=True)
     factor = -1 if negate else 1
     for col_name, (source_df, source_col) in mapping.items():
-        twiss_df[col_name] = source_df.loc[bpm_index, source_col].values * factor
+        out[col_name] = source_df.loc[bpm_index, source_col].values * factor
+    return out
 
 
-def _add_optics_columns_inplace(
+def _add_optics_columns(
     twiss_df: tfs.TfsDataFrame,
     measurements: dict[str, pd.DataFrame],
     bpm_index: pd.Index,
-) -> None:
+) -> tfs.TfsDataFrame:
     """Add beta, alpha, dispersion, and orbit columns to twiss dataframe."""
     # Map source columns to twiss columns
     optics_map = {
@@ -198,15 +202,15 @@ def _add_optics_columns_inplace(
         f"{ORBIT}Y": (measurements["orbit_y"], f"{ORBIT}Y"),
     }
 
-    _add_columns_inplace(twiss_df, optics_map, bpm_index)
+    return _add_columns(twiss_df, optics_map, bpm_index)
 
 
-def _add_dispersion_columns_inplace(
+def _add_dispersion_columns(
     twiss_df: tfs.TfsDataFrame,
     measurements: dict[str, pd.DataFrame],
     bpm_index: pd.Index,
     negate: bool = False,
-) -> None:
+) -> tfs.TfsDataFrame:
     """Add dispersion columns to twiss dataframe."""
     dispersion_map_x = {
         f"{DISPERSION}X": (measurements["disp_x"], f"{DISPERSION}X"),
@@ -216,26 +220,27 @@ def _add_dispersion_columns_inplace(
         f"{DISPERSION}Y": (measurements["disp_y"], f"{DISPERSION}Y"),
         f"{MOMENTUM_DISPERSION}Y": (measurements["disp_y"], f"{MOMENTUM_DISPERSION}Y"),
     }
-    _add_columns_inplace(twiss_df, dispersion_map_x, bpm_index, negate=negate)
-    _add_columns_inplace(twiss_df, dispersion_map_y, bpm_index)
+    out = _add_columns(twiss_df, dispersion_map_x, bpm_index, negate=negate)
+    return _add_columns(out, dispersion_map_y, bpm_index)
 
 
-def _add_error_columns_inplace(
+def _add_error_columns(
     twiss_df: tfs.TfsDataFrame,
     measurements: dict[str, pd.DataFrame],
     bpm_index: pd.Index,
     var_mu_x: np.ndarray,
     var_mu_y: np.ndarray,
-) -> None:
+) -> tfs.TfsDataFrame:
     """Add error columns to twiss dataframe if requested.
 
     Args:
-        twiss_df: Twiss dataframe to modify in-place.
+        twiss_df: Twiss dataframe to populate.
         measurements: Dict of measurement dataframes.
         bpm_index: Index of valid BPMs.
         var_mu_x: Cumulative phase variance for x plane.
         var_mu_y: Cumulative phase variance for y plane.
     """
+    out = twiss_df.copy(deep=True)
     error_map = {
         f"{ERR}{BETA}X": (measurements["beta_x"], f"{ERR}{BETA}X"),
         f"{ERR}{BETA}Y": (measurements["beta_y"], f"{ERR}{BETA}Y"),
@@ -248,7 +253,7 @@ def _add_error_columns_inplace(
     missing_error_cols = []
     for col_name, (source_df, source_col) in error_map.items():
         try:
-            twiss_df[col_name] = source_df.loc[bpm_index, source_col].values
+            out[col_name] = source_df.loc[bpm_index, source_col].values
         except KeyError:
             missing_error_cols.append(source_col)
 
@@ -258,15 +263,16 @@ def _add_error_columns_inplace(
             missing_error_cols,
         )
 
-    twiss_df[f"{ERR}{PHASE_ADV}X"] = np.sqrt(var_mu_x)
-    twiss_df[f"{ERR}{PHASE_ADV}Y"] = np.sqrt(var_mu_y)
+    out[f"{ERR}{PHASE_ADV}X"] = np.sqrt(var_mu_x)
+    out[f"{ERR}{PHASE_ADV}Y"] = np.sqrt(var_mu_y)
+    return out
 
 
-def _add_dispersion_error_columns_inplace(
+def _add_dispersion_error_columns(
     twiss_df: tfs.TfsDataFrame,
     measurements: dict[str, pd.DataFrame],
     bpm_index: pd.Index,
-) -> None:
+) -> tfs.TfsDataFrame:
     """Add dispersion error columns to twiss dataframe.
 
     Only called when dispersion data is available.
@@ -278,7 +284,7 @@ def _add_dispersion_error_columns_inplace(
         f"{ERR}{MOMENTUM_DISPERSION}Y": (measurements["disp_y"], f"{ERR}{MOMENTUM_DISPERSION}Y"),
     }
     try:
-        _add_columns_inplace(twiss_df, dispersion_error_map, bpm_index)
+        return _add_columns(twiss_df, dispersion_error_map, bpm_index)
     except KeyError:
         missing_cols = [
             col
@@ -288,6 +294,7 @@ def _add_dispersion_error_columns_inplace(
         LOGGER.warning(
             f"Dispersion error columns missing: {missing_cols}. Proceeding without dispersion errors."
         )
+        return twiss_df.copy(deep=True)
 
 
 class PhaseData:

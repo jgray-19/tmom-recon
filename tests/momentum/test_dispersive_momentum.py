@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from pymadng_utils.accelerators import LHC
 
 from tests.acd.acd_test_helpers import (
     AC_DIPOLE_ELEMENT,
     _ac_dipole_segment_around_element,
     _get_driver,
 )
-from tmom_recon import ACDipoleConfig, inject_noise_xy_inplace
+from tmom_recon import ACDipoleConfig, inject_noise_xy
 from tmom_recon.svd import svd_clean_measurements  # noqa: E402
 
 from .momentum_test_utils import dispersive_calc, rmse, transverse_calc
@@ -93,7 +94,7 @@ def test_dispersive_momentum_on_momentum_with_ac_dipole_config(
     tws = setup["tws"]
     truth = setup["truth"]
     seq = data_dir / "sequences" / seq_file
-    model = _get_driver(seq, deltap=0.0)
+    model = _get_driver(seq, pt=0.0)
     bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
         model.twiss_elements,
         available_bpms=tracking_df["name"].unique().tolist(),
@@ -181,7 +182,8 @@ def test_dispersive_momentum_off_momentum_with_ac_dipole_config(
     tws = setup["tws"]
     truth = setup["truth"]
     seq = data_dir / "sequences" / seq_file
-    model = _get_driver(seq, deltap=delta_p)
+    accelerator = LHC(beam=1, sequence_file=seq, kinetic_energy=6800)
+    model = _get_driver(seq, pt=accelerator.dp2pt(delta_p))
     bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
         model.twiss_elements,
         available_bpms=tracking_df["name"].unique().tolist(),
@@ -288,7 +290,7 @@ def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, acd
     # Noisy reconstruction - inject noise manually then calculate
     rng = np.random.default_rng(42)
     noisy_df = tracking_df.copy(deep=True)
-    inject_noise_xy_inplace(noisy_df, tracking_df, rng)
+    noisy_df = inject_noise_xy(noisy_df, rng)
     noisy_result = dispersive_calc(
         noisy_df,
         tws=tws,

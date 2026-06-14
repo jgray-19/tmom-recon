@@ -8,6 +8,7 @@ import tfs
 from pymadng_utils.accelerators import LHC
 
 pytest.importorskip("pymadng_utils")
+pytest.importorskip("xtrack_tools")
 
 from typing import TYPE_CHECKING, Any, cast
 
@@ -125,8 +126,9 @@ def _setup_xsuite_simulation(
 
     monitored_line = run_ac_dipole_tracking_with_particles(
         line=baseline_line,
+        acd_marker=AC_DIPOLE_ELEMENT,
+        sequence_name="lhcb1",
         tws=xsuite_tws,
-        beam=1,
         ramp_turns=ramp_turns,
         flattop_turns=flattop_turns,
         driven_tunes=[0.27, 0.322],
@@ -210,8 +212,9 @@ local a = seq:replace({{
 
     monitored_line = run_ac_dipole_tracking_with_particles(
         line=baseline_line,
+        acd_marker=AC_DIPOLE_ELEMENT,
+        sequence_name="lhcb1",
         tws=tws,
-        beam=1,
         ramp_turns=ramp_turns,
         flattop_turns=flattop_turns,
         driven_tunes=[qxd, qyd],

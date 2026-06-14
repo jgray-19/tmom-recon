@@ -106,7 +106,7 @@ def compute_optics_errors(
     names,
     neighbor_suffix: str,
     is_prev: bool,
-    dpp_est: float,
+    pt_est: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     r"""Compute optics error contributions to momentum variances.
 
@@ -137,7 +137,7 @@ def compute_optics_errors(
         names: Neighbor column names.
         neighbor_suffix: Suffix for neighbor columns ('p' or 'n').
         is_prev: Whether this is previous neighbor calculation.
-        dpp_est: Estimated DPP.
+        pt_est: Estimated MAD-NG pt.
 
     Returns:
         Tuple of (var_px_errors, var_py_errors), where each is a 2D numpy array of shape (7, N).
@@ -162,8 +162,8 @@ def compute_optics_errors(
     dy_current = data.get("dy", np.zeros_like(y_current))
     dy_neighbor = data.get(names.dy, np.zeros_like(y_neighbor))
     dpy_current = data.get("dpy", np.zeros_like(y_current))
-    if np.all(dx_current == 0) and dpp_est != 0.0:
-        raise ValueError("Dispersion columns missing but dpp_est is non-zero.")
+    if np.all(dx_current == 0) and pt_est != 0.0:
+        raise ValueError("Dispersion columns missing but pt_est is non-zero.")
 
     phi_x = data[names.delta_x].to_numpy() * 2 * np.pi
     phi_y = data[names.delta_y].to_numpy() * 2 * np.pi
@@ -193,10 +193,10 @@ def compute_optics_errors(
     )
 
     # Normalized coordinates
-    x_current_norm = (x_current - dpp_est * dx_current) / sqrt_beta_x
-    x_neighbor_norm = (x_neighbor - dpp_est * dx_neighbor) / sqrt_beta_x_neigh
-    y_current_norm = (y_current - dpp_est * dy_current) / sqrt_beta_y
-    y_neighbor_norm = (y_neighbor - dpp_est * dy_neighbor) / sqrt_beta_y_neigh
+    x_current_norm = (x_current - pt_est * dx_current) / sqrt_beta_x
+    x_neighbor_norm = (x_neighbor - pt_est * dx_neighbor) / sqrt_beta_x_neigh
+    y_current_norm = (y_current - pt_est * dy_current) / sqrt_beta_y
+    y_neighbor_norm = (y_neighbor - pt_est * dy_neighbor) / sqrt_beta_y_neigh
 
     # Add optics contributions
     # Horizontal
@@ -204,9 +204,9 @@ def compute_optics_errors(
     sec_tan_x = sec_phi_x * tan_phi_x
     sec2_x = sec_phi_x**2
 
-    dpx_ddx_neigh = sign_x * (-dpp_est) * sec_phi_x / (sqrt_beta_x * sqrt_beta_x_neigh)
-    dpx_ddx_curr = sign_x * (-dpp_est) * a_x / sqrt_beta_x**2
-    dpx_ddpx = dpp_est
+    dpx_ddx_neigh = sign_x * (-pt_est) * sec_phi_x / (sqrt_beta_x * sqrt_beta_x_neigh)
+    dpx_ddx_curr = sign_x * (-pt_est) * a_x / sqrt_beta_x**2
+    dpx_ddpx = pt_est
     dpx_dalpha = sign_x * alpha_sign_x * x_current_norm / sqrt_beta_x
     dpx_ds = -(sign_x / sqrt_beta_x**2) * (x_neighbor_norm * sec_phi_x + 2.0 * x_current_norm * a_x)
     dpx_ds_neigh = -sign_x * x_neighbor_norm * sec_phi_x / (sqrt_beta_x * sqrt_beta_x_neigh)
@@ -233,9 +233,9 @@ def compute_optics_errors(
     sec_tan_y = sec_phi_y * tan_phi_y
     sec2_y = sec_phi_y**2
 
-    dpy_ddy_neigh = sign_y * (-dpp_est) * sec_phi_y / (sqrt_beta_y * sqrt_beta_y_neigh)
-    dpy_ddy_curr = sign_y * (-dpp_est) * a_y / sqrt_beta_y**2
-    dpy_ddpy = dpp_est
+    dpy_ddy_neigh = sign_y * (-pt_est) * sec_phi_y / (sqrt_beta_y * sqrt_beta_y_neigh)
+    dpy_ddy_curr = sign_y * (-pt_est) * a_y / sqrt_beta_y**2
+    dpy_ddpy = pt_est
     dpy_dalpha = sign_y * alpha_sign_y * y_current_norm / sqrt_beta_y
     dpy_ds = -(sign_y / sqrt_beta_y**2) * (y_neighbor_norm * sec_phi_y + 2.0 * y_current_norm * a_y)
     dpy_ds_neigh = -sign_y * y_neighbor_norm * sec_phi_y / (sqrt_beta_y * sqrt_beta_y_neigh)

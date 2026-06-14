@@ -14,8 +14,8 @@ import tfs
 from tmom_recon.data.config import POSITION_STD_DEV
 from tmom_recon.lattice.core import (
     get_rng,
-    inject_noise_xy_inplace,
-    remove_closed_orbit_inplace,
+    inject_noise_xy,
+    remove_closed_orbit,
     validate_input,
 )
 from tmom_recon.lattice.names import normalise_measurement_names, normalise_twiss_index
@@ -257,7 +257,7 @@ def _build_output_metadata(
     window: ACDipoleBPMWindow,
     dpx_fit: ACDipoleHarmonicFit,
     dpy_fit: ACDipoleHarmonicFit,
-    delta_used: float,
+    pt_used: float,
 ) -> dict[str, object]:
     """Build the single-source metadata dict used for both TFS headers and attrs.
 
@@ -266,7 +266,7 @@ def _build_output_metadata(
         window: The selected BPM window.
         dpx_fit: Horizontal kick fit.
         dpy_fit: Vertical kick fit.
-        delta_used: The dp/p value that was used.
+        pt_used: The MAD-NG pt value that was used.
 
     Returns:
         Dict suitable for use as both TFS headers and ``result.attrs``.
@@ -286,7 +286,7 @@ def _build_output_metadata(
         "dpy_amplitude": dpy_fit.amplitude,
         "dpy_phase": dpy_fit.phase,
         "dpy_offset": dpy_fit.offset,
-        "delta_used": delta_used,
+        "pt_used": pt_used,
         "kick_model_type": "constant_envelope",
     }
 
@@ -298,7 +298,7 @@ def _assemble_result_dataframe(
     fit: ACDipoleFitResult,
     selection: ACDipoleBPMSelection,
     marker_name: str,
-    dpp_est: float,
+    pt_est: float,
 ) -> pd.DataFrame:
     """Populate all output columns on the per-turn summary DataFrame.
 
@@ -308,7 +308,7 @@ def _assemble_result_dataframe(
         fit: The full fit result from :func:`_fit_ac_dipole_from_frames`.
         selection: The primary upstream/downstream BPM pair.
         marker_name: Name of the AC-dipole marker element.
-        dpp_est: Estimated dp/p.
+        pt_est: Estimated MAD-NG pt.
 
     Returns:
         *result* with all ACD output columns populated.
@@ -351,7 +351,7 @@ def _assemble_result_dataframe(
                 getattr(state, plane), tws, marker_name, plane
             )
 
-    result["delta_used"] = dpp_est
+    result["pt_used"] = pt_est
     return result
 
 
@@ -556,7 +556,7 @@ def prepare_ac_dipole_inputs(
     rng = get_rng(rng)
     if inject_noise is not False:
         noise_std = POSITION_STD_DEV if inject_noise is True else float(inject_noise)
-        inject_noise_xy_inplace(data, orig_data, rng, noise_std=noise_std)
+        data = inject_noise_xy(data, rng, noise_std=noise_std)
 
     lattice_names = [str(name) for name in model.twiss_elements.index]
     marker_name = resolve_name(ac_dipole_marker, lattice_names)
@@ -638,10 +638,9 @@ def reconstruct_from_prepared(
 
     data = prepared.data.copy(deep=True)
     tws = normalise_twiss_index(tws, prepared.lattice_names)
-    dpp_est = float(getattr(model, "deltap", 0.0))
 
     tws_bpm = tws.reindex(prepared.lattice_bpm_order).copy(deep=True)
-    remove_closed_orbit_inplace(data, tws)
+    data = remove_closed_orbit(data, tws)
 
     if resolved_tws is not None:
         resolved = normalise_twiss_index(resolved_tws, prepared.lattice_names)
@@ -667,7 +666,7 @@ def reconstruct_from_prepared(
         tws_bpm,
         window=window,
         bpm_index=bpm_index,
-        dpp_est=dpp_est,
+        pt_est=model.pt,
         use_immediate_neighbors=prepared.use_immediate_neighbors,
     )
 
@@ -689,7 +688,7 @@ def reconstruct_from_prepared(
         fit=fit,
         selection=selection,
         marker_name=marker_name,
-        dpp_est=dpp_est,
+        pt_est=model.pt,
     )
 
     px_up_clean, py_up_clean = reconstruct_bpm_momentum_from_cleaned_acd(
@@ -754,7 +753,7 @@ def reconstruct_from_prepared(
         window=window,
         dpx_fit=fit.dpx_fit,
         dpy_fit=fit.dpy_fit,
-        delta_used=dpp_est,
+        pt_used=model.pt,
     )
 
     tfs_headers = {f"ACD_{k.removeprefix('acd_').upper()}": v for k, v in metadata.items()}

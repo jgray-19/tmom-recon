@@ -3,69 +3,54 @@
 from __future__ import annotations
 
 import pytest
-from omc3.scripts.fake_measurement_from_model import generate as generate_fake_measurement
-from pymadng_utils.madx import convert_tfs_to_madx
+from pymadng_utils.accelerators import LHC
 
-from tmom_recon import calculate_pz
-
-from .momentum_test_utils import add_error_to_orbit_measurement, rmse
+from .momentum_test_utils import assert_dispersive_measurement_recovers_pt
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize("seq_file", ["lhcb1.seq", "b1_120cm_crossing.seq"])
 @pytest.mark.parametrize("delta_p", [0.0, 4e-4])
-def test_dispersive_measurement_recovers_dpp(
+def test_dispersive_measurement_recovers_pt(
     data_dir, seq_file, tmp_path, delta_p, acd_tracking_setup
 ):
-    """Test that calculate_pz_measurement recovers the true DPP from measurements."""
+    """Test that calculate_pz_measurement recovers the true pt from measurements."""
     setup = acd_tracking_setup(seq_file, data_dir, delta_p=delta_p)
-    tracking_df = setup["tracking_df"]
-    ng_tws = setup["tws"]
-    truth = setup["truth"]
-
-    # Since the above gets only BPMs, we disable drift removal to keep names consistent
-    # Drop mu1 and mu2 to avoid issues in conversion
-    madx_tws = convert_tfs_to_madx(ng_tws.drop(columns=["mu1", "mu2"]), remove_drifts=False)
-
-    # Generate fake measurements from the twiss
-    meas_dir = tmp_path / "dispersive_measurement_uncertainties"
-    generate_fake_measurement(
-        twiss=madx_tws,
-        outputdir=meas_dir,
-        parameters=["BETX", "BETY", "DX", "DY", "PHASEX", "PHASEY", "X", "Y"],
+    accelerator = LHC(
+        beam=1,
+        sequence_file=data_dir / "sequences" / seq_file,
+        kinetic_energy=6800,
     )
 
-    # Add a nonzero orbit error
-    add_error_to_orbit_measurement(meas_dir)
-
-    # Call the measurement-based function
-    # The function now handles closed orbit removal and px/py restoration internally
-    result = calculate_pz(
-        tracking_df.copy(deep=True),
-        measurement_dir=str(meas_dir),
-        model_tws=ng_tws,
+    assert_dispersive_measurement_recovers_pt(
+        setup["tracking_df"],
+        setup["tws"],
+        setup["truth"],
+        tmp_path / "dispersive_measurement",
+        accelerator.dp2pt(delta_p),
+        px_rmse_max=3.4e-7,
+        py_rmse_max=2.8e-7,
         reverse_meas_tws=False,  # Always working with B4
-        info=False,
     )
 
-    # Check that DPP_EST is close to the true delta_p
-    dpp_est = result.attrs["DPP_EST"]
-    assert abs(dpp_est - delta_p) < 1e-5, f"DPP_EST {dpp_est:.2e} not close to true {delta_p:.2e}"
 
-    # Also check that the result has the expected columns
-    expected_cols = ["name", "turn", "x", "y", "px", "py"]
-    assert all(col in result.columns for col in expected_cols)
+@pytest.mark.slow
+@pytest.mark.parametrize("delta_p", [0.0, 1e-3])
+def test_offmomentum_psb(tmp_path, delta_p, psb_tracking_setup):
+    """Dispersive-measurement reconstruction for a PSB ring-3 AC-dipole excitation.
 
-    # Merge with truth and check RMSE
-    merged = truth.merge(
-        result[["name", "turn", "px", "py"]],
-        on=["name", "turn"],
+    Mirrors :func:`test_dispersive_measurement_recovers_pt` but for the PSB, using
+    the shared PSB tracking setup and the dispersive measurement pipeline (no
+    AC-dipole cleaning of the reconstruction).
+    """
+    setup = psb_tracking_setup(delta_p)
+
+    assert_dispersive_measurement_recovers_pt(
+        setup["tracking_df"],
+        setup["tws"],
+        setup["truth"],
+        tmp_path / "dispersive_measurement_psb",
+        setup["model"].pt,
+        px_rmse_max=9e-7,
+        py_rmse_max=9e-7,
     )
-
-    px_rmse = rmse(merged["px_true"].to_numpy(), merged["px"].to_numpy())
-    py_rmse = rmse(merged["py_true"].to_numpy(), merged["py"].to_numpy())
-
-    print(f"Dispersive measurement px RMSE: {px_rmse:.2e}, py RMSE: {py_rmse:.2e}")
-
-    assert px_rmse < 3.4e-7, f"px RMSE {px_rmse:.2e} > 3.4e-7"
-    assert py_rmse < 2.8e-7, f"py RMSE {py_rmse:.2e} > 2.7e-7"

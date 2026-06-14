@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
+import pandas as pd
 import tfs
 from omc3.optics_measurements.constants import (
     ERR,
@@ -13,14 +14,15 @@ from omc3.optics_measurements.constants import (
     ORBIT,
     ORBIT_NAME,
 )
+from omc3.scripts.fake_measurement_from_model import generate as generate_fake_measurement
+from pymadng_utils.madx import convert_tfs_to_madx
 
-from tmom_recon import calculate_pz, inject_noise_xy_inplace
+from tmom_recon import calculate_pz, inject_noise_xy
 from tmom_recon.svd import svd_clean_measurements
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    import pandas as pd
     import xtrack as xt
 
 LOGGER = logging.getLogger(__name__)
@@ -39,7 +41,9 @@ def transverse_calc(
     **kwargs,
 ) -> pd.DataFrame:
     """Model-only reconstruction without dispersion (old transverse behaviour)."""
-    return calculate_pz(df, model_tws=tws, use_dispersion=False, acd=ac_dipole_config, **kwargs)
+    result = calculate_pz(df, model_tws=tws, use_dispersion=False, acd=ac_dipole_config, **kwargs)
+    assert isinstance(result, pd.DataFrame), "Result should be a DataFrame"
+    return result
 
 
 def dispersive_calc(
@@ -50,7 +54,9 @@ def dispersive_calc(
     **kwargs,
 ) -> pd.DataFrame:
     """Model-only reconstruction with dispersion (old dispersive behaviour)."""
-    return calculate_pz(df, model_tws=tws, use_dispersion=True, acd=ac_dipole_config, **kwargs)
+    result = calculate_pz(df, model_tws=tws, use_dispersion=True, acd=ac_dipole_config, **kwargs)
+    assert isinstance(result, pd.DataFrame), "Result should be a DataFrame"
+    return result
 
 
 def xsuite_to_ngtws(tbl: xt.Table) -> pd.DataFrame:
@@ -164,12 +170,7 @@ def verify_pz_reconstruction(
 
     rng = np.random.default_rng(rng_seed)
     noisy_df = tracking_df.copy(deep=True)
-    inject_noise_xy_inplace(
-        noisy_df,
-        tracking_df,
-        rng,
-        noise_std=1e-4,
-    )
+    noisy_df = inject_noise_xy(noisy_df, rng, noise_std=1e-4)
     noisy_result = calculate_pz_func(
         noisy_df,
         tws=tws,
@@ -269,3 +270,68 @@ def add_error_to_orbit_measurement(fldr):
         df = tfs.read(meas_file)
         df[f"{ERR}{ORBIT}{plane.upper()}"] = 1e-6
         tfs.write(meas_file, df)
+
+
+def assert_dispersive_measurement_recovers_pt(
+    tracking_df: pd.DataFrame,
+    ng_tws: pd.DataFrame,
+    truth: pd.DataFrame,
+    meas_dir,
+    expected_pt: float,
+    *,
+    px_rmse_max: float,
+    py_rmse_max: float,
+    reverse_meas_tws: bool = False,
+):
+    """Reconstruct momenta from fake measurements and check pt and RMSE vs truth.
+
+    Generates an omc3 fake measurement from ``ng_tws`` (MAD-NG format), injects a
+    constant orbit error, runs :func:`calculate_pz` against ``measurement_dir`` and
+    asserts that the estimated pt matches the caller-provided ``expected_pt`` and
+    that the reconstructed ``px``/``py`` match ``truth`` within the given RMSE
+    thresholds.
+
+    Returns the reconstruction result so callers can make extra assertions.
+    """
+    madx_tws = convert_tfs_to_madx(ng_tws, remove_drifts=False)
+
+    generate_fake_measurement(
+        twiss=madx_tws,
+        outputdir=meas_dir,
+        parameters=["BETX", "BETY", "DX", "DY", "PHASEX", "PHASEY", "X", "Y"],
+    )
+
+    # Add a nonzero orbit error
+    add_error_to_orbit_measurement(meas_dir)
+
+    # The function handles closed orbit removal and px/py restoration internally.
+    result = calculate_pz(
+        tracking_df.copy(deep=True),
+        measurement_dir=str(meas_dir),
+        model_tws=ng_tws,
+        reverse_meas_tws=reverse_meas_tws,
+        info=False,
+    )
+    assert isinstance(result, pd.DataFrame), "Result should be a DataFrame"
+
+    pt_est = result.attrs["PT_EST"]
+    assert abs(pt_est - expected_pt) < 1e-5, (
+        f"PT_EST {pt_est:.2e} not close to true {expected_pt:.2e}"
+    )
+
+    expected_cols = ["name", "turn", "x", "y", "px", "py"]
+    assert all(col in result.columns for col in expected_cols)
+
+    merged = truth.merge(
+        result[["name", "turn", "px", "py"]],
+        on=["name", "turn"],
+    )
+
+    px_rmse = rmse(merged["px_true"].to_numpy(), merged["px"].to_numpy())
+    py_rmse = rmse(merged["py_true"].to_numpy(), merged["py"].to_numpy())
+
+    print(f"Dispersive measurement px RMSE: {px_rmse:.2e}, py RMSE: {py_rmse:.2e}")
+
+    assert px_rmse < px_rmse_max, f"px RMSE {px_rmse:.2e} > {px_rmse_max:.2e}"
+    assert py_rmse < py_rmse_max, f"py RMSE {py_rmse:.2e} > {py_rmse_max:.2e}"
+    return result

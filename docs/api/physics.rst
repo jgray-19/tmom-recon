@@ -26,7 +26,7 @@ tmom_recon.physics
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: tmom_recon.physics.dpp_calculation
+.. automodule:: tmom_recon.physics.pt_calculation
    :members:
    :undoc-members:
    :show-inheritance:

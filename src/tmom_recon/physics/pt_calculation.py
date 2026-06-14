@@ -128,8 +128,8 @@ def _compute_delta(
         - (eta_1 / sqrt_beta_1) * sin_bar_minus_tilde
     )
     with np.errstate(divide="ignore", invalid="ignore"):
-        delta_all = num / den
-    return num, den, delta_all
+        pt_all = num / den
+    return num, den, pt_all
 
 
 def _valid_mask(eta_1, eta_bar, eta_tilde, den) -> np.ndarray:
@@ -146,30 +146,30 @@ def _valid_mask(eta_1, eta_bar, eta_tilde, den) -> np.ndarray:
     return np.abs(den) > DEN_TOL
 
 
-def _maybe_log_stats(delta: np.ndarray, info: bool, label: str = "") -> None:
+def _maybe_log_stats(pt: np.ndarray, info: bool, label: str = "") -> None:
     if not info:
         return
     prefix = f"[{label}] " if label else ""
-    if delta.size:
-        LOGGER.info(prefix + "Count: %d", delta.size)
-        LOGGER.info(prefix + "δ mean: %s", np.nanmean(delta))
-        LOGGER.info(prefix + "δ std:  %s", np.nanstd(delta))
-        LOGGER.info(prefix + "δ min:  %s", np.nanmin(delta))
-        LOGGER.info(prefix + "δ max:  %s", np.nanmax(delta))
+    if pt.size:
+        LOGGER.info(prefix + "Count: %d", pt.size)
+        LOGGER.info(prefix + "pt mean: %s", np.nanmean(pt))
+        LOGGER.info(prefix + "pt std:  %s", np.nanstd(pt))
+        LOGGER.info(prefix + "pt min:  %s", np.nanmin(pt))
+        LOGGER.info(prefix + "pt max:  %s", np.nanmax(pt))
     else:
         LOGGER.warning(prefix + "All samples were filtered out (check dx/den tolerances).")
 
 
-def _calculate_dpp_direction_aligned(
+def _calculate_pt_direction_aligned(
     data: pd.DataFrame,
     tws: pd.DataFrame,
     maps: TwissMaps,
     direction: Direction,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Internal helper: compute per-row δ for a given direction.
+    Internal helper: compute per-row pt for a given direction.
     Returns:
-        delta_all : np.ndarray (same length as data), may contain inf/NaN where invalid
+        pt_all : np.ndarray (same length as data), may contain inf/NaN where invalid
         valid     : boolean mask of rows considered valid (dispersion & denominator)
     """
     df = data.copy(deep=True)
@@ -198,7 +198,7 @@ def _calculate_dpp_direction_aligned(
     x_bar = df["x_bar"].to_numpy()
     x_tilde = df["x_tilde"].to_numpy()
 
-    _, den, delta_all = _compute_delta(
+    _, den, pt_all = _compute_delta(
         x1,
         x_bar,
         x_tilde,
@@ -213,24 +213,22 @@ def _calculate_dpp_direction_aligned(
     )
 
     valid = _valid_mask(eta_1, eta_bar, eta_tilde, den)
-    return delta_all, valid
+    return pt_all, valid
 
 
-def calculate_dpp_both(
+def calculate_pt_both(
     data: pd.DataFrame,
     tws: pd.DataFrame,
     info: bool = True,
 ) -> pd.DataFrame:
     """
-    Compute δ using BOTH 'prev' and 'next' partner BPM triplets.
+    Compute MAD-NG pt using BOTH 'prev' and 'next' partner BPM triplets.
     Returns a DataFrame aligned to the input rows with columns:
-        - 'delta_prev'
-        - 'delta_next'
-        - 'delta_avg'  (simple unweighted average where both are valid; NaN otherwise)
-
-    This leaves the original `calculate_dpp` API untouched.
+        - 'pt_prev'
+        - 'pt_next'
+        - 'pt_avg'  (simple unweighted average where both are valid; NaN otherwise)
     """
-    LOGGER.info("Calculating δ using BOTH directions (prev + next)")
+    LOGGER.info("Calculating pt using BOTH directions (prev + next)")
     # Make a copy to avoid modifying input
     data = data.copy(deep=True)
 
@@ -248,60 +246,71 @@ def calculate_dpp_both(
     data["x"] = data["x"] - data["name"].map(maps.x_co)
 
     # Per-direction, aligned arrays and masks
-    next_all, next_valid = _calculate_dpp_direction_aligned(data, tws, maps, "next")
-    prev_all, prev_valid = _calculate_dpp_direction_aligned(data, tws, maps, "prev")
+    next_all, next_valid = _calculate_pt_direction_aligned(data, tws, maps, "next")
+    prev_all, prev_valid = _calculate_pt_direction_aligned(data, tws, maps, "prev")
 
     # Build aligned Series with NaN where invalid
-    delta_next = np.where(next_valid, next_all, np.nan)
-    delta_prev = np.where(prev_valid, prev_all, np.nan)
+    pt_next = np.where(next_valid, next_all, np.nan)
+    pt_prev = np.where(prev_valid, prev_all, np.nan)
 
     # Unweighted average only where both are valid
     both_valid = next_valid & prev_valid
-    delta_avg = np.full_like(delta_next, np.nan, dtype=float)
-    delta_avg[both_valid] = 0.5 * (delta_prev[both_valid] + delta_next[both_valid])
+    pt_avg = np.full_like(pt_next, np.nan, dtype=float)
+    pt_avg[both_valid] = 0.5 * (pt_prev[both_valid] + pt_next[both_valid])
 
     # Diagnostics
-    _maybe_log_stats(delta_prev[prev_valid], info, label="prev")
-    _maybe_log_stats(delta_next[next_valid], info, label="next")
-    _maybe_log_stats(delta_avg[np.isfinite(delta_avg)], info, label="avg")
+    _maybe_log_stats(pt_prev[prev_valid], info, label="prev")
+    _maybe_log_stats(pt_next[next_valid], info, label="next")
+    _maybe_log_stats(pt_avg[np.isfinite(pt_avg)], info, label="avg")
 
     # Return as DataFrame aligned to input index
     return pd.DataFrame(
         {
-            "delta_prev": delta_prev,
-            "delta_next": delta_next,
-            "delta_avg": delta_avg,
+            "pt_prev": pt_prev,
+            "pt_next": pt_next,
+            "pt_avg": pt_avg,
         },
         index=data.index,
     )
 
 
-def get_mean_dpp(data: pd.DataFrame, tws: pd.DataFrame, info: bool = True) -> float:
+def get_mean_pt(data: pd.DataFrame, tws: pd.DataFrame, info: bool = True) -> float:
     """
-    Compute mean δ using BOTH 'prev' and 'next' partner BPM triplets.
-    Returns a single float value representing the mean δ across all valid measurements.
+    Compute mean pt using BOTH 'prev' and 'next' partner BPM triplets.
+    Returns a single float value representing the mean pt across all valid measurements.
     """
-    dpp_df = calculate_dpp_both(data, tws=tws, info=info)
-    mean_dpp = np.nanmean(dpp_df["delta_avg"])
+    pt_df = calculate_pt_both(data, tws=tws, info=info)
+    mean_pt = np.nanmean(pt_df["pt_avg"])
     if info:
-        LOGGER.info("Mean δ across all valid measurements: %s", mean_dpp)
-    return mean_dpp if np.isfinite(mean_dpp) else 0.0
+        LOGGER.info("Mean pt across all valid measurements: %s", mean_pt)
+    return mean_pt if np.isfinite(mean_pt) else 0.0
 
 
 LHC_ARC_PATTERN = r"BPM.*\.0*(1[5-9]|[2-9]\d|[1-9]\d{2,})[RL]"
 
 
-def estimate_dpp_from_model(data: pd.DataFrame, tws: pd.DataFrame, info: bool = True) -> float:
+def estimate_pt_from_model(data: pd.DataFrame, tws: pd.DataFrame, info: bool = True) -> float:
     """
-    Estimate δ using model-based dispersion using the sum method.
+    Estimate MAD-NG pt using model-based dispersion with the sum method.
 
     Args:
         data: Tracking data with BPM readings. Must contain columns: ["name", "x"].
         tws: Twiss parameters DataFrame. Must have column "dx" and be indexed by BPM name.
         info: If True, log diagnostic information.
     Returns:
-        Estimated δ value as a float.
+        Estimated pt value as a float.
     """
+    data_bpms = set(data["name"].unique())
+    tws_bpms = set(tws.index)
+
+    missing_bpms = data_bpms - tws_bpms
+    if missing_bpms:
+        raise ValueError(f"Data contains BPMs not present in tws: {missing_bpms}")
+
+    extra_bpms = tws_bpms - data_bpms
+    if extra_bpms:
+        LOGGER.warning(f"tws contains BPMs not present in data: {extra_bpms}")
+        tws = tws.loc[tws.index.intersection(data_bpms)]
 
     is_lhc = tws.index.str.match(LHC_ARC_PATTERN).any()
     closed_orbit = estimate_closed_orbit(data, tws)
@@ -328,10 +337,10 @@ def estimate_dpp_from_model(data: pd.DataFrame, tws: pd.DataFrame, info: bool = 
         raise ValueError("No BPMs available for δ estimation after filtering.")
     numerator = np.sum(filtered_co["x"] * filtered_tws["dx"])
     denominator = np.sum(filtered_tws["dx"] ** 2)
-    dpp = numerator / denominator
+    pt = numerator / denominator
 
     if info:
         LOGGER.info(
-            f"Estimated δ from model-based dispersion: {dpp} from {numerator:.2e}/{denominator:.2e}"
+            f"Estimated pt from model-based dispersion: {pt} from {numerator:.2e}/{denominator:.2e}"
         )
-    return dpp
+    return pt

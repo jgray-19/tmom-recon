@@ -48,12 +48,12 @@ def make_row_prev(*, with_optics_errs: bool) -> pd.DataFrame:
 
 
 def _px_of(df: pd.DataFrame) -> float:
-    px, _ = _compute_nominal_momenta(df, PREV, SUFFIX_PREV, is_prev=True, dpp_est=0.0)
+    px, _ = _compute_nominal_momenta(df, PREV, SUFFIX_PREV, is_prev=True, pt_est=0.0)
     return float(px[0])
 
 
 def _py_of(df: pd.DataFrame) -> float:
-    _, py = _compute_nominal_momenta(df, PREV, SUFFIX_PREV, is_prev=True, dpp_est=0.0)
+    _, py = _compute_nominal_momenta(df, PREV, SUFFIX_PREV, is_prev=True, pt_est=0.0)
     return float(py[0])
 
 
@@ -144,7 +144,7 @@ def test_jacobian_full_optics_prev():
     var_px_meas, var_py_meas = compute_measurement_errors(df, PREV, SUFFIX_PREV, is_prev=True)
 
     var_px_opt_errors, var_py_opt_errors = compute_optics_errors(
-        df, PREV, SUFFIX_PREV, is_prev=True, dpp_est=0.0
+        df, PREV, SUFFIX_PREV, is_prev=True, pt_est=0.0
     )
 
     var_px_full = var_px_meas + np.sum(var_px_opt_errors, axis=0)

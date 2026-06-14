@@ -195,7 +195,7 @@ def _build_local_reconstruction_rows(
     tws_bpm: pd.DataFrame,
     bpm_name: str,
     *,
-    dpp_est: float,
+    pt_est: float,
 ) -> tuple[pd.DataFrame, LatticeMaps]:
     """Extract rows for a single BPM and attach lattice map columns.
 
@@ -203,17 +203,17 @@ def _build_local_reconstruction_rows(
         data: Full measurement DataFrame.
         tws_bpm: Twiss DataFrame restricted to BPMs.
         bpm_name: Name of the BPM to extract.
-        dpp_est: Estimated dp/p used to decide whether to include dispersion.
+        pt_est: Estimated MAD-NG pt used to decide whether to include dispersion.
 
     Returns:
         ``(rows, maps)`` where *rows* is the filtered DataFrame with lattice
         columns attached and *maps* is the lattice-map object.
     """
-    maps = build_lattice_maps(tws_bpm, include_dispersion=not np.isclose(dpp_est, 0.0))
+    maps = build_lattice_maps(tws_bpm, include_dispersion=not np.isclose(pt_est, 0.0))
     rows = data.loc[data["name"] == bpm_name, ["name", "turn", "x", "y", "var_x", "var_y"]].copy(
         deep=True
     )
-    attach_lattice_columns(rows, maps)
+    rows = attach_lattice_columns(rows, maps)
     return rows, maps
 
 
@@ -291,7 +291,7 @@ def _prepare_prev_reconstruction(
     prev_y: pd.DataFrame,
     bpm_index: dict[str, int],
     *,
-    dpp_est: float = 0.0,
+    pt_est: float = 0.0,
 ) -> pd.DataFrame:
     """Build a momentum-reconstruction DataFrame for a single upstream BPM.
 
@@ -302,12 +302,12 @@ def _prepare_prev_reconstruction(
         prev_x: Previous-neighbor lookup table for the x-plane.
         prev_y: Previous-neighbor lookup table for the y-plane.
         bpm_index: Mapping from BPM name to lattice position index.
-        dpp_est: Estimated dp/p.
+        pt_est: Estimated MAD-NG pt.
 
     Returns:
         DataFrame with reconstructed ``px``/``py`` and associated variances.
     """
-    rows, maps = _build_local_reconstruction_rows(data, tws_bpm, bpm_name, dpp_est=dpp_est)
+    rows, maps = _build_local_reconstruction_rows(data, tws_bpm, bpm_name, pt_est=pt_est)
     rows[PREV.bpm_x] = _require_neighbor_name(
         prev_x.at[bpm_name, PREV.bpm_x], bpm_name, "x", "previous"
     )
@@ -322,7 +322,7 @@ def _prepare_prev_reconstruction(
         rows[PREV.dx] = rows[PREV.bpm_x].map(maps.dx)
         rows[PREV.dy] = rows[PREV.bpm_y].map(maps.dy)
     rows = _merge_prev_neighbor_data(rows, data, bpm_index)
-    return momenta_from_prev(rows, dpp_est=dpp_est)
+    return momenta_from_prev(rows, pt_est)
 
 
 def _prepare_next_reconstruction(
@@ -333,7 +333,7 @@ def _prepare_next_reconstruction(
     next_y: pd.DataFrame,
     bpm_index: dict[str, int],
     *,
-    dpp_est: float = 0.0,
+    pt_est: float = 0.0,
 ) -> pd.DataFrame:
     """Build a momentum-reconstruction DataFrame for a single downstream BPM.
 
@@ -344,12 +344,12 @@ def _prepare_next_reconstruction(
         next_x: Next-neighbor lookup table for the x-plane.
         next_y: Next-neighbor lookup table for the y-plane.
         bpm_index: Mapping from BPM name to lattice position index.
-        dpp_est: Estimated dp/p.
+        pt_est: Estimated MAD-NG pt.
 
     Returns:
         DataFrame with reconstructed ``px``/``py`` and associated variances.
     """
-    rows, maps = _build_local_reconstruction_rows(data, tws_bpm, bpm_name, dpp_est=dpp_est)
+    rows, maps = _build_local_reconstruction_rows(data, tws_bpm, bpm_name, pt_est=pt_est)
     rows[NEXT.bpm_x] = _require_neighbor_name(
         next_x.at[bpm_name, NEXT.bpm_x], bpm_name, "x", "next"
     )
@@ -364,7 +364,7 @@ def _prepare_next_reconstruction(
         rows[NEXT.dx] = rows[NEXT.bpm_x].map(maps.dx)
         rows[NEXT.dy] = rows[NEXT.bpm_y].map(maps.dy)
     rows = _merge_next_neighbor_data(rows, data, bpm_index)
-    return momenta_from_next(rows, dpp_est=dpp_est)
+    return momenta_from_next(rows, pt_est)
 
 
 def prepare_direct_bpm_reconstruction(
@@ -373,7 +373,7 @@ def prepare_direct_bpm_reconstruction(
     *,
     window: ACDipoleBPMWindow,
     bpm_index: dict[str, int],
-    dpp_est: float = 0.0,
+    pt_est: float = 0.0,
     use_immediate_neighbors: bool = False,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
     """Build per-BPM reconstruction DataFrames for all BPMs in the window.
@@ -383,7 +383,7 @@ def prepare_direct_bpm_reconstruction(
         tws_bpm: Twiss DataFrame restricted to BPMs.
         window: The selected upstream/downstream BPM window.
         bpm_index: Mapping from BPM name to lattice position index.
-        dpp_est: Estimated dp/p.
+        pt_est: Estimated MAD-NG pt.
         use_immediate_neighbors: Passed through to
             :func:`_prepare_neighbor_tables`.
 
@@ -396,13 +396,13 @@ def prepare_direct_bpm_reconstruction(
     )
     upstream_frames = {
         bpm_name: _prepare_prev_reconstruction(
-            data, tws_bpm, bpm_name, prev_x, prev_y, bpm_index, dpp_est=dpp_est
+            data, tws_bpm, bpm_name, prev_x, prev_y, bpm_index, pt_est=pt_est
         )
         for bpm_name in window.upstream
     }
     downstream_frames = {
         bpm_name: _prepare_next_reconstruction(
-            data, tws_bpm, bpm_name, next_x, next_y, bpm_index, dpp_est=dpp_est
+            data, tws_bpm, bpm_name, next_x, next_y, bpm_index, pt_est=pt_est
         )
         for bpm_name in window.downstream
     }

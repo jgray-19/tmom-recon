@@ -6,7 +6,7 @@ from model and/or measured optics, with optional AC-dipole refinement.
 
 from __future__ import annotations
 
-from .lattice.core import inject_noise_xy_inplace
+from .lattice.core import inject_noise_xy
 from .measurements.twiss_from_measurement import build_twiss_from_measurements
 from .nbpm import calculate_transverse_pz_nbpm
 from .optics import ModelOpticsErrors, ResolvedOptics, resolve_optics
@@ -20,6 +20,6 @@ __all__ = [
     "build_twiss_from_measurements",
     "calculate_pz",
     "calculate_transverse_pz_nbpm",
-    "inject_noise_xy_inplace",
+    "inject_noise_xy",
     "resolve_optics",
 ]

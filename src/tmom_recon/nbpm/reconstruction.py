@@ -10,8 +10,8 @@ import pandas as pd
 
 from tmom_recon.acd.integration import (
     ACDipoleConfig,
-    apply_ac_dipole_bpm_overrides_inplace,
-    apply_precomputed_ac_dipole_bpm_overrides_inplace,
+    apply_ac_dipole_bpm_overrides,
+    apply_precomputed_ac_dipole_bpm_overrides,
     run_ac_dipole_reconstruction,
 )
 from tmom_recon.data.config import POSITION_STD_DEV
@@ -19,9 +19,9 @@ from tmom_recon.lattice.core import (
     OUT_COLS,
     diagnostics,
     get_rng,
-    inject_noise_xy_inplace,
-    remove_closed_orbit_inplace,
-    restore_closed_orbit_and_reference_momenta_inplace,
+    inject_noise_xy,
+    remove_closed_orbit,
+    restore_closed_orbit_and_reference_momenta,
     validate_input,
 )
 
@@ -295,15 +295,17 @@ def _build_observation_cube(
     )
 
 
-def _sanitize_measurement_variances(data: pd.DataFrame, variance_floor: float) -> None:
-    """Clamp measurement variances to a finite, non-zero floor in-place."""
+def _sanitize_measurement_variances(data: pd.DataFrame, variance_floor: float) -> pd.DataFrame:
+    """Clamp measurement variances to a finite, non-zero floor."""
+    out = data.copy(deep=True)
     for col in ("var_x", "var_y"):
         values = np.full(len(data), variance_floor, dtype=float)
         if col in data.columns:
             raw_values = data[col].to_numpy(dtype=float)
             finite_mask = np.isfinite(raw_values)
             values[finite_mask] = np.maximum(raw_values[finite_mask], variance_floor)
-        data[col] = values
+        out[col] = values
+    return out
 
 
 def _as_int(value: object) -> int:
@@ -533,14 +535,14 @@ def calculate_transverse_pz_nbpm(
 
     if inject_noise is not False:
         noise_std = POSITION_STD_DEV if inject_noise is True else float(inject_noise)
-        inject_noise_xy_inplace(data, orig_data, rng, noise_std=noise_std)
+        data = inject_noise_xy(data, rng, noise_std=noise_std)
 
     variance_floor = (
         float(measurement_variance_floor)
         if measurement_variance_floor is not None
         else float(POSITION_STD_DEV**2)
     )
-    _sanitize_measurement_variances(data, variance_floor)
+    data = _sanitize_measurement_variances(data, variance_floor)
 
     tws_bpm = _normalise_twiss(tws)
     tws_bpm_names = set(tws_bpm.index).intersection(data["name"].astype(str).str.upper().unique())
@@ -565,7 +567,7 @@ def calculate_transverse_pz_nbpm(
         if twiss_reference is None:
             twiss_reference = _normalise_twiss(ac_dipole_config.model.twiss_elements)
 
-    remove_closed_orbit_inplace(data, tws_bpm)
+    data = remove_closed_orbit(data, tws_bpm)
     observation_cube = _build_observation_cube(data, bpm_names)
     kick_by_turn_x: np.ndarray | None = None
     kick_by_turn_y: np.ndarray | None = None
@@ -635,9 +637,9 @@ def calculate_transverse_pz_nbpm(
     result["py"] = py_cube[observation_cube.row_bpm_idx, observation_cube.row_turn_idx]
     result["var_px"] = var_px_cube[observation_cube.row_bpm_idx, observation_cube.row_turn_idx]
     result["var_py"] = var_py_cube[observation_cube.row_bpm_idx, observation_cube.row_turn_idx]
-    restore_closed_orbit_and_reference_momenta_inplace(result, tws_bpm)
+    result = restore_closed_orbit_and_reference_momenta(result, tws_bpm)
     if ac_dipole_config is not None:
-        apply_ac_dipole_bpm_overrides_inplace(
+        result = apply_ac_dipole_bpm_overrides(
             result=result,
             data=data_for_acd,
             tws=tws,
@@ -655,7 +657,7 @@ def calculate_transverse_pz_nbpm(
         and ("bpm_upstream" in acd_kicks.columns or "bpm_upstream" in acd_kicks.attrs)
         and ("bpm_downstream" in acd_kicks.columns or "bpm_downstream" in acd_kicks.attrs)
     ):
-        apply_precomputed_ac_dipole_bpm_overrides_inplace(
+        result = apply_precomputed_ac_dipole_bpm_overrides(
             result=result,
             acd_result=acd_kicks,
         )

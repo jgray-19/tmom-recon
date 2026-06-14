@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Literal
 
 from tmom_recon.acd.integration import (
     ACDipoleConfig,
-    apply_precomputed_ac_dipole_bpm_overrides_inplace,
+    apply_precomputed_ac_dipole_bpm_overrides,
     ensure_position_variances,
     run_ac_dipole_reconstruction,
 )
@@ -22,7 +22,7 @@ from tmom_recon.acd.reconstruction import (
     reconstruct_from_prepared,
 )
 from tmom_recon.data.config import POSITION_STD_DEV
-from tmom_recon.lattice.core import get_rng, inject_noise_xy_inplace, validate_input
+from tmom_recon.lattice.core import get_rng, inject_noise_xy, validate_input
 from tmom_recon.optics import (
     LoadedMeasurement,
     ModelOpticsErrors,
@@ -62,7 +62,7 @@ def calculate_pz(
     use_dispersion: bool = True,
     model_errors: ModelOpticsErrors | None = None,
     reverse_meas_tws: bool = False,
-    dpp_override: float | None = None,
+    pt_override: float | None = None,
     inject_noise: bool | float = False,
     rng: np.random.Generator | None = None,
     info: bool = True,
@@ -85,11 +85,11 @@ def calculate_pz(
         measurement_dir: omc3 optics measurement directory.
         model_optics: Optics categories forced to come from the model.
         use_dispersion: If ``False``, run a pure transverse reconstruction
-            (no dispersion terms, dp/p taken as 0 unless overridden).
+            (no dispersion terms, pt taken as 0 unless overridden).
         model_errors: Rough uncertainties for model-sourced optics.
         reverse_meas_tws: Reverse BPM ordering in the measured phase chain
             (Beam 2 / reverse-direction data).
-        dpp_override: Use this dp/p instead of estimating it.
+        pt_override: Use this MAD-NG pt instead of estimating it.
         inject_noise: If truthy, inject Gaussian position noise (``True`` uses
             the standard BPM resolution; a float sets the std dev [m]).
         rng: Optional NumPy random generator for reproducible noise.
@@ -129,8 +129,7 @@ def calculate_pz(
     rng = get_rng(rng)
     if inject_noise is not False:
         noise_std = POSITION_STD_DEV if inject_noise is True else float(inject_noise)
-        data = data.copy(deep=True)
-        inject_noise_xy_inplace(data, data, rng, noise_std=noise_std)
+        data = inject_noise_xy(data, rng, noise_std=noise_std)
 
     if acd_only == "generator":
         return ACDipolePzGenerator._build(
@@ -164,13 +163,13 @@ def calculate_pz(
         optics,
         inject_noise=False,
         rng=rng,
-        dpp_override=dpp_override,
+        pt_override=pt_override,
         info=info,
     )
 
     if acd is not None:
         acd_result = run_ac_dipole_reconstruction(data, model_tws, acd, resolved_tws=optics.tws)
-        apply_precomputed_ac_dipole_bpm_overrides_inplace(
+        result = apply_precomputed_ac_dipole_bpm_overrides(
             result=result, acd_result=acd_result, config=acd
         )
         result.attrs["acd_result"] = acd_result

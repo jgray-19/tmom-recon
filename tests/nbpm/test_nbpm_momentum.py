@@ -7,7 +7,7 @@ from tests.momentum.momentum_test_utils import rmse
 from tmom_recon import (
     calculate_pz,
     calculate_transverse_pz_nbpm,
-    inject_noise_xy_inplace,
+    inject_noise_xy,
 )
 from tmom_recon.svd import svd_clean_measurements
 
@@ -65,12 +65,7 @@ def test_nbpm_improves_noisy_local_window_over_two_bpm_baseline(data_dir, tracki
     truth = truth[truth["name"].isin(selected_bpms)].copy(deep=True)
 
     noisy_df = tracking_df.copy(deep=True)
-    inject_noise_xy_inplace(
-        noisy_df,
-        tracking_df,
-        np.random.default_rng(42),
-        noise_std=1e-4,
-    )
+    noisy_df = inject_noise_xy(noisy_df, np.random.default_rng(42), noise_std=1e-4)
 
     baseline = calculate_pz(
         noisy_df.copy(deep=True),

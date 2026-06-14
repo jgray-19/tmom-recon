@@ -84,7 +84,7 @@ class ResolvedOptics:
     Attributes:
         tws: Twiss DataFrame (tfs, lowercase columns/headers) with all optics
             and uncertainty columns, indexed by BPM name in ring order.
-        co: Twiss used for closed-orbit removal/restoration and dpp
+        co: Twiss used for closed-orbit removal/restoration and pt
             estimation (the model twiss when available, else ``tws``).
         sources: Resolved source per optics category.
         use_dispersion: Whether dispersion is available and enabled.
@@ -273,7 +273,7 @@ def _synthesise_dispersion_errors(tws: pd.DataFrame, errors: ModelOpticsErrors) 
 
 def resolve_optics(
     *,
-    model_tws: pd.DataFrame | None = None,
+    model_tws: tfs.TfsDataFrame | None = None,
     measurement_dir: str | Path | None = None,
     model_optics: Collection[OpticsCategory] = (),
     use_dispersion: bool = True,
@@ -374,5 +374,9 @@ def resolve_optics(
     if dispersion_on:
         _synthesise_dispersion_errors(tws, errors)
 
-    co = model_tws if model_tws is not None else tws
-    return ResolvedOptics(tws=tws, co=co, sources=sources, use_dispersion=dispersion_on)
+    return ResolvedOptics(
+        tws=tws,
+        co=model_tws if model_tws is not None else tws,
+        sources=sources,
+        use_dispersion=dispersion_on,
+    )

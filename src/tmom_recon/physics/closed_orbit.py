@@ -6,14 +6,14 @@ logger = logging.getLogger(__name__)
 
 
 def estimate_closed_orbit(
-    data: pd.DataFrame, tws: pd.DataFrame, dpp_est: float = 0.0
+    data: pd.DataFrame, tws: pd.DataFrame, pt_est: float = 0.0
 ) -> pd.DataFrame:
     """Estimate closed orbit from tracking data.
 
     Args:
         data: Tracking data with BPM readings. Must contain columns: ["name", "x", "y"].
         tws: Twiss parameters DataFrame. Must have columns ["dx", "dy"] and be indexed by BPM name.
-        dpp_est: Estimated relative momentum deviation.
+        pt_est: Estimated MAD-NG pt.
 
     Returns:
         DataFrame indexed like tws.index with columns: x, y, var_x, var_y.
@@ -23,11 +23,11 @@ def estimate_closed_orbit(
 
     # Map dispersion to each row (per BPM), then correct positions turn-by-turn.
     # Force float dtype: a categorical "name" column otherwise propagates a
-    # Categorical through .map(), which cannot be scaled by dpp_est.
+    # Categorical through .map(), which cannot be scaled by pt_est.
     dx_per_row = data["name"].map(tws["dx"].to_dict()).astype(float)
     dy_per_row = data["name"].map(tws["dy"].to_dict()).astype(float)
-    x_corr = data["x"] - dpp_est * dx_per_row
-    y_corr = data["y"] - dpp_est * dy_per_row
+    x_corr = data["x"] - pt_est * dx_per_row
+    y_corr = data["y"] - pt_est * dy_per_row
 
     g = pd.DataFrame({"name": data["name"], "x_corr": x_corr, "y_corr": y_corr}).groupby(
         "name", sort=False, observed=False
