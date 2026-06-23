@@ -68,6 +68,7 @@ def calculate_pz(
     info: bool = True,
     acd: ACDipoleConfig | None = None,
     acd_only: bool | Literal["generator"] = False,
+    barrier_s: float | None = None,
 ) -> pd.DataFrame | tfs.TfsDataFrame | ACDipolePzGenerator:
     """Reconstruct transverse momenta at every BPM from turn-by-turn data.
 
@@ -96,6 +97,13 @@ def calculate_pz(
         info: Whether to log diagnostics.
         acd: AC-dipole configuration. When given, the BPMs bracketing the AC
             dipole are refined with the ACD kick reconstruction.
+        barrier_s: Optional longitudinal position of a localised element (e.g.
+            an AC dipole) that the all-BPM neighbour-pair reconstruction must not
+            transport across, because the free model optics do not contain the
+            kick that element imparts. Use this to keep the reconstruction from
+            pairing a BPM with a neighbour on the far side of an AC dipole when
+            the dedicated ACD reconstruction (``acd=``) is not in use. Ignored
+            for ``acd_only`` paths.
         acd_only: Selects the ACD-only behaviour (requires *acd*):
 
             * ``False`` (default): full all-BPM reconstruction.
@@ -165,6 +173,7 @@ def calculate_pz(
         rng=rng,
         pt_override=pt_override,
         info=info,
+        barrier_s=barrier_s,
     )
 
     if acd is not None:

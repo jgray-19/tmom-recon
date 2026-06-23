@@ -91,6 +91,32 @@ def _phase_pair_var_forward(
     return np.maximum(out, 0.0)
 
 
+def barrier_block_matrix(s_values: npt.ArrayLike, barrier_s: float, *, forward: bool) -> np.ndarray:
+    """Boolean (n, n) mask of BPM pairs that transport across a lattice barrier.
+
+    ``barrier_s`` is the longitudinal position of a localised element (e.g. an
+    AC dipole) that the neighbour-pair momentum reconstruction must not cross:
+    transporting a pair across it uses the free model optics, which omit the
+    coherent kick the element adds. ``s_values`` are the BPM positions in the
+    same order as the ``phase_matrix`` rows/columns.
+
+    Entry ``[i, j]`` is True when the directed segment of the ``phase_matrix``
+    of the given orientation — forward from BPM ``i`` to BPM ``j`` when
+    ``forward`` is True, backward (i.e. forward from ``j`` to ``i``) otherwise —
+    contains ``barrier_s``, accounting for the ring wrap-around.
+    """
+    s_arr = np.asarray(s_values, dtype=float)
+    start = s_arr.reshape(-1, 1) if forward else s_arr.reshape(1, -1)
+    end = s_arr.reshape(1, -1) if forward else s_arr.reshape(-1, 1)
+    # Segment start->end contains barrier_s; when start > end the segment wraps
+    # past the end of the ring, so the barrier is inside if it lies beyond start
+    # or before end.
+    ascending = start <= end
+    inside_ascending = (start < barrier_s) & (barrier_s < end)
+    inside_wrapped = (barrier_s > start) | (barrier_s < end)
+    return np.where(ascending, inside_ascending, inside_wrapped)
+
+
 def _find_bpm_phase(
     phase_matrix: pd.DataFrame,
     target: float,
@@ -99,6 +125,7 @@ def _find_bpm_phase(
     *,
     mu_var: pd.Series | None = None,
     total_var: float | None = None,
+    blocked: np.ndarray | None = None,
 ) -> pd.DataFrame:
     """
     Find BPM pairs with phase advance closest to a target value.
@@ -118,6 +145,11 @@ def _find_bpm_phase(
         name: Column name for the matched BPM in output DataFrame
         mu_var: Optional phase variance for each BPM (rotations²)
         total_var: Optional total phase variance around ring (rotations²)
+        blocked: Optional boolean (n, n) mask (see :func:`barrier_block_matrix`)
+            of forbidden ``(i, j)`` pairs. Blocked candidates are dropped before
+            the target search; if every in-range candidate for a BPM is blocked,
+            that BPM gets no neighbour on this side (so the reconstruction uses
+            only the other side rather than transporting across the barrier).
 
     Returns:
         DataFrame with columns:
@@ -138,6 +170,8 @@ def _find_bpm_phase(
 
         # Candidates within one betatron oscillation in the requested direction
         candidates = np.where(np.isfinite(row) & (row > 0.0) & (row <= 1.0))[0]
+        if blocked is not None and len(candidates) > 0:
+            candidates = candidates[~blocked[i, candidates]]
         if len(candidates) == 0:
             continue
 
@@ -183,6 +217,7 @@ def prev_bpm_to_pi_2(
     *,
     mu_var: pd.Series | None = None,
     total_var: float | None = None,
+    blocked: np.ndarray | None = None,
 ) -> pd.DataFrame:
     """
     Find previous BPM at π/2 phase advance.
@@ -203,6 +238,7 @@ def prev_bpm_to_pi_2(
         name="prev_bpm",
         mu_var=mu_var,
         total_var=total_var,
+        blocked=blocked,
     )
 
 
@@ -211,6 +247,7 @@ def next_bpm_to_pi_2(
     *,
     mu_var: pd.Series | None = None,
     total_var: float | None = None,
+    blocked: np.ndarray | None = None,
 ) -> pd.DataFrame:
     """
     Find next BPM at π/2 phase advance.
@@ -231,6 +268,7 @@ def next_bpm_to_pi_2(
         name="next_bpm",
         mu_var=mu_var,
         total_var=total_var,
+        blocked=blocked,
     )
 
 

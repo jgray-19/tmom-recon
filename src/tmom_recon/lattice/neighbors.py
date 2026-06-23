@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -17,6 +18,7 @@ from tmom_recon.data.schema import (
 )
 from tmom_recon.lattice.core import attach_lattice_columns, build_lattice_maps
 from tmom_recon.physics.bpm_phases import (
+    barrier_block_matrix,
     next_bpm_to_pi_2,
     phase_advance_matrix_from_tws,
     prev_bpm_to_pi_2,
@@ -27,6 +29,8 @@ if TYPE_CHECKING:
 
     from tmom_recon.lattice.core import LatticeMaps
 
+LOGGER = logging.getLogger(__name__)
+
 
 def prepare_neighbor_views(
     data: pd.DataFrame,
@@ -34,13 +38,21 @@ def prepare_neighbor_views(
     *,
     include_dispersion: bool = False,
     include_errors: bool = False,
+    barrier_s: float | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, int], LatticeMaps]:
-    """Build prev/next views with lattice columns and optional dispersion."""
+    """Build prev/next views with lattice columns and optional dispersion.
+
+    ``barrier_s`` is the optional longitudinal position of a localised element
+    (e.g. an AC dipole) that the neighbour-pair reconstruction must not transport
+    across; see :func:`build_lattice_neighbor_tables`.
+    """
     bpm_list = data["name"].unique().tolist()
     tws = tws[tws.index.isin(bpm_list)]
     maps = build_lattice_maps(tws, include_dispersion=include_dispersion)
 
-    prev_x_df, prev_y_df, next_x_df, next_y_df = build_lattice_neighbor_tables(tws, include_errors)
+    prev_x_df, prev_y_df, next_x_df, next_y_df = build_lattice_neighbor_tables(
+        tws, include_errors, barrier_s=barrier_s
+    )
     bpm_index = {bpm: idx for idx, bpm in enumerate(bpm_list)}
 
     data_p = data.join(prev_x_df, on="name", rsuffix="_px")
@@ -67,11 +79,41 @@ def prepare_neighbor_views(
     return data_p, data_n, bpm_index, maps
 
 
+def _barrier_masks(
+    tws: pd.DataFrame, barrier_s: float | None
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Return (forward, backward) block masks for a barrier at ``barrier_s``.
+
+    Returns ``(None, None)`` (no masking) when no barrier is requested or the
+    twiss has no ``s`` column to place it against.
+    """
+    if barrier_s is None:
+        return None, None
+    if "s" not in tws.columns:
+        LOGGER.warning(
+            "barrier_s given but twiss has no 's' column; not excluding "
+            "cross-barrier neighbour pairs."
+        )
+        return None, None
+    s_values = tws["s"].to_numpy(dtype=float)
+    forward_mask = barrier_block_matrix(s_values, float(barrier_s), forward=True)
+    backward_mask = barrier_block_matrix(s_values, float(barrier_s), forward=False)
+    return forward_mask, backward_mask
+
+
 def build_lattice_neighbor_tables(
     tws: pd.DataFrame,
     include_errors: bool = False,
+    *,
+    barrier_s: float | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Build neighbor BPM tables from twiss data."""
+    """Build neighbor BPM tables from twiss data.
+
+    When ``barrier_s`` (the longitudinal position of a localised element, e.g.
+    an AC dipole) is given, the π/2 neighbour search never pairs a BPM on one
+    side of it with a BPM on the other side, so the reconstruction does not
+    transport across the kick that element imparts.
+    """
     total_var_x, total_var_y, mu1_var, mu2_var = None, None, None, None
     if include_errors:
         total_var_x = tws.headers["mu1_total_var"]
@@ -79,21 +121,31 @@ def build_lattice_neighbor_tables(
         mu1_var = tws["mu1_var"]
         mu2_var = tws["mu2_var"]
 
+    forward_mask, backward_mask = _barrier_masks(tws, barrier_s)
+
     bwd1 = phase_advance_matrix_from_tws(tws["mu1"], tws.q1, forward=False)
     bwd2 = phase_advance_matrix_from_tws(tws["mu2"], tws.q2, forward=False)
     fwd1 = phase_advance_matrix_from_tws(tws["mu1"], tws.q1, forward=True)
     fwd2 = phase_advance_matrix_from_tws(tws["mu2"], tws.q2, forward=True)
 
-    prev_x = prev_bpm_to_pi_2(bwd1, mu_var=mu1_var, total_var=total_var_x).rename(
+    prev_x = prev_bpm_to_pi_2(
+        bwd1, mu_var=mu1_var, total_var=total_var_x, blocked=backward_mask
+    ).rename(
         columns={"prev_bpm": PREV.bpm_x, "delta": PREV.delta_x, "delta_err": f"{PREV.delta_x}_err"}
     )
-    prev_y = prev_bpm_to_pi_2(bwd2, mu_var=mu2_var, total_var=total_var_y).rename(
+    prev_y = prev_bpm_to_pi_2(
+        bwd2, mu_var=mu2_var, total_var=total_var_y, blocked=backward_mask
+    ).rename(
         columns={"prev_bpm": PREV.bpm_y, "delta": PREV.delta_y, "delta_err": f"{PREV.delta_y}_err"}
     )
-    next_x = next_bpm_to_pi_2(fwd1, mu_var=mu1_var, total_var=total_var_x).rename(
+    next_x = next_bpm_to_pi_2(
+        fwd1, mu_var=mu1_var, total_var=total_var_x, blocked=forward_mask
+    ).rename(
         columns={"next_bpm": NEXT.bpm_x, "delta": NEXT.delta_x, "delta_err": f"{NEXT.delta_x}_err"}
     )
-    next_y = next_bpm_to_pi_2(fwd2, mu_var=mu2_var, total_var=total_var_y).rename(
+    next_y = next_bpm_to_pi_2(
+        fwd2, mu_var=mu2_var, total_var=total_var_y, blocked=forward_mask
+    ).rename(
         columns={"next_bpm": NEXT.bpm_y, "delta": NEXT.delta_y, "delta_err": f"{NEXT.delta_y}_err"}
     )
     return prev_x, prev_y, next_x, next_y

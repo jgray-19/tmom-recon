@@ -217,6 +217,7 @@ def _svd_clean_matrix(
     max_nan_gap: int,
     variance_matrix: np.ndarray | None = None,
     variance_name: str = "measurement",
+    fix_zero_columns: bool = False,
 ) -> tuple[np.ndarray, int, np.ndarray]:
     """Clean one measurement plane with truncated SVD.
 
@@ -234,6 +235,12 @@ def _svd_clean_matrix(
     Returns:
         Cleaned matrix, chosen rank, and full singular value spectrum.
     """
+    if not fix_zero_columns:
+        # Exact zeros are an OP dead-reading workaround signalling a faulty BPM, not
+        # real measurements. Match harpy: drop the whole BPM (column) if any of its
+        # turns is exactly zero, so it propagates out as NaN for harpy to flag too.
+        matrix = matrix.copy()
+        matrix[:, np.any(matrix == 0.0, axis=0)] = np.nan
     missing_mask = np.isnan(matrix)
     filled_matrix = _fill_small_nans(matrix, max_gap=max_nan_gap)
 
@@ -323,6 +330,7 @@ def svd_clean_measurements(
     center: str | None = "bpm",
     rank: int | str = "auto",
     max_nan_gap: int = 5,
+    fix_zero_columns: bool = False,
 ) -> pd.DataFrame:
     """Clean BPM measurements with truncated SVD.
 
@@ -350,10 +358,18 @@ def svd_clean_measurements(
     x_matrix = _pivot_to_matrix(meas_df, "x", turn_range, bpm_list)
     y_matrix = _pivot_to_matrix(meas_df, "y", turn_range, bpm_list)
     x_cleaned, rank_x, singular_values_x = _svd_clean_matrix(
-        x_matrix, centre=center, rank=rank, max_nan_gap=max_nan_gap
+        x_matrix,
+        centre=center,
+        rank=rank,
+        max_nan_gap=max_nan_gap,
+        fix_zero_columns=fix_zero_columns,
     )
     y_cleaned, rank_y, singular_values_y = _svd_clean_matrix(
-        y_matrix, centre=center, rank=rank, max_nan_gap=max_nan_gap
+        y_matrix,
+        centre=center,
+        rank=rank,
+        max_nan_gap=max_nan_gap,
+        fix_zero_columns=fix_zero_columns,
     )
 
     logger.info("SVD cleaning completed successfully")
@@ -378,6 +394,7 @@ def weighted_svd_clean_measurements(
     center: str | None = "bpm",
     rank: int | str = "auto",
     max_nan_gap: int = 5,
+    fix_zero_columns: bool = False,
 ) -> pd.DataFrame:
     """Clean BPM measurements with variance-weighted truncated SVD.
 
@@ -424,6 +441,7 @@ def weighted_svd_clean_measurements(
         max_nan_gap=max_nan_gap,
         variance_matrix=var_x_matrix,
         variance_name="horizontal measurement",
+        fix_zero_columns=fix_zero_columns,
     )
     y_cleaned, rank_y, singular_values_y = _svd_clean_matrix(
         y_matrix,
@@ -432,6 +450,7 @@ def weighted_svd_clean_measurements(
         max_nan_gap=max_nan_gap,
         variance_matrix=var_y_matrix,
         variance_name="vertical measurement",
+        fix_zero_columns=fix_zero_columns,
     )
 
     logger.info("Weighted SVD cleaning completed successfully")

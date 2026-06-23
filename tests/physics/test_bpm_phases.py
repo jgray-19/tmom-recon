@@ -4,6 +4,7 @@ import pytest
 
 from tmom_recon.physics.bpm_phases import (
     DEGENERACY_BAND,
+    barrier_block_matrix,
     next_bpm_to_pi,
     next_bpm_to_pi_2,
     phase_advance_matrix_from_edges,
@@ -149,3 +150,50 @@ def test_pi_selects_closest_phase_within_oscillation():
     matrix = phase_advance_matrix_from_tws(mu, 1.0, forward=True)
     result = next_bpm_to_pi(matrix)
     _assert_closest_within_oscillation(matrix, result, "next_bpm", 0.5)
+
+
+def test_barrier_block_matrix_forward_and_backward():
+    """The mask flags exactly the BPM pairs whose directed segment spans the barrier."""
+    # Five BPMs at integer s; barrier sits between index 1 and 2 (s = 1.5).
+    s = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
+    fwd = barrier_block_matrix(s, 1.5, forward=True)
+    bwd = barrier_block_matrix(s, 1.5, forward=False)
+
+    # Forward segment i -> j contains 1.5 iff it starts at/before s=1 and ends past it.
+    assert fwd[1, 2] and fwd[1, 3] and fwd[0, 2]
+    assert not fwd[0, 1] and not fwd[2, 4] and not fwd[2, 3]
+    # A forward segment that wraps the ring (3 -> 1) does not pass 1.5.
+    assert not fwd[3, 1]
+    # Backward mask is the transpose relationship: segment j -> i contains 1.5.
+    assert bwd[2, 1] and bwd[3, 1] and bwd[2, 0]
+    assert not bwd[1, 0] and not bwd[4, 2]
+    # No pair is ever blocked against itself.
+    assert not np.any(np.diag(fwd)) and not np.any(np.diag(bwd))
+
+
+def test_blocked_mask_drops_cross_barrier_neighbour():
+    """A π/2 neighbour on the far side of a barrier is excluded, leaving the near side."""
+    # BPMs every ~π/2; the natural next/prev neighbour is the immediate ring neighbour.
+    mu = pd.Series(
+        [0.0, 0.25, 0.5, 0.75, 1.0, 1.25],
+        index=["A", "B", "C", "D", "E", "F"],
+    )
+    s = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
+    # Barrier between C (s=2) and D (s=3).
+    fwd = barrier_block_matrix(s, 2.5, forward=True)
+    bwd = barrier_block_matrix(s, 2.5, forward=False)
+
+    fwd_matrix = phase_advance_matrix_from_tws(mu, 1.5, forward=True)
+    bwd_matrix = phase_advance_matrix_from_tws(mu, 1.5, forward=False)
+
+    # Without masking, C pairs forward with D and D pairs backward with C.
+    assert next_bpm_to_pi_2(fwd_matrix).loc["C", "next_bpm"] == "D"
+    assert prev_bpm_to_pi_2(bwd_matrix).loc["D", "prev_bpm"] == "C"
+
+    # With masking, those cross-barrier matches are dropped (no near-side π/2
+    # candidate exists in this minimal ring), while distant BPMs are unaffected.
+    blocked_next = next_bpm_to_pi_2(fwd_matrix, blocked=fwd)
+    blocked_prev = prev_bpm_to_pi_2(bwd_matrix, blocked=bwd)
+    assert pd.isna(blocked_next.loc["C", "next_bpm"])
+    assert pd.isna(blocked_prev.loc["D", "prev_bpm"])
+    assert blocked_next.loc["A", "next_bpm"] == "B"

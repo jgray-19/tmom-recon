@@ -101,6 +101,7 @@ def reconstruct_momenta(
     rng: np.random.Generator | None = None,
     pt_override: float | None = None,
     info: bool = True,
+    barrier_s: float | None = None,
 ) -> pd.DataFrame:
     """Reconstruct per-turn transverse momenta at every BPM.
 
@@ -113,6 +114,9 @@ def reconstruct_momenta(
         rng: Optional NumPy random generator for reproducible noise.
         pt_override: Use this MAD-NG pt instead of estimating it.
         info: Whether to log diagnostics.
+        barrier_s: Optional longitudinal position of a localised element (e.g.
+            an AC dipole) that the neighbour-pair reconstruction must not
+            transport across.
 
     Returns:
         DataFrame with the standard output columns and ``attrs["PT_EST"]``.
@@ -144,7 +148,11 @@ def reconstruct_momenta(
         pt_est = 0.0
 
     data_p, data_n, bpm_index, _maps = prepare_neighbor_views(
-        data, tws, include_dispersion=optics.use_dispersion, include_errors=True
+        data,
+        tws,
+        include_dispersion=optics.use_dispersion,
+        include_errors=True,
+        barrier_s=barrier_s,
     )
     data_p, data_n = attach_error_columns(data_p, data_n, tws, use_dispersion=optics.use_dispersion)
 
