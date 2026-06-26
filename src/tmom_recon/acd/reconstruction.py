@@ -401,7 +401,6 @@ def _fit_ac_dipole_from_frames(
             upstream_frames[bpm_name],
             model,
             source_name=bpm_name,
-            marker_name=marker_name,
             direction=1,
         )
         for bpm_name in window.upstream
@@ -411,7 +410,6 @@ def _fit_ac_dipole_from_frames(
             downstream_frames[bpm_name],
             model,
             source_name=bpm_name,
-            marker_name=marker_name,
             direction=-1,
         )
         for bpm_name in window.downstream

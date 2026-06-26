@@ -20,7 +20,6 @@ def _transport_to_marker(
     model: ACDipoleMadDriver,
     *,
     source_name: str,
-    marker_name: str,
     direction: int,
 ) -> ACDipoleStateSeries:
     """Transport a BPM-reconstructed state batch to the AC-dipole marker.
@@ -29,13 +28,13 @@ def _transport_to_marker(
         frame: Reconstructed-momentum DataFrame for a single BPM.
         model: MAD-NG driver used for particle tracking.
         source_name: Name of the source BPM element.
-        marker_name: Name of the AC-dipole marker element.
         direction: ``+1`` for forward (upstream → marker), ``-1`` for backward.
 
     Returns:
         An :class:`ACDipoleStateSeries` at the marker location.
     """
     source_state = frame[["x", "px", "y", "py"]].to_numpy(dtype=float)
+    marker_name = model.acd_before if direction == +1 else model.acd_after
     s = model.track_particles(source_name, marker_name, source_state, direction=direction)
     return ACDipoleStateSeries(s[:, 0], s[:, 1], s[:, 2], s[:, 3], s[:, 4], s[:, 5])
 
@@ -45,7 +44,6 @@ def build_tracked_state_table(
     model: ACDipoleMadDriver,
     *,
     source_name: str,
-    marker_name: str,
     direction: int,
 ) -> pd.DataFrame:
     """Build a turn-sorted DataFrame of marker states transported from a single BPM.
@@ -54,16 +52,13 @@ def build_tracked_state_table(
         frame: Reconstructed-momentum DataFrame for a single BPM.
         model: MAD-NG driver used for particle tracking.
         source_name: Name of the source BPM element.
-        marker_name: Name of the AC-dipole marker element.
         direction: ``+1`` for forward, ``-1`` for backward.
 
     Returns:
         DataFrame with columns ``turn, source_bpm, x, px, y, py, t, pt,
         var_x, var_px, var_y, var_py``, sorted by turn.
     """
-    tracked = _transport_to_marker(
-        frame, model, source_name=source_name, marker_name=marker_name, direction=direction
-    )
+    tracked = _transport_to_marker(frame, model, source_name=source_name, direction=direction)
     table = frame[["turn", "var_x", "var_px", "var_y", "var_py"]].copy(deep=True)
     table["source_bpm"] = source_name
     table["x"] = tracked.x

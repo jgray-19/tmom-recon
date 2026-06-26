@@ -30,9 +30,9 @@ DRIVEN_TUNES = (0.27, 0.322)
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("noise_std", [0.0, 1e-5], ids=["clean", "noise_1e-5"])
+@pytest.mark.parametrize("noise_std", [0.0, 1e-5], ids=["no_noise", "noise_1e-5"])
 def test_ac_dipole_momentum_reconstruction(data_dir, acd_tracking_setup, noise_std: float) -> None:
-    clean = noise_std == 0.0
+    noisy = noise_std != 0.0
     setup = acd_tracking_setup(SEQ_FILE, data_dir, flattop_turns=200, state_markers=True)
     tracking_df, tws = setup["tracking_df"], setup["tws"]
 
@@ -47,7 +47,7 @@ def test_ac_dipole_momentum_reconstruction(data_dir, acd_tracking_setup, noise_s
     # `<acd>_before` / `<acd>_after` marker rows are kept aside purely as truth.
     before_marker, after_marker = acd_state_marker_names(model)
     bpm_df = tracking_df.loc[~tracking_df["name"].isin([before_marker, after_marker])].copy()
-    if not clean:
+    if noisy:
         bpm_df = inject_noise_xy(bpm_df, np.random.default_rng(42), noise_std)
 
     result = calculate_ac_dipole_momentum(
@@ -66,8 +66,8 @@ def test_ac_dipole_momentum_reconstruction(data_dir, acd_tracking_setup, noise_s
         result,
         tracking_df,
         model,
-        clean=clean,
-        kick_r2_min=0.999 if clean else 0.99,
+        clean=not noisy,
+        kick_r2_min=0.998 if noisy else 0.9999,
         bpm_r2_min=0.999,
         marker_r2_min=0.999,
     )

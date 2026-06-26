@@ -103,10 +103,21 @@ class ACDipoleMadDriver(KnobMadInterface):
             self.set_knobs(tune_knobs_file)
         if corrector_knobs_file is not None:
             self.set_knobs(corrector_knobs_file)
-        self.twiss_elements = self.run_twiss(observe=0)
         self.observe(self.accelerator.bpm_pattern)
         for element in _normalise_element_list(observed_elements):
             self.observe(element, unobserve_first=False)
+        self.acd_before, self.acd_after = self.insert_acd_markers()
+        # insert_acd_markers installs the before/after monitors and replaces the
+        # AC-dipole element with a thin copy; none of these carry the observed
+        # flag. Without it, track(observe=1) emits no row at them, so transport
+        # to a marker would silently return the source state. Flag them by exact
+        # name (observe_element anchors/escapes, unlike the pattern-based observe).
+        # for element in (self.acd_before, self.acd_after, self.accelerator.ac_dipole_name):
+        self.observe_elements(
+            [self.acd_before, self.acd_after, self.accelerator.ac_dipole_name],
+            unobserve_first=False,
+        )
+        self.twiss_elements = self.run_twiss(observe=0)
 
     # ------------------------------------------------------------------
     # Public tracking API
@@ -172,6 +183,23 @@ py:send(flw.tpar == flw.npar)
             .tail(1)
             .sort_values("id", kind="stable")
         )
+        # The last emitted row per particle must be the requested target. If the
+        # target is not observed, track(observe=1) emits no row there and the
+        # endpoint falls back to the source element, silently returning the
+        # un-transported source state. Catch that instead of returning garbage.
+        endpoint_names = {str(name).upper() for name in final_rows["name"]}
+        if endpoint_names != {target_element.upper()}:
+            raise ACDipoleTrackingError(
+                source_element=source_element,
+                target_element=target_element,
+                direction=direction,
+                range_name=range_name,
+                mad_logfile=self._mad_logfile,
+                error=(
+                    f"endpoint rows were at {sorted(endpoint_names)}, not the "
+                    f"requested target; is the target element observed?"
+                ),
+            )
         tracked_states = final_rows[["x", "px", "y", "py", "t", "pt"]].to_numpy(dtype=float)
         if tracked_states.shape != (n_particles, N_COORD):
             raise ValueError(
@@ -180,65 +208,66 @@ py:send(flw.tpar == flw.npar)
             )
         return tracked_states
 
-    def compute_jacobian(
-        self,
-        source_element: str,
-        target_element: str,
-        base_states: np.ndarray,
-        direction: int = 1,
-    ) -> np.ndarray:
-        """Compute the 6x6 linearised transport map for each base state.
+    # Method unused, but left here for future reference in case we want to compute Jacobians via MAD-NG DA.
+    #     def compute_jacobian(
+    #         self,
+    #         source_element: str,
+    #         target_element: str,
+    #         base_states: np.ndarray,
+    #         direction: int = 1,
+    #     ) -> np.ndarray:
+    #         """Compute the 6x6 linearised transport map for each base state.
 
-        Uses MAD-NG differential algebra (``damap`` with ``mo=1``) to propagate
-        each state and extract its first-order map.
+    #         Uses MAD-NG differential algebra (``damap`` with ``mo=1``) to propagate
+    #         each state and extract its first-order map.
 
-        Args:
-            source_element: Lattice element name where states originate.
-            target_element: Lattice element name where tracking ends.
-            base_states: Shape ``(n, 4)`` or ``(n, 6)`` — same convention as
-                :meth:`track_particles`.
-            direction: ``+1`` for forward, ``-1`` for backward.
+    #         Args:
+    #             source_element: Lattice element name where states originate.
+    #             target_element: Lattice element name where tracking ends.
+    #             base_states: Shape ``(n, 4)`` or ``(n, 6)`` — same convention as
+    #                 :meth:`track_particles`.
+    #             direction: ``+1`` for forward, ``-1`` for backward.
 
-        Returns:
-            Shape ``(n, 6, 6)`` where ``maps[i]`` is the first-order transport
-            map for the *i*-th base state.
+    #         Returns:
+    #             Shape ``(n, 6, 6)`` where ``maps[i]`` is the first-order transport
+    #             map for the *i*-th base state.
 
-        Raises:
-            ACDipoleTrackingError: If MAD-NG reports that fewer particles were
-                tracked than sent.
-        """
-        range_name, n_particles = self._setup_tracking(
-            source_element, target_element, base_states, direction
-        )
-        self.mad.send(
-            """
-x0_da = MAD.damap{nv=6, mo=1}
-list_da = {}
-for i, particle in ipairs(x0_particles) do
-    list_da[i] = x0_da:copy()
-    list_da[i]:set0(particle)
-end
+    #         Raises:
+    #             ACDipoleTrackingError: If MAD-NG reports that fewer particles were
+    #                 tracked than sent.
+    #         """
+    #         range_name, n_particles = self._setup_tracking(
+    #             source_element, target_element, base_states, direction
+    #         )
+    #         self.mad.send(
+    #             """
+    # x0_da = MAD.damap{nv=6, mo=1}
+    # list_da = {}
+    # for i, particle in ipairs(x0_particles) do
+    #     list_da[i] = x0_da:copy()
+    #     list_da[i]:set0(particle)
+    # end
 
-tbl, flw = track {
-    sequence=loaded_sequence,
-    range=range,
-    X0=list_da,
-    save=true,
-    nturn=1,
-    dir=direction,
-    observe=1,
-}
-py:send(flw.tpar == flw.npar)
---end
-"""
-        )
-        with self._tracking_errors(source_element, target_element, direction, range_name):
-            _assert_all_tracked(self.mad.recv())
+    # tbl, flw = track {
+    #     sequence=loaded_sequence,
+    #     range=range,
+    #     X0=list_da,
+    #     save=true,
+    #     nturn=1,
+    #     dir=direction,
+    #     observe=1,
+    # }
+    # py:send(flw.tpar == flw.npar)
+    # --end
+    # """
+    #         )
+    #         with self._tracking_errors(source_element, target_element, direction, range_name):
+    #             _assert_all_tracked(self.mad.recv())
 
-        maps = np.zeros((n_particles, N_COORD, N_COORD), dtype=float)
-        for i in range(n_particles):
-            maps[i] = self.mad.send(f"py:send(list_da[{i + 1}]:get1())").recv()
-        return maps
+    #         maps = np.zeros((n_particles, N_COORD, N_COORD), dtype=float)
+    #         for i in range(n_particles):
+    #             maps[i] = self.mad.send(f"py:send(list_da[{i + 1}]:get1())").recv()
+    #         return maps
 
     # ------------------------------------------------------------------
     # Private helpers
