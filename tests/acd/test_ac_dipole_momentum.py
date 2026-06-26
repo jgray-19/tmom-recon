@@ -68,6 +68,6 @@ def test_ac_dipole_momentum_reconstruction(data_dir, acd_tracking_setup, noise_s
         model,
         clean=not noisy,
         kick_r2_min=0.998 if noisy else 0.9999,
-        bpm_r2_min=0.999,
-        marker_r2_min=0.999,
+        bpm_r2_min=0.9998,
+        marker_r2_min=0.9998,
     )
