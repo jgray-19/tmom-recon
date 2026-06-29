@@ -1,5 +1,6 @@
 # tmom-recon
 [![codecov](https://codecov.io/gh/jgray-19/tmom-recon/graph/badge.svg?token=1R2UUJGSP3)](https://codecov.io/gh/jgray-19/tmom-recon)
+[![Coverage](https://github.com/jgray-19/tmom-recon/actions/workflows/coverage.yml/badge.svg)](https://github.com/jgray-19/tmom-recon/actions/workflows/coverage.yml)
 
 Momentum reconstruction utilities for turn-by-turn BPM data.
 
