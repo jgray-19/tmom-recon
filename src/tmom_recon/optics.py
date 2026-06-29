@@ -90,7 +90,7 @@ class ResolvedOptics:
         use_dispersion: Whether dispersion is available and enabled.
     """
 
-    tws: tfs.TfsDataFrame
+    tws: pd.DataFrame
     co: pd.DataFrame
     sources: dict[OpticsCategory, OpticsSource]
     use_dispersion: bool
@@ -120,7 +120,7 @@ class LoadedMeasurement:
         dispersion_found: Whether measured dispersion columns were present.
     """
 
-    tws: tfs.TfsDataFrame
+    tws: pd.DataFrame
     dispersion_found: bool
 
 
@@ -142,7 +142,7 @@ def load_measurement_twiss(
     *,
     reverse_meas_tws: bool = False,
     bpm_names: Collection[str] | None = None,
-) -> tuple[tfs.TfsDataFrame, bool]:
+) -> tuple[pd.DataFrame, bool]:
     """Load an omc3 measurement directory as a lowercase-renamed twiss.
 
     Returns:

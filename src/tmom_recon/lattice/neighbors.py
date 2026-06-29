@@ -36,6 +36,7 @@ def prepare_neighbor_views(
     data: pd.DataFrame,
     tws: pd.DataFrame,
     *,
+    complete_data: pd.DataFrame | None = None,
     include_dispersion: bool = False,
     include_errors: bool = False,
     barrier_s: float | None = None,
@@ -46,7 +47,8 @@ def prepare_neighbor_views(
     (e.g. an AC dipole) that the neighbour-pair reconstruction must not transport
     across; see :func:`build_lattice_neighbor_tables`.
     """
-    bpm_list = data["name"].unique().tolist()
+    complete_data = data if complete_data is None else complete_data
+    bpm_list = complete_data["name"].unique().tolist()
     tws = tws[tws.index.isin(bpm_list)]
     maps = build_lattice_maps(tws, include_dispersion=include_dispersion)
 
@@ -178,18 +180,20 @@ def merge_neighbor_coords(
     turn_y_p: np.ndarray,
     turn_x_n: np.ndarray,
     turn_y_n: np.ndarray,
+    complete_data: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     required = set(VARIANCE_COLS)
-    missing_p = required.difference(data_p.columns)
-    missing_n = required.difference(data_n.columns)
+    complete_data = data_p if complete_data is None else complete_data
+    missing_p = required.difference(complete_data.columns)
+    missing_n = required.difference(complete_data.columns)
     if missing_p or missing_n:
         raise KeyError(
             "Variance columns missing for neighbour merge: "
             f"data_p missing {sorted(missing_p)}; data_n missing {sorted(missing_n)}"
         )
 
-    coords_p = data_p[list(CORE_ID_COLS + POSITION_COLS + VARIANCE_COLS)]
-    coords_n = data_n[list(CORE_ID_COLS + POSITION_COLS + VARIANCE_COLS)]
+    coords_p = complete_data[list(CORE_ID_COLS + POSITION_COLS + VARIANCE_COLS)]
+    coords_n = complete_data[list(CORE_ID_COLS + POSITION_COLS + VARIANCE_COLS)]
 
     def get_neighbor_config(suffix: str, plane: str) -> tuple[str, str, dict[str, str], list[str]]:
         neighbor = PREV if suffix == "p" else NEXT

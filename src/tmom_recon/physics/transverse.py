@@ -39,6 +39,8 @@ from tmom_recon.physics.momenta import (
 from tmom_recon.physics.pt_calculation import estimate_pt_from_model
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     import numpy as np
     import pandas as pd
 
@@ -102,6 +104,7 @@ def reconstruct_momenta(
     pt_override: float | None = None,
     info: bool = True,
     barrier_s: float | None = None,
+    bpm_names: Collection[str] | None = None,
 ) -> pd.DataFrame:
     """Reconstruct per-turn transverse momenta at every BPM.
 
@@ -117,6 +120,8 @@ def reconstruct_momenta(
         barrier_s: Optional longitudinal position of a localised element (e.g.
             an AC dipole) that the neighbour-pair reconstruction must not
             transport across.
+        bpm_names: Optional subset of BPM names to reconstruct. All BPMs in
+            *orig_data* are still available as neighbour readings.
 
     Returns:
         DataFrame with the standard output columns and ``attrs["PT_EST"]``.
@@ -137,19 +142,24 @@ def reconstruct_momenta(
     tws = tws.loc[tws.index.isin(shared_bpm_names)]
 
     data = remove_closed_orbit(data, optics.co)
+    complete_data = data
+    if bpm_names is not None:
+        requested = set(bpm_names)
+        data = data[data["name"].isin(requested)]
 
     if pt_override is not None:
         pt_est = float(pt_override)
         LOGGER.info("Using provided pt override: %s", pt_est)
     elif optics.use_dispersion:
         pt_tws = optics.co if "dx" in optics.co.columns else tws
-        pt_est = estimate_pt_from_model(data, pt_tws, info)
+        pt_est = estimate_pt_from_model(complete_data, pt_tws, info)
     else:
         pt_est = 0.0
 
     data_p, data_n, bpm_index, _maps = prepare_neighbor_views(
         data,
         tws,
+        complete_data=complete_data,
         include_dispersion=optics.use_dispersion,
         include_errors=True,
         barrier_s=barrier_s,
@@ -157,12 +167,21 @@ def reconstruct_momenta(
     data_p, data_n = attach_error_columns(data_p, data_n, tws, use_dispersion=optics.use_dispersion)
 
     turn_x_p, turn_y_p, turn_x_n, turn_y_n = compute_turn_wraps(data_p, data_n, bpm_index)
-    data_p, data_n = merge_neighbor_coords(data_p, data_n, turn_x_p, turn_y_p, turn_x_n, turn_y_n)
+    data_p, data_n = merge_neighbor_coords(
+        data_p,
+        data_n,
+        turn_x_p,
+        turn_y_p,
+        turn_x_n,
+        turn_y_n,
+        complete_data=complete_data,
+    )
 
     data_p = momenta_from_prev(data_p, pt_est, include_optics_errors=True)
     data_n = momenta_from_next(data_n, pt_est, include_optics_errors=True)
 
-    data_p, data_n = sync_endpoints(data_p, data_n)
+    if bpm_names is None:
+        data_p, data_n = sync_endpoints(data_p, data_n)
 
     data_avg = weighted_average(data_p, data_n)
 
@@ -171,13 +190,14 @@ def reconstruct_momenta(
     data_avg.attrs["PT_EST"] = pt_est
 
     # Restore original order of orig_data
-    orig_order = orig_data.set_index(["name", "turn"]).index
+    orig_output = orig_data if bpm_names is None else orig_data[orig_data["name"].isin(requested)]
+    orig_order = orig_output.set_index(["name", "turn"]).index
     data_avg = data_avg.set_index(["name", "turn"]).reindex(orig_order).reset_index()
 
     for col in OUT_COLS:
         if col not in data_avg.columns:
             if col in orig_data.columns:
-                data_avg[col] = orig_data[col]
+                data_avg[col] = orig_output[col].to_numpy()
             else:
                 raise KeyError(
                     f"Required output column {col!r} is missing from both "

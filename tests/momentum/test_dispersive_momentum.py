@@ -34,7 +34,6 @@ def test_dispersive_momentum_on_momentum(seq_file, data_dir, acd_tracking_setup)
     trans_result = transverse_calc(
         tracking_df.copy(deep=True),
         tws=tws,
-        inject_noise=False,
         info=True,
     ).rename(columns={"px": "px_trans", "py": "py_trans"})
 
@@ -42,7 +41,6 @@ def test_dispersive_momentum_on_momentum(seq_file, data_dir, acd_tracking_setup)
     disp_result = dispersive_calc(
         tracking_df.copy(deep=True),
         tws=tws,
-        inject_noise=False,
         info=True,
     ).rename(columns={"px": "px_disp", "py": "py_disp"})
 
@@ -104,14 +102,12 @@ def test_dispersive_momentum_on_momentum_with_ac_dipole_config(
     baseline = dispersive_calc(
         tracking_df.copy(deep=True),
         tws=tws,
-        inject_noise=False,
         info=False,
     ).rename(columns={"px": "px_base", "py": "py_base"})
 
     with_acd = dispersive_calc(
         tracking_df.copy(deep=True),
         tws=tws,
-        inject_noise=False,
         info=False,
         ac_dipole_config=ACDipoleConfig(
             ac_dipole_marker=AC_DIPOLE_ELEMENT,
@@ -193,14 +189,12 @@ def test_dispersive_momentum_off_momentum_with_ac_dipole_config(
     baseline = dispersive_calc(
         tracking_df.copy(deep=True),
         tws=tws,
-        inject_noise=False,
         info=False,
     ).rename(columns={"px": "px_base", "py": "py_base"})
 
     with_acd = dispersive_calc(
         tracking_df.copy(deep=True),
         tws=tws,
-        inject_noise=False,
         info=False,
         ac_dipole_config=ACDipoleConfig(
             ac_dipole_marker=AC_DIPOLE_ELEMENT,
@@ -275,7 +269,6 @@ def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, acd
     trans_result = transverse_calc(
         tracking_df.copy(deep=True),
         tws=tws,
-        inject_noise=False,
         info=True,
     ).rename(columns={"px": "px_trans", "py": "py_trans"})
 
@@ -283,7 +276,6 @@ def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, acd
     clean_result = dispersive_calc(
         tracking_df.copy(deep=True),
         tws=tws,
-        inject_noise=False,
         info=True,
     ).rename(columns={"px": "px_clean", "py": "py_clean"})
 
@@ -294,7 +286,6 @@ def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, acd
     noisy_result = dispersive_calc(
         noisy_df,
         tws=tws,
-        inject_noise=False,
         info=False,
     ).rename(columns={"px": "px_noisy", "py": "py_noisy"})
 
@@ -303,7 +294,6 @@ def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, acd
     svd_result = dispersive_calc(
         cleaned_df,
         tws=tws,
-        inject_noise=False,
         info=False,
     ).rename(columns={"px": "px_svd", "py": "py_svd"})
 

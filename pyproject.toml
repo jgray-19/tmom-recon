@@ -103,3 +103,6 @@ extend-select = [
 ]
 fixable = ["ALL"]
 unfixable = []
+
+[tool.ruff.lint.per-file-ignores]
+"study/0*.py" = ["N999"]

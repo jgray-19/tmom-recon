@@ -164,7 +164,6 @@ def verify_pz_reconstruction(
     no_noise_result = calculate_pz_func(
         tracking_df.copy(deep=True),
         tws=tws,
-        inject_noise=False,
         info=True,
     ).rename(columns={"px": "px_calc", "py": "py_calc"})
 
@@ -174,7 +173,6 @@ def verify_pz_reconstruction(
     noisy_result = calculate_pz_func(
         noisy_df,
         tws=tws,
-        inject_noise=False,
         info=True,
     ).rename(columns={"px": "px_calc", "py": "py_calc"})
 
@@ -183,7 +181,6 @@ def verify_pz_reconstruction(
     cleaned_noise_result = calculate_pz_func(
         cleaned_df,
         tws=tws,
-        inject_noise=False,
         info=True,
     ).rename(columns={"px": "px_calc", "py": "py_calc"})
 

@@ -54,7 +54,7 @@ def test_generator_update_matches_acd_only(data_dir, acd_tracking_setup) -> None
     tracking_df, tws, driver, bpm_up, bpm_dn = _setup(data_dir, acd_tracking_setup)
     config = _config(driver, bpm_upstream=bpm_up, bpm_downstream=bpm_dn)
 
-    generator = calculate_pz(tracking_df, model_tws=tws, acd=config, acd_only="generator")
+    generator = calculate_pz(tracking_df, model_tws=tws, acd=config, acd_only=True, generator=True)
     assert isinstance(generator, ACDipolePzGenerator)
     assert generator.model is driver
 
@@ -72,7 +72,7 @@ def test_generator_repeated_update_is_deterministic(data_dir, acd_tracking_setup
     tracking_df, tws, driver, bpm_up, bpm_dn = _setup(data_dir, acd_tracking_setup)
     config = _config(driver, bpm_upstream=bpm_up, bpm_downstream=bpm_dn)
 
-    generator = calculate_pz(tracking_df, model_tws=tws, acd=config, acd_only="generator")
+    generator = calculate_pz(tracking_df, model_tws=tws, acd=config, acd_only=True, generator=True)
     first = generator.update(tws)
     second = generator.update(tws)
 
@@ -89,7 +89,7 @@ def test_generator_tracks_optics_change(data_dir, acd_tracking_setup) -> None:
     perturbed["beta11"] = perturbed["beta11"].to_numpy(dtype=float) * 1.05
     perturbed["beta22"] = perturbed["beta22"].to_numpy(dtype=float) * 0.95
 
-    generator = calculate_pz(tracking_df, model_tws=tws, acd=config, acd_only="generator")
+    generator = calculate_pz(tracking_df, model_tws=tws, acd=config, acd_only=True, generator=True)
     baseline = generator.update(tws)
     changed = generator.update(perturbed)
 

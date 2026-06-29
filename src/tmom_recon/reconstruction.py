@@ -9,7 +9,7 @@ dipole with the ACD kick reconstruction.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, cast
 
 from tmom_recon.acd.integration import (
     ACDipoleConfig,
@@ -21,8 +21,7 @@ from tmom_recon.acd.reconstruction import (
     prepare_ac_dipole_inputs,
     reconstruct_from_prepared,
 )
-from tmom_recon.data.config import POSITION_STD_DEV
-from tmom_recon.lattice.core import get_rng, inject_noise_xy, validate_input
+from tmom_recon.lattice.core import validate_input
 from tmom_recon.optics import (
     LoadedMeasurement,
     ModelOpticsErrors,
@@ -36,7 +35,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing helpers only
     from collections.abc import Collection
     from pathlib import Path
 
-    import numpy as np
     import pandas as pd
     import tfs
 
@@ -49,6 +47,7 @@ __all__ = [
     "ACDipoleConfig",
     "ACDipolePzGenerator",
     "ModelOpticsErrors",
+    "PzGenerator",
     "calculate_pz",
 ]
 
@@ -56,20 +55,19 @@ __all__ = [
 def calculate_pz(
     data: pd.DataFrame,
     *,
-    model_tws: pd.DataFrame | None = None,
+    model_tws: tfs.TfsDataFrame | None = None,
     measurement_dir: str | Path | None = None,
     model_optics: Collection[OpticsCategory] = (),
     use_dispersion: bool = True,
     model_errors: ModelOpticsErrors | None = None,
     reverse_meas_tws: bool = False,
     pt_override: float | None = None,
-    inject_noise: bool | float = False,
-    rng: np.random.Generator | None = None,
     info: bool = True,
     acd: ACDipoleConfig | None = None,
-    acd_only: bool | Literal["generator"] = False,
+    acd_only: bool = False,
+    generator: bool = False,
     barrier_s: float | None = None,
-) -> pd.DataFrame | tfs.TfsDataFrame | ACDipolePzGenerator:
+) -> pd.DataFrame | PzGenerator | ACDipolePzGenerator:
     """Reconstruct transverse momenta at every BPM from turn-by-turn data.
 
     Optics are sourced per category (``phase``, ``amplitude`` = beta/alpha,
@@ -91,12 +89,17 @@ def calculate_pz(
         reverse_meas_tws: Reverse BPM ordering in the measured phase chain
             (Beam 2 / reverse-direction data).
         pt_override: Use this MAD-NG pt instead of estimating it.
-        inject_noise: If truthy, inject Gaussian position noise (``True`` uses
-            the standard BPM resolution; a float sets the std dev [m]).
-        rng: Optional NumPy random generator for reproducible noise.
         info: Whether to log diagnostics.
         acd: AC-dipole configuration. When given, the BPMs bracketing the AC
             dipole are refined with the ACD kick reconstruction.
+        acd_only: Selects the ACD-only behaviour (requires *acd*). When
+            ``True``, skip the all-BPM reconstruction and return only the ACD
+            result — long-form rows for the upstream BPM, ``<acd>_before``,
+            ``<acd>_after`` and the downstream BPM, with the per-turn summary
+            in ``attrs["summary"]``.
+        generator: Return a generator object instead of a DataFrame. With
+            ``acd_only=True`` this returns :class:`ACDipolePzGenerator`;
+            otherwise it returns :class:`PzGenerator`.
         barrier_s: Optional longitudinal position of a localised element (e.g.
             an AC dipole) that the all-BPM neighbour-pair reconstruction must not
             transport across, because the free model optics do not contain the
@@ -104,22 +107,13 @@ def calculate_pz(
             pairing a BPM with a neighbour on the far side of an AC dipole when
             the dedicated ACD reconstruction (``acd=``) is not in use. Ignored
             for ``acd_only`` paths.
-        acd_only: Selects the ACD-only behaviour (requires *acd*):
-
-            * ``False`` (default): full all-BPM reconstruction.
-            * ``True``: skip the all-BPM reconstruction and return only the ACD
-              result — long-form rows for the upstream BPM, ``<acd>_before``,
-              ``<acd>_after`` and the downstream BPM, with the per-turn summary
-              in ``attrs["summary"]``.
-            * ``"generator"``: return an :class:`ACDipolePzGenerator` that
-              freezes the (noise-injected) data once and exposes a fast
-              ``update(model_tws)`` to recompute the ACD result for new optics.
 
     Returns:
-        Momentum DataFrame (all BPMs) when *acd_only* is ``False``; the small
-        ACD ``TfsDataFrame`` when ``True``; an :class:`ACDipolePzGenerator` when
-        ``"generator"``. With *acd* and ``acd_only=False`` the full ACD result
-        is attached as ``attrs["acd_result"]``.
+        Momentum DataFrame (all BPMs) when *generator* is ``False`` and
+        *acd_only* is ``False``; the small ACD ``TfsDataFrame`` when
+        ``acd_only=True``; otherwise a generator object. With *acd* and
+        ``acd_only=False`` the full ACD result is attached as
+        ``attrs["acd_result"]``.
 
     Raises:
         ValueError: If no optics source is given, a source request cannot be
@@ -129,27 +123,39 @@ def calculate_pz(
         raise ValueError("acd_only requires an ACDipoleConfig via acd=")
     if acd is not None and model_tws is None:
         raise ValueError("AC-dipole reconstruction requires model_tws for state transport")
+    if generator and acd is not None and not acd_only:
+        raise ValueError("generator=True with an ACDipoleConfig requires acd_only=True")
 
     validate_input(data)
     bpm_names = [str(name) for name in data["name"].unique()]
 
-    # Inject noise once so every downstream reconstruction sees identical data
-    rng = get_rng(rng)
-    if inject_noise is not False:
-        noise_std = POSITION_STD_DEV if inject_noise is True else float(inject_noise)
-        data = inject_noise_xy(data, rng, noise_std=noise_std)
-
-    if acd_only == "generator":
+    if generator and acd_only:
+        assert acd is not None
+        assert model_tws is not None
         return ACDipolePzGenerator._build(
             data=data,
             model_tws=model_tws,
             acd=acd,
-            rng=rng,
             measurement_dir=measurement_dir,
             model_optics=tuple(model_optics),
             use_dispersion=use_dispersion,
             model_errors=model_errors,
             reverse_meas_tws=reverse_meas_tws,
+            bpm_names=bpm_names,
+        )
+
+    if generator:
+        return PzGenerator._build(
+            data=data,
+            model_tws=model_tws,
+            measurement_dir=measurement_dir,
+            model_optics=tuple(model_optics),
+            use_dispersion=use_dispersion,
+            model_errors=model_errors,
+            reverse_meas_tws=reverse_meas_tws,
+            pt_override=pt_override,
+            info=info,
+            barrier_s=barrier_s,
             bpm_names=bpm_names,
         )
 
@@ -164,19 +170,20 @@ def calculate_pz(
     )
 
     if acd_only:
+        assert acd is not None
+        assert model_tws is not None
         return run_ac_dipole_reconstruction(data, model_tws, acd, resolved_tws=optics.tws)
 
     result = reconstruct_momenta(
         data,
         optics,
-        inject_noise=False,
-        rng=rng,
         pt_override=pt_override,
         info=info,
         barrier_s=barrier_s,
     )
 
     if acd is not None:
+        assert model_tws is not None
         acd_result = run_ac_dipole_reconstruction(data, model_tws, acd, resolved_tws=optics.tws)
         result = apply_precomputed_ac_dipole_bpm_overrides(
             result=result, acd_result=acd_result, config=acd
@@ -189,8 +196,8 @@ def calculate_pz(
 class ACDipolePzGenerator:
     """Fast repeated AC-dipole reconstruction for a fixed dataset, varying optics.
 
-    Built by ``calculate_pz(..., acd_only="generator")``. The measurement data
-    (with noise injected once) and the BPM-window selection are frozen at
+    Built by ``calculate_pz(..., acd_only=True, generator=True)``. The
+    measurement data and the BPM-window selection are frozen at
     construction; each :meth:`update` only re-runs the optics-dependent part of
     the pipeline for a new model twiss, returning the small 4-point ACD frame.
 
@@ -233,9 +240,8 @@ class ACDipolePzGenerator:
         cls,
         *,
         data: pd.DataFrame,
-        model_tws: pd.DataFrame,
+        model_tws: tfs.TfsDataFrame,
         acd: ACDipoleConfig,
-        rng: np.random.Generator,
         measurement_dir: str | Path | None,
         model_optics: Collection[OpticsCategory],
         use_dispersion: bool,
@@ -245,9 +251,8 @@ class ACDipolePzGenerator:
     ) -> ACDipolePzGenerator:
         """Freeze the data side of the pipeline and return a generator.
 
-        *data* must already have had noise injected (done once by
-        :func:`calculate_pz`); the ACD prepare step is run with
-        ``inject_noise=False`` so it is not re-applied.
+        The ACD prepare step is run with ``inject_noise=False`` so repeated
+        updates are deterministic.
         """
         measured = (
             load_measurement(
@@ -269,7 +274,7 @@ class ACDipolePzGenerator:
             bpm_downstream=acd.bpm_downstream,
             smooth_lambda=acd.smooth_lambda,
             inject_noise=False,
-            rng=rng,
+            rng=None,
         )
         return cls(
             prepared=prepared,
@@ -300,8 +305,110 @@ class ACDipolePzGenerator:
             The small 4-point ACD ``TfsDataFrame`` (summary in
             ``attrs["summary"]``). Also stored in :attr:`latest`.
         """
-        if model_tws is None:
-            model_tws = self.model.run_twiss(observe=0)
+        active_model_tws = (
+            cast("tfs.TfsDataFrame", self.model.run_twiss(observe=0))
+            if model_tws is None
+            else model_tws
+        )
+        optics = resolve_optics(
+            model_tws=active_model_tws,
+            measured=self._measured,
+            model_optics=self._model_optics,
+            use_dispersion=self._use_dispersion,
+            model_errors=self._model_errors,
+            reverse_meas_tws=self._reverse_meas_tws,
+            bpm_names=self._bpm_names,
+        )
+        self.latest = reconstruct_from_prepared(
+            self._prepared, active_model_tws, resolved_tws=optics.tws
+        )
+        return self.latest
+
+
+class PzGenerator:
+    """Fast repeated all-BPM momentum reconstruction for fixed turn data.
+
+    Built by ``calculate_pz(..., generator=True)``. The tracking data and any
+    measurement directory are cached at construction; each :meth:`update`
+    resolves optics for the supplied model twiss and reconstructs either all
+    BPMs or the requested subset.
+    """
+
+    def __init__(
+        self,
+        *,
+        data: pd.DataFrame,
+        model_tws: tfs.TfsDataFrame | None,
+        measured: LoadedMeasurement | None,
+        model_optics: Collection[OpticsCategory],
+        use_dispersion: bool,
+        model_errors: ModelOpticsErrors | None,
+        reverse_meas_tws: bool,
+        pt_override: float | None,
+        info: bool,
+        barrier_s: float | None,
+        bpm_names: Collection[str],
+    ) -> None:
+        self._data = data.copy(deep=True)
+        self._model_tws = model_tws
+        self._measured = measured
+        self._model_optics = tuple(model_optics)
+        self._use_dispersion = use_dispersion
+        self._model_errors = model_errors
+        self._reverse_meas_tws = reverse_meas_tws
+        self._pt_override = pt_override
+        self._info = info
+        self._barrier_s = barrier_s
+        self._bpm_names = list(bpm_names)
+        self.latest: pd.DataFrame | None = None
+
+    @classmethod
+    def _build(
+        cls,
+        *,
+        data: pd.DataFrame,
+        model_tws: tfs.TfsDataFrame | None,
+        measurement_dir: str | Path | None,
+        model_optics: Collection[OpticsCategory],
+        use_dispersion: bool,
+        model_errors: ModelOpticsErrors | None,
+        reverse_meas_tws: bool,
+        pt_override: float | None,
+        info: bool,
+        barrier_s: float | None,
+        bpm_names: Collection[str],
+    ) -> PzGenerator:
+        measured = (
+            load_measurement(
+                measurement_dir,
+                reverse_meas_tws=reverse_meas_tws,
+                bpm_names=bpm_names,
+            )
+            if measurement_dir is not None
+            else None
+        )
+        return cls(
+            data=data,
+            model_tws=model_tws,
+            measured=measured,
+            model_optics=model_optics,
+            use_dispersion=use_dispersion,
+            model_errors=model_errors,
+            reverse_meas_tws=reverse_meas_tws,
+            pt_override=pt_override,
+            info=info,
+            barrier_s=barrier_s,
+            bpm_names=bpm_names,
+        )
+
+    def update(
+        self,
+        model_tws: pd.DataFrame | None = None,
+        *,
+        bpm_names: Collection[str] | None = None,
+    ) -> pd.DataFrame:
+        """Recompute momentum for a new model twiss and optional BPM subset."""
+        model_tws = self._model_tws if model_tws is None else model_tws
         optics = resolve_optics(
             model_tws=model_tws,
             measured=self._measured,
@@ -311,5 +418,12 @@ class ACDipolePzGenerator:
             reverse_meas_tws=self._reverse_meas_tws,
             bpm_names=self._bpm_names,
         )
-        self.latest = reconstruct_from_prepared(self._prepared, model_tws, resolved_tws=optics.tws)
+        self.latest = reconstruct_momenta(
+            self._data,
+            optics,
+            pt_override=self._pt_override,
+            info=self._info,
+            barrier_s=self._barrier_s,
+            bpm_names=bpm_names,
+        )
         return self.latest

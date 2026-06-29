@@ -90,9 +90,11 @@ def r_squared(true, pred) -> float:
 
 
 def _truth_at(df: pd.DataFrame, name: str) -> pd.DataFrame:
-    """Per-turn ``px``/``py`` truth at element ``name`` from the tracking data."""
-    rows = df.loc[df["name"] == name, ["turn", "px", "py"]].sort_values("turn")
-    return rows.rename(columns={"px": "px_true", "py": "py_true"}).reset_index(drop=True)
+    """Per-turn ``x``/``px``/``y``/``py`` truth at element ``name`` from tracking data."""
+    rows = df.loc[df["name"] == name, ["turn", "x", "px", "y", "py"]].sort_values("turn")
+    return rows.rename(
+        columns={"x": "x_true", "px": "px_true", "y": "y_true", "py": "py_true"}
+    ).reset_index(drop=True)
 
 
 def acd_state_marker_names(model: ACDipoleMadDriver) -> tuple[str, str]:
@@ -112,6 +114,7 @@ def assert_acd_momenta_match_truth(
     kick_r2_min: float,
     bpm_r2_min: float,
     marker_r2_min: float,
+    marker_pos_r2_min: float = 0.999,
 ) -> None:
     """Assert an AC-dipole reconstruction matches the tracked truth.
 
@@ -120,7 +123,9 @@ def assert_acd_momenta_match_truth(
     - the harmonic kick fit reconstructs the true kick (after - before markers),
     - with no noise the internal observed-vs-fit R^2 is essentially perfect,
     - the BPM momenta agree with truth (raw when ``clean``, cleaned under noise),
-    - the momenta at the ``<acd>_before`` / ``<acd>_after`` markers agree with truth.
+    - the momenta at the ``<acd>_before`` / ``<acd>_after`` markers agree with truth,
+    - the ``x``/``y`` positions at those markers (obtained by tracking the BPM
+      states to the marker) agree with truth.
 
     Args:
         result: The full reconstruction result (state rows; summary in ``attrs``).
@@ -131,6 +136,7 @@ def assert_acd_momenta_match_truth(
         kick_r2_min: Minimum R^2 for the kick fit vs the true kick.
         bpm_r2_min: Minimum R^2 for the BPM momenta vs truth.
         marker_r2_min: Minimum R^2 for the marker momenta vs truth.
+        marker_pos_r2_min: Minimum R^2 for the marker ``x``/``y`` positions vs truth.
     """
     summary = result.attrs["summary"]
     bpm_upstream = result.attrs["bpm_upstream"]
@@ -163,7 +169,10 @@ def assert_acd_momenta_match_truth(
             )
             assert r2 > bpm_r2_min, f"{plane}_bpm_{side} R^2={r2}"
 
-    # Momenta at the AC dipole `before` / `after` markers agree with truth.
+    # Momenta and positions at the AC dipole `before` / `after` markers agree with
+    # truth. The marker x/y positions are produced purely by tracking the BPM
+    # states to the marker (no kick fit), so verifying them confirms the tracked
+    # position is carried through to the output unmodified.
     state_rows = result.assign(name=result["name"].astype(str).str.upper())
     for marker_name, marker_truth in ((before_marker, before_truth), (after_marker, after_truth)):
         rows = state_rows.loc[state_rows["name"] == marker_name].merge(
@@ -173,3 +182,7 @@ def assert_acd_momenta_match_truth(
         for plane in ("px", "py"):
             r2 = r_squared(rows[f"{plane}_true"].to_numpy(), rows[plane].to_numpy())
             assert r2 > marker_r2_min, f"{marker_name} {plane} R^2={r2}"
+        for coord in ("x", "y"):
+            assert rows[coord].notna().all(), f"{marker_name} {coord} has NaNs"
+            r2 = r_squared(rows[f"{coord}_true"].to_numpy(), rows[coord].to_numpy())
+            assert r2 > marker_pos_r2_min, f"{marker_name} {coord} position R^2={r2}"
