@@ -41,7 +41,6 @@ def test_nbpm_reconstruction_returns_valid_output_for_fixture_data(
         tracking_df.copy(deep=True),
         tws=tws,
         twiss_elements=tws,
-        inject_noise=False,
         info=False,
         max_bpm_distance=11,
     )
@@ -70,7 +69,6 @@ def test_nbpm_improves_noisy_local_window_over_two_bpm_baseline(data_dir, tracki
     baseline = calculate_pz(
         noisy_df.copy(deep=True),
         model_tws=tws,
-        inject_noise=False,
         info=False,
     ).rename(columns={"px": "px_base", "py": "py_base"})
 
@@ -78,7 +76,6 @@ def test_nbpm_improves_noisy_local_window_over_two_bpm_baseline(data_dir, tracki
         noisy_df.copy(deep=True),
         tws=tws,
         twiss_elements=tws,
-        inject_noise=False,
         info=False,
         max_bpm_distance=11,
     ).rename(columns={"px": "px_nbpm", "py": "py_nbpm"})
@@ -104,7 +101,6 @@ def test_nbpm_improves_noisy_local_window_over_two_bpm_baseline(data_dir, tracki
         cleaned_df.copy(deep=True),
         tws=tws,
         twiss_elements=tws,
-        inject_noise=False,
         info=False,
         max_bpm_distance=11,
     ).rename(columns={"px": "px_nbpm_cleaned", "py": "py_nbpm_cleaned"})

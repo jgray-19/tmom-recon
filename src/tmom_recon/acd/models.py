@@ -43,6 +43,63 @@ class ACDipoleBPMWindow:
 
 
 @dataclass(frozen=True)
+class ACDipoleSide:
+    """Reconstructed BPM momenta on one side of the AC-dipole marker.
+
+    Bundles the per-BPM reconstructed-momentum frames for the window of BPMs on
+    a single side of the marker together with the orientation conventions that
+    tell the pipeline how to transport those states to the marker
+    (:attr:`direction`) and how to label the resulting output. Representing the
+    two sides as two of these lets the reconstruction treat upstream and
+    downstream symmetrically instead of threading mirror-image arguments.
+
+    The window ordering (closest BPM to the marker first) and the primary BPM are
+    read straight off :attr:`bpm_frames`, so the window has a single source.
+
+    Attributes:
+        label: Side identity, ``"upstream"`` or ``"downstream"``. Appears in the
+            per-turn summary column names (e.g. ``px_bpm_upstream``).
+        marker_end: The marker end this side reconstructs: ``"before"`` (pre-kick,
+            upstream) or ``"after"`` (post-kick, downstream).
+        direction: MAD-NG tracking direction from a BPM *to* the marker: ``+1``
+            forward (upstream) or ``-1`` backward (downstream). The reverse
+            transport, marker to BPM, uses ``-direction``.
+        bpm_frames: Ordered mapping from BPM name to its reconstructed-momentum
+            DataFrame, closest BPM to the marker first.
+    """
+
+    label: str
+    marker_end: str
+    direction: int
+    bpm_frames: dict[str, pd.DataFrame]
+
+    @property
+    def bpm_names(self) -> tuple[str, ...]:
+        """Window BPM names, closest to the marker first."""
+        return tuple(self.bpm_frames)
+
+    @property
+    def primary(self) -> str:
+        """Name of the primary (closest) BPM."""
+        return next(iter(self.bpm_frames))
+
+    @property
+    def primary_frame(self) -> pd.DataFrame:
+        """Reconstructed-momentum DataFrame for the primary BPM."""
+        return self.bpm_frames[self.primary]
+
+    @property
+    def bpm_row_type(self) -> str:
+        """``row_type`` value tagging this side's BPM output rows."""
+        return f"{self.label}_bpm"
+
+    @property
+    def marker_row_type(self) -> str:
+        """``row_type`` value tagging this side's marker output rows."""
+        return f"marker_{self.marker_end}"
+
+
+@dataclass(frozen=True)
 class ACDipoleHarmonicFit:
     """Result of a single-harmonic least-squares fit at the AC-dipole marker.
 

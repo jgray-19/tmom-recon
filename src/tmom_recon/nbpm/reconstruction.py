@@ -18,8 +18,6 @@ from tmom_recon.data.config import POSITION_STD_DEV
 from tmom_recon.lattice.core import (
     OUT_COLS,
     diagnostics,
-    get_rng,
-    inject_noise_xy,
     remove_closed_orbit,
     restore_closed_orbit_and_reference_momenta,
     validate_input,
@@ -510,9 +508,7 @@ def calculate_transverse_pz_nbpm(
     twiss_elements: pd.DataFrame | None = None,
     acdipole_element_name: str | None = None,
     acd_kicks: pd.DataFrame | None = None,
-    inject_noise: bool | float = True,
     info: bool = True,
-    rng: np.random.Generator | None = None,
     max_bpm_distance: int = 11,
     min_abs_cos: float = 0.10,
     bad_phase_threshold_rad: float = 2.0 * np.pi * 1.0e-2,
@@ -521,8 +517,7 @@ def calculate_transverse_pz_nbpm(
 ) -> pd.DataFrame:
     window_radius = max(1, (int(max_bpm_distance) - 1) // 2)
     LOGGER.info(
-        "Calculating N-BPM transverse momentum - inject_noise=%s, max_bpm_distance=%s, window_radius=%s",
-        inject_noise,
+        "Calculating N-BPM transverse momentum - max_bpm_distance=%s, window_radius=%s",
         max_bpm_distance,
         window_radius,
     )
@@ -531,11 +526,6 @@ def calculate_transverse_pz_nbpm(
     data = orig_data.copy(deep=True)
     with contextlib.suppress(AttributeError, TypeError, ValueError):
         data["name"] = data["name"].astype("category")
-    rng = get_rng(rng)
-
-    if inject_noise is not False:
-        noise_std = POSITION_STD_DEV if inject_noise is True else float(inject_noise)
-        data = inject_noise_xy(data, rng, noise_std=noise_std)
 
     variance_floor = (
         float(measurement_variance_floor)

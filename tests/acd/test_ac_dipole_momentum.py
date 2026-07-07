@@ -89,7 +89,6 @@ def test_ac_dipole_momentum_reconstruction(
         dpy_tune=DRIVEN_TUNES[1],
         bpm_upstream=bpm_upstream,
         bpm_downstream=bpm_downstream,
-        inject_noise=False,
     )
 
     marker_r2_min = MARKER_R2_MIN[seq_file, on_momentum]

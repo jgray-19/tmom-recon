@@ -6,8 +6,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .bpm_reconstruction import _restore_reference_momenta
-from .models import ACDipoleStateEstimate, ACDipoleStateSeries
+from .models import ACDipoleStateSeries
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -70,7 +69,7 @@ def build_tracked_state_table(
     return table.sort_values("turn").reset_index(drop=True)
 
 
-def _transport_marker_state_to_bpm(
+def transport_marker_state_to_bpm(
     state: ACDipoleStateSeries,
     model: ACDipoleMadDriver,
     *,
@@ -95,35 +94,3 @@ def _transport_marker_state_to_bpm(
     marker_state = np.column_stack([state.x, state.px, state.y, state.py, state.t, state.pt])
     s = model.track_particles(marker_name, bpm_name, marker_state, direction=direction)
     return ACDipoleStateSeries(s[:, 0], s[:, 1], s[:, 2], s[:, 3], s[:, 4], s[:, 5])
-
-
-def reconstruct_bpm_momentum_from_cleaned_acd(
-    tws: pd.DataFrame,
-    model: ACDipoleMadDriver,
-    *,
-    bpm_name: str,
-    cleaned_acd: ACDipoleStateEstimate,
-    marker_name: str,
-    direction: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Back-transport cleaned ACD marker states to a BPM and restore reference momenta.
-
-    Args:
-        tws: Twiss DataFrame (used to look up closed-orbit reference momenta).
-        model: MAD-NG driver used for particle tracking.
-        bpm_name: Name of the target BPM element.
-        cleaned_acd: Cleaned state estimate at the AC-dipole marker.
-        marker_name: Name of the AC-dipole marker element.
-        direction: ``+1`` for forward, ``-1`` for backward.
-
-    Returns:
-        ``(px_cleaned, py_cleaned)`` at the BPM location with closed-orbit
-        reference momenta restored.
-    """
-    bpm_state = _transport_marker_state_to_bpm(
-        cleaned_acd.state, model, bpm_name=bpm_name, marker_name=marker_name, direction=direction
-    )
-    return (
-        _restore_reference_momenta(bpm_state.px, tws, bpm_name, "px"),
-        _restore_reference_momenta(bpm_state.py, tws, bpm_name, "py"),
-    )

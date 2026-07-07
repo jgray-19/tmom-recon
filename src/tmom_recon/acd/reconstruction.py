@@ -11,10 +11,7 @@ import numpy as np
 import pandas as pd
 import tfs
 
-from tmom_recon.data.config import POSITION_STD_DEV
 from tmom_recon.lattice.core import (
-    get_rng,
-    inject_noise_xy,
     remove_closed_orbit,
     validate_input,
 )
@@ -23,7 +20,6 @@ from tmom_recon.optics import AMPLITUDE_COLUMNS, DISPERSION_COLUMNS, PHASE_COLUM
 
 from .bpm_reconstruction import (
     _normalise_supplied_tune,
-    _restore_reference_momenta,
     prepare_direct_bpm_reconstruction,
 )
 from .cleaning import _clean_ac_dipole_states, _combine_state_tables
@@ -32,13 +28,14 @@ from .models import (
     ACDipoleBPMWindow,
     ACDipoleFitResult,
     ACDipoleHarmonicFit,
+    ACDipoleSide,
     ACDipoleStateEstimate,
     ACDipoleStateSeries,
 )
 from .selection import resolve_name, select_ac_dipole_bpm_window
 from .transport import (
     build_tracked_state_table,
-    reconstruct_bpm_momentum_from_cleaned_acd,
+    transport_marker_state_to_bpm,
 )
 
 if TYPE_CHECKING:
@@ -51,10 +48,6 @@ SUMMARY_ATTR_NAME = "summary"
 # Optics columns taken from a resolved twiss (see tmom_recon.optics.resolve_optics)
 # when one is supplied; error/variance columns are copied alongside.
 ACD_TWISS_OVERRIDE_COLUMNS = frozenset(PHASE_COLUMNS + AMPLITUDE_COLUMNS + DISPERSION_COLUMNS)
-UPSTREAM_BPM_ROW_TYPE = "upstream_bpm"
-MARKER_BEFORE_ROW_TYPE = "marker_before"
-MARKER_AFTER_ROW_TYPE = "marker_after"
-DOWNSTREAM_BPM_ROW_TYPE = "downstream_bpm"
 
 
 # ---------------------------------------------------------------------------
@@ -139,32 +132,27 @@ def _log_harmonic_fit_parameters(
 def _merge_primary_bpm_results(
     upstream_frame: pd.DataFrame,
     downstream_frame: pd.DataFrame,
-    *,
-    selection: ACDipoleBPMSelection,
-    marker_name: str,
 ) -> pd.DataFrame:
-    """Merge upstream and downstream per-turn momentum estimates into one DataFrame.
+    """Merge the primary upstream/downstream per-turn momentum estimates on ``turn``.
+
+    Identity metadata (marker name, primary BPM names) is *not* copied per row
+    here; it lives once in the output headers/``attrs`` (see
+    :func:`_build_output_metadata`).
 
     Args:
         upstream_frame: Reconstructed-momentum DataFrame for the primary upstream BPM.
         downstream_frame: Reconstructed-momentum DataFrame for the primary downstream BPM.
-        selection: The primary upstream/downstream BPM pair.
-        marker_name: Name of the AC-dipole marker element.
 
     Returns:
-        DataFrame joined on ``turn`` with BPM metadata and per-plane momentum columns.
+        DataFrame joined on ``turn`` with the per-plane BPM momentum columns.
     """
-    result = upstream_frame[["turn", "px", "py"]].rename(
+    upstream_out = upstream_frame[["turn", "px", "py"]].rename(
         columns={"px": "px_bpm_upstream", "py": "py_bpm_upstream"}
     )
-    result["bpm_upstream"] = selection.upstream
-    result["bpm_downstream"] = selection.downstream
-    result["acd_marker"] = marker_name
-    result["acd_element"] = marker_name
     downstream_out = downstream_frame[["turn", "px", "py"]].rename(
         columns={"px": "px_bpm_downstream", "py": "py_bpm_downstream"}
     )
-    return result.merge(downstream_out, on="turn", how="inner")
+    return upstream_out.merge(downstream_out, on="turn", how="inner")
 
 
 def _build_state_rows(
@@ -210,44 +198,73 @@ def _build_state_rows(
 def _build_marker_state_rows(
     *,
     turns: np.ndarray,
-    marker_name: str,
     model: ACDipoleMadDriver,
-    before_state: ACDipoleStateEstimate,
-    after_state: ACDipoleStateEstimate,
+    marker_states: list[tuple[ACDipoleSide, ACDipoleStateEstimate]],
 ) -> pd.DataFrame:
-    before_name = model.accelerator.acd_marker_name("before")
-    after_name = model.accelerator.acd_marker_name("after")
+    """Build the marker-side output rows for each side's cleaned marker state.
 
+    Args:
+        turns: Turn numbers array.
+        model: MAD-NG driver, used to resolve the marker element name per side.
+        marker_states: ``(side, cleaned_marker_state)`` pairs; each side supplies
+            the row type and marker end.
+
+    Returns:
+        Concatenated marker state rows, one group per side.
+    """
     return pd.concat(
         [
             _build_state_rows(
-                row_type=MARKER_BEFORE_ROW_TYPE,
-                name=before_name,
+                row_type=side.marker_row_type,
+                name=model.accelerator.acd_marker_name(side.marker_end),
                 turns=turns,
-                x=before_state.state.x,
-                px=before_state.state.px,
-                y=before_state.state.y,
-                py=before_state.state.py,
-                var_x=before_state.var_x,
-                var_px=before_state.var_px,
-                var_y=before_state.var_y,
-                var_py=before_state.var_py,
-            ),
-            _build_state_rows(
-                row_type=MARKER_AFTER_ROW_TYPE,
-                name=after_name,
-                turns=turns,
-                x=after_state.state.x,
-                px=after_state.state.px,
-                y=after_state.state.y,
-                py=after_state.state.py,
-                var_x=after_state.var_x,
-                var_px=after_state.var_px,
-                var_y=after_state.var_y,
-                var_py=after_state.var_py,
-            ),
+                x=estimate.state.x,
+                px=estimate.state.px,
+                y=estimate.state.y,
+                py=estimate.state.py,
+                var_x=estimate.var_x,
+                var_px=estimate.var_px,
+                var_y=estimate.var_y,
+                var_py=estimate.var_py,
+            )
+            for side, estimate in marker_states
         ],
         ignore_index=True,
+    )
+
+
+def _build_bpm_state_rows(
+    side: ACDipoleSide,
+    *,
+    turns: np.ndarray,
+    cleaned_bpm_state: ACDipoleStateSeries,
+) -> pd.DataFrame:
+    """Build the output rows for *side*'s primary BPM.
+
+    Positions come from the measured/reconstructed primary frame; momenta are the
+    cleaned marker state transported back to the BPM.
+
+    Args:
+        side: The side whose primary BPM is emitted.
+        turns: Turn numbers array.
+        cleaned_bpm_state: Cleaned state transported from the marker to the primary BPM.
+
+    Returns:
+        A state-row DataFrame for the primary BPM.
+    """
+    frame = side.primary_frame
+    return _build_state_rows(
+        row_type=side.bpm_row_type,
+        name=side.primary,
+        turns=turns,
+        x=frame["x"],
+        px=cleaned_bpm_state.px,
+        y=frame["y"],
+        py=cleaned_bpm_state.py,
+        var_x=frame.get("var_x"),
+        var_px=frame.get("var_px"),
+        var_y=frame.get("var_y"),
+        var_py=frame.get("var_py"),
     )
 
 
@@ -273,7 +290,6 @@ def _build_output_metadata(
     """
     return {
         "acd_marker": marker_name,
-        "acd_element": marker_name,
         "bpm_upstream": window.primary.upstream,
         "bpm_downstream": window.primary.downstream,
         "bpms_upstream_used": ",".join(window.upstream),
@@ -293,64 +309,24 @@ def _build_output_metadata(
 
 def _assemble_result_dataframe(
     result: pd.DataFrame,
-    tws: pd.DataFrame,
     *,
     fit: ACDipoleFitResult,
-    selection: ACDipoleBPMSelection,
-    marker_name: str,
     pt_est: float,
 ) -> pd.DataFrame:
     """Populate all output columns on the per-turn summary DataFrame.
 
     Args:
         result: Base DataFrame from :func:`_merge_primary_bpm_results`.
-        tws: Twiss DataFrame (used to restore closed-orbit reference momenta).
         fit: The full fit result from :func:`_fit_ac_dipole_from_frames`.
-        selection: The primary upstream/downstream BPM pair.
-        marker_name: Name of the AC-dipole marker element.
         pt_est: Estimated MAD-NG pt.
 
     Returns:
         *result* with all ACD output columns populated.
     """
-    for side, bpm_name in (("upstream", selection.upstream), ("downstream", selection.downstream)):
-        for plane in ("px", "py"):
-            col = f"{plane}_bpm_{side}"
-            result[col] = _restore_reference_momenta(
-                result[col].to_numpy(dtype=float), tws, bpm_name, plane
-            )
-
-    for side, state in (
-        ("upstream", fit.raw_upstream.state),
-        ("downstream", fit.raw_downstream.state),
-    ):
-        result[f"x_acd_{side}"] = state.x
-        result[f"y_acd_{side}"] = state.y
-        for plane in ("px", "py"):
-            result[f"{plane}_acd_{side}"] = _restore_reference_momenta(
-                getattr(state, plane), tws, marker_name, plane
-            )
-
     result["dpx_rad"] = fit.dpx_raw
     result["dpy_rad"] = fit.dpy_raw
-    result["dpx"] = fit.dpx_raw
-    result["dpy"] = fit.dpy_raw
     result["dpx_fit_rad"] = fit.dpx_fit.fitted
     result["dpy_fit_rad"] = fit.dpy_fit.fitted
-
-    result["x_acd_cleaned"] = fit.cleaned_upstream.state.x
-    result["y_acd_cleaned"] = fit.cleaned_upstream.state.y
-    for side, state in (
-        ("upstream", fit.cleaned_upstream.state),
-        ("downstream", fit.cleaned_downstream.state),
-    ):
-        result[f"x_acd_{side}_cleaned"] = state.x
-        result[f"y_acd_{side}_cleaned"] = state.y
-        for plane in ("px", "py"):
-            result[f"{plane}_acd_{side}_cleaned"] = _restore_reference_momenta(
-                getattr(state, plane), tws, marker_name, plane
-            )
-
     result["pt_used"] = pt_est
     return result
 
@@ -360,60 +336,52 @@ def _assemble_result_dataframe(
 # ---------------------------------------------------------------------------
 
 
+def _tracked_marker_tables(side: ACDipoleSide, model: ACDipoleMadDriver) -> list[pd.DataFrame]:
+    """Transport every window BPM on *side* to the marker.
+
+    Args:
+        side: The side whose BPM frames are transported.
+        model: MAD-NG driver used for state transport.
+
+    Returns:
+        One tracked-state table per window BPM.
+    """
+    return [
+        build_tracked_state_table(frame, model, source_name=bpm_name, direction=side.direction)
+        for bpm_name, frame in side.bpm_frames.items()
+    ]
+
+
 def _fit_ac_dipole_from_frames(
     *,
-    selection: ACDipoleBPMSelection,
-    window: ACDipoleBPMWindow,
-    marker_name: str,
+    upstream_side: ACDipoleSide,
+    downstream_side: ACDipoleSide,
     model: ACDipoleMadDriver,
     smooth_lambda: float,
     dpx_tune: float,
     dpy_tune: float,
-    upstream_frames: dict[str, pd.DataFrame],
-    downstream_frames: dict[str, pd.DataFrame],
 ) -> ACDipoleFitResult:
     """Run the full AC-dipole fit and cleaning pipeline.
 
     Args:
-        selection: Primary upstream/downstream BPM pair.
-        window: Full BPM window used for multi-BPM averaging.
-        marker_name: Name of the AC-dipole marker element.
+        upstream_side: Upstream side (window BPM frames + transport conventions).
+        downstream_side: Downstream side.
         model: MAD-NG driver used for state transport.
         smooth_lambda: Second-difference regularisation strength.
         dpx_tune: Fractional horizontal driven tune.
         dpy_tune: Fractional vertical driven tune.
-        upstream_frames: Per-BPM reconstructed-momentum DataFrames for upstream BPMs.
-        downstream_frames: Per-BPM reconstructed-momentum DataFrames for downstream BPMs.
 
     Returns:
         An :class:`ACDipoleFitResult` with all intermediate and final quantities.
     """
     summary = _merge_primary_bpm_results(
-        upstream_frames[selection.upstream],
-        downstream_frames[selection.downstream],
-        selection=selection,
-        marker_name=marker_name,
+        upstream_side.primary_frame,
+        downstream_side.primary_frame,
     )
     turns = summary["turn"].to_numpy(dtype=float)
 
-    upstream_tables = [
-        build_tracked_state_table(
-            upstream_frames[bpm_name],
-            model,
-            source_name=bpm_name,
-            direction=1,
-        )
-        for bpm_name in window.upstream
-    ]
-    downstream_tables = [
-        build_tracked_state_table(
-            downstream_frames[bpm_name],
-            model,
-            source_name=bpm_name,
-            direction=-1,
-        )
-        for bpm_name in window.downstream
-    ]
+    upstream_tables = _tracked_marker_tables(upstream_side, model)
+    downstream_tables = _tracked_marker_tables(downstream_side, model)
 
     raw_upstream = _combine_state_tables(turns, upstream_tables)
     raw_downstream = _combine_state_tables(turns, downstream_tables)
@@ -512,8 +480,6 @@ def prepare_ac_dipole_inputs(
     bpm_upstream: str | None = None,
     bpm_downstream: str | None = None,
     smooth_lambda: float = 1,
-    inject_noise: bool | float = True,
-    rng: np.random.Generator | None = None,
     use_immediate_neighbors_for_bpms: bool = False,
 ) -> PreparedACDInputs:
     """Run the optics-independent half of the AC-dipole reconstruction once.
@@ -536,10 +502,6 @@ def prepare_ac_dipole_inputs(
         bpm_upstream: Optional explicit upstream BPM name.
         bpm_downstream: Optional explicit downstream BPM name.
         smooth_lambda: Second-difference regularisation strength.
-        inject_noise: If ``True``, inject Gaussian position noise at the standard
-            BPM resolution. Pass a float for a custom std dev [m]; ``False``
-            disables it.
-        rng: Optional NumPy random generator for reproducible noise injection.
         use_immediate_neighbors_for_bpms: Use immediate lattice neighbors instead
             of pi/2-phase neighbors for BPM momentum reconstruction.
 
@@ -550,11 +512,6 @@ def prepare_ac_dipole_inputs(
     data = orig_data.copy(deep=True)
     with contextlib.suppress(AttributeError, TypeError, ValueError):
         data["name"] = data["name"].astype("category")
-
-    rng = get_rng(rng)
-    if inject_noise is not False:
-        noise_std = POSITION_STD_DEV if inject_noise is True else float(inject_noise)
-        data = inject_noise_xy(data, rng, noise_std=noise_std)
 
     lattice_names = [str(name) for name in model.twiss_elements.index]
     marker_name = resolve_name(ac_dipole_marker, lattice_names)
@@ -597,6 +554,88 @@ def prepare_ac_dipole_inputs(
     )
 
 
+def _check_has_zero_closed_orbit(model: ACDipoleMadDriver, tws: pd.DataFrame) -> bool:
+    """Check that the model has either a zero closed orbit or that the closed orbit of the twiss matches the model.
+
+    Args:
+        model: MAD-NG driver providing the lattice element ordering.
+        tws: Twiss DataFrame used to check against the model.
+
+    Raises:
+        ValueError: If the model has a non-zero closed orbit and the twiss
+        does not match the model.
+
+    Returns:
+        True if the model has a zero closed orbit or False if the twiss
+        matches the model and the model has a non-zero closed orbit.
+
+    """
+    coords = ["x", "px", "y", "py"]
+    model_tws = model.twiss_elements.copy()
+
+    common_index = model_tws.index.intersection(tws.index)
+    if common_index.empty:
+        raise ValueError(
+            "The ACDipoleMadDriver model and the provided twiss share no common "
+            "elements; cannot check the closed orbit."
+        )
+    model_tws = model_tws.loc[common_index, coords]
+    tws = tws.loc[common_index, coords]
+
+    model_tws_max = model_tws.abs().max().max()
+    tws_max = tws.abs().max().max()
+    if model_tws_max < 1e-10 and tws_max < 1e-10:
+        return True
+
+    # Take the diff between the model twiss and the user twiss (now sharing an
+    # index) and check whether the closed orbits match.
+    diff = model_tws - tws
+    if diff.abs().max().max() < 2e-9:
+        return False
+
+    raise ValueError(
+        "The ACDipoleMadDriver model or the provided twiss has a non-zero closed orbit.\n"
+        "Also the provided twiss does not match the model.\n"
+        "Please provide a twiss that matches the model, or use a model with a zero closed orbit. "
+        f"Model max closed orbit: {model_tws_max:.3e}, Twiss max closed orbit: {tws_max:.3e}, Diff max: {diff.abs().max().max():.3e}"
+    )
+
+
+def _check_bpm_state_consistency(
+    frame: pd.DataFrame, bpm_name: str, predicted_state: ACDipoleStateSeries
+) -> None:
+    """Check that the reconstructed BPM state is consistent with the predicted state.
+
+    Args:
+        frame: Reconstructed-momentum DataFrame for a BPM.
+        bpm_name: Name of the BPM.
+        predicted_state: Predicted state at the BPM from the model.
+
+    Raises:
+        ValueError: If the reconstructed BPM state is not consistent with the predicted state.
+    """
+    bpm_frame = frame[frame["name"] == bpm_name]
+    if bpm_frame.empty:
+        raise ValueError(f"No data for BPM {bpm_name} in the reconstructed frame.")
+
+    # Check that the reconstructed state matches the predicted state within an
+    # absolute tolerance. The states oscillate through zero, so a per-turn relative
+    # error is meaningless near the zero-crossings; compare absolute residuals
+    # instead. Clean reconstruction agrees to <1e-6; with 1e-5 BPM noise the
+    # residual grows to ~3e-5, so 1e-4 leaves headroom while still catching gross
+    # inconsistencies.
+    tolerance = 1e-4  # Absolute tolerance for state consistency check
+    for coord in ["x", "px", "y", "py"]:
+        reconstructed_value = bpm_frame[coord].values
+        predicted_value = getattr(predicted_state, coord)
+        max_residual = np.max(np.abs(reconstructed_value - predicted_value))
+        if max_residual > tolerance:
+            raise ValueError(
+                f"Reconstructed {coord} at BPM {bpm_name} does not match the predicted "
+                f"value within absolute tolerance {tolerance:.1e} (max|residual|={max_residual:.3e})."
+            )
+
+
 def reconstruct_from_prepared(
     prepared: PreparedACDInputs,
     tws: pd.DataFrame,
@@ -629,16 +668,17 @@ def reconstruct_from_prepared(
     model = prepared.model
     marker_name = prepared.marker_name
     window = prepared.window
-    selection = prepared.selection
     smooth_lambda = prepared.smooth_lambda
     dpx_tune_frac = prepared.dpx_tune_frac
     dpy_tune_frac = prepared.dpy_tune_frac
 
     data = prepared.data.copy(deep=True)
     tws = normalise_twiss_index(tws, prepared.lattice_names)
+    non_zero_tws = _check_has_zero_closed_orbit(model, tws)
 
     tws_bpm = tws.reindex(prepared.lattice_bpm_order).copy(deep=True)
-    data = remove_closed_orbit(data, tws)
+    if non_zero_tws:
+        data = remove_closed_orbit(data, tws)
 
     if resolved_tws is not None:
         resolved = normalise_twiss_index(resolved_tws, prepared.lattice_names)
@@ -667,83 +707,59 @@ def reconstruct_from_prepared(
         pt_est=model.pt,
         use_immediate_neighbors=prepared.use_immediate_neighbors,
     )
+    upstream_side = ACDipoleSide("upstream", "before", +1, upstream_frames)
+    downstream_side = ACDipoleSide("downstream", "after", -1, downstream_frames)
 
-    fit: ACDipoleFitResult = _fit_ac_dipole_from_frames(
-        selection=selection,
-        window=window,
-        marker_name=marker_name,
+    if non_zero_tws:
+        LOGGER.info(
+            "Adding closed orbit back to reconstructed BPM momenta before tracking and fitting ACD"
+        )
+        for side in (upstream_side, downstream_side):
+            for bpm_name, frame in side.bpm_frames.items():
+                for plane in ("x", "px", "y", "py"):
+                    if plane in frame:
+                        frame[plane] += tws_bpm.loc[bpm_name, plane]
+
+    fit = _fit_ac_dipole_from_frames(
+        upstream_side=upstream_side,
+        downstream_side=downstream_side,
         model=model,
         smooth_lambda=smooth_lambda,
         dpx_tune=dpx_tune_frac,
         dpy_tune=dpy_tune_frac,
-        upstream_frames=upstream_frames,
-        downstream_frames=downstream_frames,
     )
 
     result = _assemble_result_dataframe(
         fit.summary.copy(deep=True),
-        tws,
         fit=fit,
-        selection=selection,
-        marker_name=marker_name,
         pt_est=model.pt,
     )
 
-    px_up_clean, py_up_clean = reconstruct_bpm_momentum_from_cleaned_acd(
-        tws,
-        model,
-        bpm_name=selection.upstream,
-        cleaned_acd=fit.cleaned_upstream,
-        marker_name=marker_name,
-        direction=-1,
-    )
-    px_dn_clean, py_dn_clean = reconstruct_bpm_momentum_from_cleaned_acd(
-        tws,
-        model,
-        bpm_name=selection.downstream,
-        cleaned_acd=fit.cleaned_downstream,
-        marker_name=marker_name,
-        direction=1,
-    )
-    result["px_bpm_upstream_cleaned"] = px_up_clean
-    result["py_bpm_upstream_cleaned"] = py_up_clean
-    result["px_bpm_downstream_cleaned"] = px_dn_clean
-    result["py_bpm_downstream_cleaned"] = py_dn_clean
+    # Transport each side's cleaned marker state back to its primary BPM.
+    cleaned_bpm_states: dict[str, ACDipoleStateSeries] = {}
+    for side, cleaned_marker in (
+        (upstream_side, fit.cleaned_upstream),
+        (downstream_side, fit.cleaned_downstream),
+    ):
+        bpm_state = transport_marker_state_to_bpm(
+            cleaned_marker.state,
+            model,
+            bpm_name=side.primary,
+            marker_name=marker_name,
+            direction=-side.direction,
+        )
+        _check_bpm_state_consistency(side.primary_frame, side.primary, bpm_state)
+        cleaned_bpm_states[side.label] = bpm_state
+        result[f"px_bpm_{side.label}_cleaned"] = bpm_state.px
+        result[f"py_bpm_{side.label}_cleaned"] = bpm_state.py
 
-    before_state = ACDipoleStateEstimate(
-        state=ACDipoleStateSeries(
-            fit.cleaned_upstream.state.x,
-            _restore_reference_momenta(fit.cleaned_upstream.state.px, tws, marker_name, "px"),
-            fit.cleaned_upstream.state.y,
-            _restore_reference_momenta(fit.cleaned_upstream.state.py, tws, marker_name, "py"),
-            fit.cleaned_upstream.state.t,
-            fit.cleaned_upstream.state.pt,
-        ),
-        var_x=fit.cleaned_upstream.var_x,
-        var_px=fit.cleaned_upstream.var_px,
-        var_y=fit.cleaned_upstream.var_y,
-        var_py=fit.cleaned_upstream.var_py,
-    )
-    after_state = ACDipoleStateEstimate(
-        state=ACDipoleStateSeries(
-            fit.cleaned_downstream.state.x,
-            _restore_reference_momenta(fit.cleaned_downstream.state.px, tws, marker_name, "px"),
-            fit.cleaned_downstream.state.y,
-            _restore_reference_momenta(fit.cleaned_downstream.state.py, tws, marker_name, "py"),
-            fit.cleaned_downstream.state.t,
-            fit.cleaned_downstream.state.pt,
-        ),
-        var_x=fit.cleaned_downstream.var_x,
-        var_px=fit.cleaned_downstream.var_px,
-        var_y=fit.cleaned_downstream.var_y,
-        var_py=fit.cleaned_downstream.var_py,
-    )
     marker_rows = _build_marker_state_rows(
         turns=fit.turns,
-        marker_name=marker_name,
         model=model,
-        before_state=before_state,
-        after_state=after_state,
+        marker_states=[
+            (upstream_side, fit.cleaned_upstream),
+            (downstream_side, fit.cleaned_downstream),
+        ],
     )
 
     metadata = _build_output_metadata(
@@ -758,32 +774,16 @@ def reconstruct_from_prepared(
 
     state_rows = pd.concat(
         [
-            _build_state_rows(
-                row_type=UPSTREAM_BPM_ROW_TYPE,
-                name=selection.upstream,
+            _build_bpm_state_rows(
+                upstream_side,
                 turns=fit.turns,
-                x=upstream_frames[selection.upstream]["x"],
-                px=px_up_clean,
-                y=upstream_frames[selection.upstream]["y"],
-                py=py_up_clean,
-                var_x=upstream_frames[selection.upstream].get("var_x"),
-                var_px=upstream_frames[selection.upstream].get("var_px"),
-                var_y=upstream_frames[selection.upstream].get("var_y"),
-                var_py=upstream_frames[selection.upstream].get("var_py"),
+                cleaned_bpm_state=cleaned_bpm_states[upstream_side.label],
             ),
             marker_rows,
-            _build_state_rows(
-                row_type=DOWNSTREAM_BPM_ROW_TYPE,
-                name=selection.downstream,
+            _build_bpm_state_rows(
+                downstream_side,
                 turns=fit.turns,
-                x=downstream_frames[selection.downstream]["x"],
-                px=px_dn_clean,
-                y=downstream_frames[selection.downstream]["y"],
-                py=py_dn_clean,
-                var_x=downstream_frames[selection.downstream].get("var_x"),
-                var_px=downstream_frames[selection.downstream].get("var_px"),
-                var_y=downstream_frames[selection.downstream].get("var_y"),
-                var_py=downstream_frames[selection.downstream].get("var_py"),
+                cleaned_bpm_state=cleaned_bpm_states[downstream_side.label],
             ),
         ],
         ignore_index=True,
@@ -803,7 +803,6 @@ def reconstruct_from_prepared(
 
     result_out.attrs.update(metadata)
     result_out.attrs[SUMMARY_ATTR_NAME] = result
-    result_out.attrs["acd_marker_name"] = marker_name
     result_out.attrs["smooth_lambda"] = smooth_lambda
     result_out.attrs["qx_drive"] = dpx_tune_frac
     result_out.attrs["qy_drive"] = dpy_tune_frac
@@ -826,8 +825,6 @@ def calculate_ac_dipole_momentum(
     bpm_upstream: str | None = None,
     bpm_downstream: str | None = None,
     smooth_lambda: float = 1,
-    inject_noise: bool | float = True,
-    rng: np.random.Generator | None = None,
     use_immediate_neighbors_for_bpms: bool = False,
     resolved_tws: pd.DataFrame | None = None,
 ) -> tfs.TfsDataFrame:
@@ -855,10 +852,6 @@ def calculate_ac_dipole_momentum(
         bpm_downstream: Optional explicit downstream BPM name.
         smooth_lambda: Second-difference regularisation strength for the
             marker-side momentum solve.
-        inject_noise: If ``True``, inject Gaussian position noise at the standard
-            BPM resolution. Pass a float to use a custom noise std dev [m].
-            ``False`` disables noise injection.
-        rng: Optional NumPy random generator for reproducible noise injection.
         use_immediate_neighbors_for_bpms: If ``True``, use immediate lattice
             neighbors instead of pi/2-phase neighbors for BPM momentum
             reconstruction.
@@ -883,8 +876,6 @@ def calculate_ac_dipole_momentum(
         bpm_upstream=bpm_upstream,
         bpm_downstream=bpm_downstream,
         smooth_lambda=smooth_lambda,
-        inject_noise=inject_noise,
-        rng=rng,
         use_immediate_neighbors_for_bpms=use_immediate_neighbors_for_bpms,
     )
     return reconstruct_from_prepared(prepared, tws, resolved_tws=resolved_tws)

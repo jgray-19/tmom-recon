@@ -52,29 +52,6 @@ def _get_tune(tws: pd.DataFrame, header_key: str) -> float:
     )
 
 
-def _restore_reference_momenta(
-    values: np.ndarray,
-    tws: pd.DataFrame,
-    element_name: str,
-    column: str,
-) -> np.ndarray:
-    """Add the closed-orbit reference momentum back to deviation values.
-
-    Args:
-        values: Per-turn momentum deviations.
-        tws: Twiss DataFrame indexed by element name.
-        element_name: Name of the element to look up.
-        column: Column name (``"px"`` or ``"py"``).
-
-    Returns:
-        ``values + tws.at[element_name, column]`` if the column and element
-        exist, otherwise *values* unchanged.
-    """
-    if column not in tws.columns or element_name not in tws.index:
-        return values
-    return values + float(tws.at[element_name, column])
-
-
 def _normalise_supplied_tune(label: str, tune: float) -> float:
     """Validate and fold a driven tune into the range ``(0, 0.5)``.
 

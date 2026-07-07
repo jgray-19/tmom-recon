@@ -12,13 +12,10 @@ import logging
 from typing import TYPE_CHECKING
 
 from tmom_recon.data.columns import NEIGHBOR_BPM_ERROR_SPEC
-from tmom_recon.data.config import POSITION_STD_DEV
 from tmom_recon.data.schema import SUFFIX_NEXT, SUFFIX_PREV
 from tmom_recon.lattice.core import (
     OUT_COLS,
     diagnostics,
-    get_rng,
-    inject_noise_xy,
     remove_closed_orbit,
     restore_closed_orbit_and_reference_momenta,
     sync_endpoints,
@@ -41,7 +38,6 @@ from tmom_recon.physics.pt_calculation import estimate_pt_from_model
 if TYPE_CHECKING:
     from collections.abc import Collection
 
-    import numpy as np
     import pandas as pd
 
     from tmom_recon.optics import ResolvedOptics
@@ -99,8 +95,6 @@ def reconstruct_momenta(
     orig_data: pd.DataFrame,
     optics: ResolvedOptics,
     *,
-    inject_noise: bool | float = False,
-    rng: np.random.Generator | None = None,
     pt_override: float | None = None,
     info: bool = True,
     barrier_s: float | None = None,
@@ -112,9 +106,6 @@ def reconstruct_momenta(
         orig_data: Turn-by-turn BPM data with columns ``name, turn, x, y``
             and position variances ``var_x, var_y``.
         optics: Resolved optics bundle from :func:`tmom_recon.optics.resolve_optics`.
-        inject_noise: If truthy, inject Gaussian position noise (``True`` uses
-            the standard BPM resolution; pass a float for a custom std dev [m]).
-        rng: Optional NumPy random generator for reproducible noise.
         pt_override: Use this MAD-NG pt instead of estimating it.
         info: Whether to log diagnostics.
         barrier_s: Optional longitudinal position of a localised element (e.g.
@@ -130,11 +121,6 @@ def reconstruct_momenta(
     data = orig_data.copy(deep=True)
     with contextlib.suppress(AttributeError, TypeError, ValueError):
         data["name"] = data["name"].astype("category")
-    rng = get_rng(rng)
-
-    if inject_noise is not False:
-        noise_std = POSITION_STD_DEV if inject_noise is True else float(inject_noise)
-        data = inject_noise_xy(data, rng, noise_std=noise_std)
 
     tws = optics.tws
     shared_bpm_names = set(tws.index).intersection(data["name"].unique())

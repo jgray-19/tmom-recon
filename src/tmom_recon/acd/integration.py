@@ -36,6 +36,10 @@ class ACDipoleConfig:
             the closest downstream BPM is selected automatically.
         smooth_lambda: Regularisation strength for the marker-side momentum
             smoothing solve.
+        barrier_s: Optional longitudinal position of the AC dipole. When this
+            config is passed to all-BPM reconstruction, neighbour pairs that
+            would transport through the driven element are excluded unless the
+            caller explicitly provides a different barrier.
     """
 
     ac_dipole_marker: str
@@ -45,6 +49,7 @@ class ACDipoleConfig:
     bpm_upstream: str | None = None
     bpm_downstream: str | None = None
     smooth_lambda: float = 1.0
+    barrier_s: float | None = None
 
 
 def ensure_position_variances(data: pd.DataFrame) -> pd.DataFrame:
@@ -91,7 +96,6 @@ def run_ac_dipole_reconstruction(
         bpm_upstream=config.bpm_upstream,
         bpm_downstream=config.bpm_downstream,
         smooth_lambda=config.smooth_lambda,
-        inject_noise=False,
         resolved_tws=resolved_tws,
     )
 

@@ -388,6 +388,7 @@ def diagnostics(
 
 def remove_closed_orbit(data: pd.DataFrame, co: pd.DataFrame) -> pd.DataFrame:
     """Return tracking data with the closed orbit removed."""
+    LOGGER.info("Removing closed orbit from data using twiss table")
     out = data.copy(deep=True)
     x_dict = co["x"].to_dict()
     y_dict = co["y"].to_dict()
@@ -401,6 +402,7 @@ def restore_closed_orbit_and_reference_momenta(
     data: pd.DataFrame, co: pd.DataFrame
 ) -> pd.DataFrame:
     """Return data with closed orbit and reference momenta restored."""
+    LOGGER.info("Restoring closed orbit and reference momenta to data")
     out = data.copy(deep=True)
     co_dict = co.to_dict()
     out["x"] = out["x"] + out["name"].map(co_dict["x"])

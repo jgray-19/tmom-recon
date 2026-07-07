@@ -55,7 +55,7 @@ __all__ = [
 def calculate_pz(
     data: pd.DataFrame,
     *,
-    model_tws: tfs.TfsDataFrame | None = None,
+    model_tws: pd.DataFrame | None = None,
     measurement_dir: str | Path | None = None,
     model_optics: Collection[OpticsCategory] = (),
     use_dispersion: bool = True,
@@ -103,10 +103,9 @@ def calculate_pz(
         barrier_s: Optional longitudinal position of a localised element (e.g.
             an AC dipole) that the all-BPM neighbour-pair reconstruction must not
             transport across, because the free model optics do not contain the
-            kick that element imparts. Use this to keep the reconstruction from
-            pairing a BPM with a neighbour on the far side of an AC dipole when
-            the dedicated ACD reconstruction (``acd=``) is not in use. Ignored
-            for ``acd_only`` paths.
+            kick that element imparts. When omitted and ``acd`` carries a
+            ``barrier_s``, that value is used automatically. Ignored for
+            ``acd_only`` paths.
 
     Returns:
         Momentum DataFrame (all BPMs) when *generator* is ``False`` and
@@ -125,6 +124,8 @@ def calculate_pz(
         raise ValueError("AC-dipole reconstruction requires model_tws for state transport")
     if generator and acd is not None and not acd_only:
         raise ValueError("generator=True with an ACDipoleConfig requires acd_only=True")
+    if barrier_s is None and acd is not None:
+        barrier_s = acd.barrier_s
 
     validate_input(data)
     bpm_names = [str(name) for name in data["name"].unique()]
@@ -249,11 +250,7 @@ class ACDipolePzGenerator:
         reverse_meas_tws: bool,
         bpm_names: Collection[str],
     ) -> ACDipolePzGenerator:
-        """Freeze the data side of the pipeline and return a generator.
-
-        The ACD prepare step is run with ``inject_noise=False`` so repeated
-        updates are deterministic.
-        """
+        """Freeze the data side of the pipeline and return a generator."""
         measured = (
             load_measurement(
                 measurement_dir,
@@ -273,8 +270,6 @@ class ACDipolePzGenerator:
             bpm_upstream=acd.bpm_upstream,
             bpm_downstream=acd.bpm_downstream,
             smooth_lambda=acd.smooth_lambda,
-            inject_noise=False,
-            rng=None,
         )
         return cls(
             prepared=prepared,
@@ -292,7 +287,12 @@ class ACDipolePzGenerator:
         """The MAD-NG driver used for state transport (mutate magnets here)."""
         return self._acd.model
 
-    def update(self, model_tws: pd.DataFrame | None = None) -> tfs.TfsDataFrame:
+    def update(
+        self,
+        model_tws: pd.DataFrame | None = None,
+        *,
+        pt: float | None = None,
+    ) -> tfs.TfsDataFrame:
         """Recompute the ACD reconstruction for a new model twiss.
 
         Args:
@@ -300,11 +300,18 @@ class ACDipolePzGenerator:
                 optics columns and ``q1`` / ``q2`` tune headers). When ``None``,
                 a fresh twiss is read back from the driver via
                 ``self.model.run_twiss(observe=0)`` (use after mutating magnets).
+            pt: New MAD-NG ``pt`` for the tracked beam. When given, the driver's
+                energy coordinate is updated before reconstructing, so the
+                marker-state transport and BPM momenta re-track at this energy.
+                The reconstruction reads ``self.model.pt`` live, so no rebuild is
+                needed. When ``None`` the driver's current ``pt`` is kept.
 
         Returns:
             The small 4-point ACD ``TfsDataFrame`` (summary in
             ``attrs["summary"]``). Also stored in :attr:`latest`.
         """
+        if pt is not None:
+            self.model.pt = float(pt)
         active_model_tws = (
             cast("tfs.TfsDataFrame", self.model.run_twiss(observe=0))
             if model_tws is None
@@ -406,8 +413,17 @@ class PzGenerator:
         model_tws: pd.DataFrame | None = None,
         *,
         bpm_names: Collection[str] | None = None,
+        pt: float | None = None,
     ) -> pd.DataFrame:
-        """Recompute momentum for a new model twiss and optional BPM subset."""
+        """Recompute momentum for a new model twiss and optional BPM subset.
+
+        When *pt* is given it overrides the build-time ``pt_override`` for this
+        call (and all subsequent calls), so the reconstruction tracks a new beam
+        energy without rebuilding the generator. When ``None`` the build-time
+        ``pt_override`` is kept.
+        """
+        if pt is not None:
+            self._pt_override = float(pt)
         model_tws = self._model_tws if model_tws is None else model_tws
         optics = resolve_optics(
             model_tws=model_tws,

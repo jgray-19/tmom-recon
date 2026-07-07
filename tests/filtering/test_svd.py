@@ -8,7 +8,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tmom_recon.svd import svd_clean_measurements, weighted_svd_clean_measurements
+from tmom_recon.svd import (
+    known_noise_svd_clean_measurements,
+    svd_clean_measurements,
+    weighted_svd_clean_measurements,
+)
 
 
 class TestSvdCleanMeasurements:
@@ -331,3 +335,72 @@ class TestWeightedSvdCleanMeasurements:
 
         assert x_err_weighted < x_err_unweighted
         assert y_err_weighted < y_err_unweighted
+
+
+class TestKnownNoiseSvdCleanMeasurements:
+    """Tests for variance-informed SVD noise-cut cleaning."""
+
+    def test_known_variance_threshold_selects_signal_modes(self) -> None:
+        rng = np.random.default_rng(456)
+        turns = np.arange(240)
+        bpms = [f"BPM{i}" for i in range(8)]
+        sigma = 0.05
+        clean_rows = []
+        noisy_rows = []
+
+        mode_1 = np.sin(0.07 * turns)
+        mode_2 = np.cos(0.11 * turns)
+        coeff_1 = np.linspace(0.4, 1.3, len(bpms))
+        coeff_2 = np.linspace(-0.8, 0.6, len(bpms))
+
+        for turn in turns:
+            for bpm_index, bpm in enumerate(bpms):
+                x_clean = coeff_1[bpm_index] * mode_1[turn] + coeff_2[bpm_index] * mode_2[turn]
+                y_clean = (
+                    0.7 * coeff_1[bpm_index] * mode_2[turn]
+                    - 0.5 * coeff_2[bpm_index] * mode_1[turn]
+                )
+                clean_rows.append({"turn": int(turn), "name": bpm, "x": x_clean, "y": y_clean})
+                noisy_rows.append(
+                    {
+                        "turn": int(turn),
+                        "name": bpm,
+                        "x": x_clean + rng.normal(0.0, sigma),
+                        "y": y_clean + rng.normal(0.0, sigma),
+                        "var_x": sigma**2,
+                        "var_y": sigma**2,
+                    }
+                )
+
+        clean_df = pd.DataFrame(clean_rows)
+        noisy_df = pd.DataFrame(noisy_rows)
+        cleaned_df = known_noise_svd_clean_measurements(noisy_df, bpm_list=bpms, center=None)
+
+        assert cleaned_df.attrs["svd_rank_x"] == 2
+        assert cleaned_df.attrs["svd_rank_y"] == 2
+        assert cleaned_df.attrs["svd_known_noise_threshold_x"] == pytest.approx(
+            np.sqrt(len(turns)) + np.sqrt(len(bpms))
+        )
+
+        x_error_before = float(np.sqrt(np.mean((noisy_df["x"] - clean_df["x"]) ** 2)))
+        x_error_after = float(np.sqrt(np.mean((cleaned_df["x"] - clean_df["x"]) ** 2)))
+        y_error_before = float(np.sqrt(np.mean((noisy_df["y"] - clean_df["y"]) ** 2)))
+        y_error_after = float(np.sqrt(np.mean((cleaned_df["y"] - clean_df["y"]) ** 2)))
+
+        assert x_error_after < x_error_before
+        assert y_error_after < y_error_before
+
+    def test_rejects_invalid_threshold_scale(self) -> None:
+        meas_df = pd.DataFrame(
+            {
+                "turn": [0],
+                "name": ["BPM1"],
+                "x": [0.1],
+                "y": [0.2],
+                "var_x": [1.0],
+                "var_y": [1.0],
+            }
+        )
+
+        with pytest.raises(ValueError, match="threshold_scale"):
+            known_noise_svd_clean_measurements(meas_df, threshold_scale=0.0)

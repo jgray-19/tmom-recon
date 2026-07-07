@@ -33,6 +33,24 @@ def _gd_optimal_threshold(singular_values: np.ndarray, rows: int, cols: int) -> 
     return max(chosen_rank, 1)
 
 
+def _known_noise_threshold_rank(
+    singular_values: np.ndarray,
+    rows: int,
+    cols: int,
+    threshold_scale: float,
+) -> tuple[int, float]:
+    """Return the rank above the known-noise singular-value edge.
+
+    The caller should pass singular values from a whitened matrix whose noise
+    entries have unit variance. For an independent Gaussian noise matrix, the
+    largest noise singular value concentrates near ``sqrt(rows) + sqrt(cols)``.
+    """
+    threshold = float(threshold_scale) * (np.sqrt(rows) + np.sqrt(cols))
+    chosen_rank = int(np.sum(singular_values > threshold))
+    logger.debug("Known-noise SVD threshold %.6g retained %d modes", threshold, chosen_rank)
+    return chosen_rank, threshold
+
+
 def _fill_small_nans(matrix: np.ndarray, max_gap: int = 5) -> np.ndarray:
     """Interpolate short NaN gaps along each BPM column.
 
@@ -131,46 +149,76 @@ def _compute_centre(
         )
 
 
-def _select_rank(shape: tuple[int, ...], singular_values: np.ndarray, rank: int | str) -> int:
+def _select_rank(
+    shape: tuple[int, ...],
+    singular_values: np.ndarray,
+    rank: int | str,
+    *,
+    known_noise_threshold_scale: float | None = None,
+) -> tuple[int, float | None]:
     """Resolve the requested SVD rank.
 
     Args:
         shape: Shape of the decomposed matrix.
         singular_values: Singular values from the decomposition.
         rank: Integer rank or ``"auto"``.
+        known_noise_threshold_scale: Optional multiplier for the whitened
+            known-noise singular-value edge. When provided, ``rank`` must be
+            ``"known_noise"``.
 
     Returns:
-        Chosen rank.
+        Chosen rank and the known-noise threshold when applicable.
     """
     rows, cols = shape
     logger.debug(
         "SVD completed for %dx%d matrix with %d singular values", rows, cols, len(singular_values)
     )
+    if rank == "known_noise":
+        if known_noise_threshold_scale is None:
+            raise ValueError("known-noise rank selection requires a threshold scale")
+        chosen_rank, threshold = _known_noise_threshold_rank(
+            singular_values, rows, cols, known_noise_threshold_scale
+        )
+        return chosen_rank, threshold
+
     chosen_rank = (
         _gd_optimal_threshold(singular_values, rows, cols) if rank == "auto" else int(rank)
     )
     logger.debug("Chosen rank: %d", chosen_rank)
-    return chosen_rank
+    return chosen_rank, None
 
 
-def _truncated_svd(matrix: np.ndarray, rank: int | str) -> tuple[np.ndarray, int, np.ndarray]:
+def _truncated_svd(
+    matrix: np.ndarray,
+    rank: int | str,
+    *,
+    known_noise_threshold_scale: float | None = None,
+) -> tuple[np.ndarray, int, np.ndarray, float | None]:
     """Reconstruct a matrix from its leading singular modes.
 
     Args:
         matrix: Input matrix to decompose.
         rank: Integer rank or ``"auto"``.
+        known_noise_threshold_scale: Optional multiplier for the whitened
+            known-noise singular-value edge.
 
     Returns:
-        Reconstructed matrix, chosen rank, and full singular value spectrum.
+        Reconstructed matrix, chosen rank, full singular value spectrum, and
+        known-noise threshold when applicable.
     """
     u_matrix, singular_values, vt_matrix = np.linalg.svd(matrix, full_matrices=False)
-    chosen_rank = _select_rank(matrix.shape, singular_values, rank)
+    chosen_rank, threshold = _select_rank(
+        matrix.shape,
+        singular_values,
+        rank,
+        known_noise_threshold_scale=known_noise_threshold_scale,
+    )
     reconstructed = (
         u_matrix[:, :chosen_rank]
         @ np.diag(singular_values[:chosen_rank])
         @ vt_matrix[:chosen_rank, :]
     )
-    return reconstructed, chosen_rank, singular_values
+    return reconstructed, chosen_rank, singular_values, threshold
 
 
 def _prepare_column_scales(
@@ -218,7 +266,8 @@ def _svd_clean_matrix(
     variance_matrix: np.ndarray | None = None,
     variance_name: str = "measurement",
     fix_zero_columns: bool = False,
-) -> tuple[np.ndarray, int, np.ndarray]:
+    known_noise_threshold_scale: float | None = None,
+) -> tuple[np.ndarray, int, np.ndarray, float | None]:
     """Clean one measurement plane with truncated SVD.
 
     Args:
@@ -231,10 +280,16 @@ def _svd_clean_matrix(
             derives one standard deviation per device column, whitens each
             column before applying SVD, and rescales afterwards.
         variance_name: Plane name used in validation messages.
+        known_noise_threshold_scale: Optional multiplier for the whitened
+            known-noise singular-value edge. Requires ``variance_matrix``.
 
     Returns:
-        Cleaned matrix, chosen rank, and full singular value spectrum.
+        Cleaned matrix, chosen rank, full singular value spectrum, and
+        known-noise threshold when applicable.
     """
+    if known_noise_threshold_scale is not None and variance_matrix is None:
+        raise ValueError("known-noise SVD cleaning requires measurement variances")
+
     if not fix_zero_columns:
         # Exact zeros are an OP dead-reading workaround signalling a faulty BPM, not
         # real measurements. Match harpy: drop the whole BPM (column) if any of its
@@ -247,7 +302,9 @@ def _svd_clean_matrix(
     if variance_matrix is None:
         centre_offset = _compute_centre(filled_matrix, centre)
         centred_matrix = np.nan_to_num(filled_matrix - centre_offset, copy=False)
-        reconstructed, chosen_rank, singular_values = _truncated_svd(centred_matrix, rank)
+        reconstructed, chosen_rank, singular_values, threshold = _truncated_svd(
+            centred_matrix, rank
+        )
         cleaned_matrix = reconstructed + centre_offset
     else:
         column_scales = _prepare_column_scales(
@@ -261,11 +318,16 @@ def _svd_clean_matrix(
         centre_offset = _compute_centre(filled_matrix, centre, weights=weights)
         centred_matrix = filled_matrix - centre_offset
         scaled_matrix = np.nan_to_num(centred_matrix / column_scales, copy=False)
-        reconstructed, chosen_rank, singular_values = _truncated_svd(scaled_matrix, rank)
+        svd_rank = "known_noise" if known_noise_threshold_scale is not None else rank
+        reconstructed, chosen_rank, singular_values, threshold = _truncated_svd(
+            scaled_matrix,
+            svd_rank,
+            known_noise_threshold_scale=known_noise_threshold_scale,
+        )
         cleaned_matrix = reconstructed * column_scales + centre_offset
 
     cleaned_matrix[missing_mask] = np.nan
-    return cleaned_matrix, chosen_rank, singular_values
+    return cleaned_matrix, chosen_rank, singular_values, threshold
 
 
 def _finalise_cleaned_frame(
@@ -281,6 +343,8 @@ def _finalise_cleaned_frame(
     singular_values_y: np.ndarray,
     centre: str | None,
     weighted: bool,
+    known_noise_threshold_x: float | None = None,
+    known_noise_threshold_y: float | None = None,
 ) -> pd.DataFrame:
     """Merge cleaned matrices back into the original measurement frame.
 
@@ -296,6 +360,8 @@ def _finalise_cleaned_frame(
         singular_values_y: Full vertical singular spectrum.
         centre: Centring mode used for cleaning.
         weighted: Whether weighted SVD cleaning was used.
+        known_noise_threshold_x: Horizontal known-noise SVD threshold, if used.
+        known_noise_threshold_y: Vertical known-noise SVD threshold, if used.
 
     Returns:
         Original data with cleaned ``x`` and ``y`` columns and SVD metadata in
@@ -321,6 +387,10 @@ def _finalise_cleaned_frame(
     result.attrs["centre"] = centre
     result.attrs["center"] = centre
     result.attrs["svd_weighted"] = weighted
+    if known_noise_threshold_x is not None:
+        result.attrs["svd_known_noise_threshold_x"] = known_noise_threshold_x
+    if known_noise_threshold_y is not None:
+        result.attrs["svd_known_noise_threshold_y"] = known_noise_threshold_y
     return result.reset_index()
 
 
@@ -357,14 +427,14 @@ def svd_clean_measurements(
 
     x_matrix = _pivot_to_matrix(meas_df, "x", turn_range, bpm_list)
     y_matrix = _pivot_to_matrix(meas_df, "y", turn_range, bpm_list)
-    x_cleaned, rank_x, singular_values_x = _svd_clean_matrix(
+    x_cleaned, rank_x, singular_values_x, _ = _svd_clean_matrix(
         x_matrix,
         centre=center,
         rank=rank,
         max_nan_gap=max_nan_gap,
         fix_zero_columns=fix_zero_columns,
     )
-    y_cleaned, rank_y, singular_values_y = _svd_clean_matrix(
+    y_cleaned, rank_y, singular_values_y, _ = _svd_clean_matrix(
         y_matrix,
         centre=center,
         rank=rank,
@@ -434,7 +504,7 @@ def weighted_svd_clean_measurements(
     var_x_matrix = _pivot_to_matrix(meas_df, "var_x", turn_range, bpm_list)
     var_y_matrix = _pivot_to_matrix(meas_df, "var_y", turn_range, bpm_list)
 
-    x_cleaned, rank_x, singular_values_x = _svd_clean_matrix(
+    x_cleaned, rank_x, singular_values_x, _ = _svd_clean_matrix(
         x_matrix,
         centre=center,
         rank=rank,
@@ -443,7 +513,7 @@ def weighted_svd_clean_measurements(
         variance_name="horizontal measurement",
         fix_zero_columns=fix_zero_columns,
     )
-    y_cleaned, rank_y, singular_values_y = _svd_clean_matrix(
+    y_cleaned, rank_y, singular_values_y, _ = _svd_clean_matrix(
         y_matrix,
         centre=center,
         rank=rank,
@@ -466,4 +536,98 @@ def weighted_svd_clean_measurements(
         singular_values_y=singular_values_y,
         centre=center,
         weighted=True,
+    )
+
+
+def known_noise_svd_clean_measurements(
+    meas_df: pd.DataFrame,
+    bpm_list: list[str] | None = None,
+    center: str | None = "bpm",
+    threshold_scale: float = 1.0,
+    max_nan_gap: int = 5,
+    fix_zero_columns: bool = False,
+) -> pd.DataFrame:
+    """Clean BPM measurements with a variance-informed SVD noise cut.
+
+    This is the known-variance counterpart to :func:`weighted_svd_clean_measurements`.
+    It whitens each BPM column by the supplied ``var_x``/``var_y`` values, keeps
+    singular modes above ``threshold_scale * (sqrt(n_turns) + sqrt(n_bpms))``,
+    then rescales back to physical units.
+
+    Args:
+        meas_df: Long-format measurement table containing at least ``turn``,
+            ``name``, ``x``, ``y``, ``var_x``, and ``var_y`` columns.
+        bpm_list: Optional BPM ordering. When omitted, the order from
+            ``meas_df`` is used.
+        center: Centring mode passed to the cleaner. Accepted values are
+            ``"bpm"``, ``"global"``, or ``None``.
+        threshold_scale: Multiplier on the whitened random-matrix noise edge.
+            Values above one are more conservative and cut more modes.
+        max_nan_gap: Largest contiguous missing span to interpolate before
+            decomposition.
+
+    Returns:
+        Copy of the input measurements with cleaned ``x`` and ``y`` values.
+
+    Raises:
+        ValueError: If variance columns are missing or ``threshold_scale`` is
+            not finite and positive.
+    """
+    logger.info("Starting known-noise SVD cleaning of measurements")
+    if not np.isfinite(threshold_scale) or threshold_scale <= 0.0:
+        raise ValueError("threshold_scale must be finite and positive")
+
+    required_columns = {"x", "y", "turn", "var_x", "var_y"}
+    missing_columns = required_columns.difference(meas_df.columns)
+    if missing_columns:
+        missing = ", ".join(sorted(missing_columns))
+        raise ValueError(f"Known-noise SVD cleaning requires columns: {missing}")
+
+    if bpm_list is None:
+        bpm_list = meas_df["name"].unique().tolist()
+
+    turn_range = np.arange(int(meas_df["turn"].min()), int(meas_df["turn"].max()) + 1)
+    logger.debug("Processing %d BPMs over %d turns", len(bpm_list), len(turn_range))
+
+    x_matrix = _pivot_to_matrix(meas_df, "x", turn_range, bpm_list)
+    y_matrix = _pivot_to_matrix(meas_df, "y", turn_range, bpm_list)
+    var_x_matrix = _pivot_to_matrix(meas_df, "var_x", turn_range, bpm_list)
+    var_y_matrix = _pivot_to_matrix(meas_df, "var_y", turn_range, bpm_list)
+
+    x_cleaned, rank_x, singular_values_x, threshold_x = _svd_clean_matrix(
+        x_matrix,
+        centre=center,
+        rank="known_noise",
+        max_nan_gap=max_nan_gap,
+        variance_matrix=var_x_matrix,
+        variance_name="horizontal measurement",
+        fix_zero_columns=fix_zero_columns,
+        known_noise_threshold_scale=threshold_scale,
+    )
+    y_cleaned, rank_y, singular_values_y, threshold_y = _svd_clean_matrix(
+        y_matrix,
+        centre=center,
+        rank="known_noise",
+        max_nan_gap=max_nan_gap,
+        variance_matrix=var_y_matrix,
+        variance_name="vertical measurement",
+        fix_zero_columns=fix_zero_columns,
+        known_noise_threshold_scale=threshold_scale,
+    )
+
+    logger.info("Known-noise SVD cleaning completed successfully")
+    return _finalise_cleaned_frame(
+        meas_df,
+        turn_range,
+        bpm_list,
+        x_cleaned,
+        y_cleaned,
+        rank_x=rank_x,
+        rank_y=rank_y,
+        singular_values_x=singular_values_x,
+        singular_values_y=singular_values_y,
+        centre=center,
+        weighted=True,
+        known_noise_threshold_x=threshold_x,
+        known_noise_threshold_y=threshold_y,
     )

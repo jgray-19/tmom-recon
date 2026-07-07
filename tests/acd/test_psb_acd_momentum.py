@@ -62,7 +62,6 @@ def test_psb_ac_dipole_momentum_reconstruction(psb_acd_setup, noise_std: float) 
         model=model,
         dpx_tune=DRIVEN_TUNES[0],
         dpy_tune=DRIVEN_TUNES[1],
-        inject_noise=False,
     )
 
     assert_acd_momenta_match_truth(
@@ -73,4 +72,5 @@ def test_psb_ac_dipole_momentum_reconstruction(psb_acd_setup, noise_std: float) 
         kick_r2_min=0.999 if clean else 0.99,
         bpm_r2_min=0.999 if clean else 0.99,
         marker_r2_min=0.998,
+        marker_pos_r2_min=0.998,
     )
