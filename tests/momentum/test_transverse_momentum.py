@@ -146,7 +146,15 @@ def _setup_xsuite_simulation(
         columns={"px": "px_true", "py": "py_true", "x": "x_true", "y": "y_true"}
     )
 
-    return tracking_df, truth, tws, xsuite_tws
+    accelerator = LHC(beam=1, sequence_file=sequence_file, kinetic_energy=6800)
+    model_details = ModelDetails(
+        accelerator=accelerator,
+        pt=accelerator.dp2pt(track_delta_p),
+        magnet_strengths=magnet_strengths or None,
+        corrector_knobs_file=corrector_file,
+    )
+
+    return tracking_df, truth, model_details, xsuite_tws
 
 
 @pytest.mark.slow
@@ -261,17 +269,17 @@ local a = seq:replace({{
 
 def _verify_pz_reconstruction(
     tracking_df,
-    truth,
-    model_details,
-    px_nonoise_max,
-    py_nonoise_max,
-    px_noisy_min,
-    px_noisy_max,
-    py_noisy_min,
-    py_noisy_max,
-    px_cleaned_max,
-    py_cleaned_max,
-    rng_seed=42,
+    truth: pd.DataFrame,
+    model_details: ModelDetails,
+    px_nonoise_max: float,
+    py_nonoise_max: float,
+    px_noisy_min: float,
+    px_noisy_max: float,
+    py_noisy_min: float,
+    py_noisy_max: float,
+    px_cleaned_max: float,
+    py_cleaned_max: float,
+    rng_seed: int = 42,
 ):
     """Wrapper around the shared reconstruction assertions."""
     verify_pz_reconstruction(
@@ -292,18 +300,16 @@ def _verify_pz_reconstruction(
 
 
 @pytest.mark.parametrize(
-    "delta_p, do_apply_magnet_perturbations, magnet_seed",
+    "delta_p, do_apply_magnet_perturbations",
     [
         pytest.param(
             2e-4,
             False,
-            None,
             id="orbit_correction_off_momentum",
         ),
         pytest.param(
             0.0,
             True,
-            123,
             id="magnet_perturbations_on_momentum",
         ),
     ],
@@ -312,7 +318,6 @@ def _verify_pz_reconstruction(
 def test_calculate_pz_with_corrections_and_perturbations(
     delta_p,
     do_apply_magnet_perturbations,
-    magnet_seed,
     seq_b1,
     tmp_path,
     xsuite_json_path,
@@ -325,7 +330,7 @@ def test_calculate_pz_with_corrections_and_perturbations(
     """
     # DO NOT EVER INCREASE THESE TOLERANCES, IF THE TESTS START FAILING, FIX THE UNDERLYING ISSUE
     tolerance_values = {
-        (2e-4, False, None): {
+        (2e-4, False): {
             "px_nonoise_max": 1.6e-6,
             "py_nonoise_max": 4e-7,
             "px_noisy_min": 2e-6,
@@ -335,7 +340,7 @@ def test_calculate_pz_with_corrections_and_perturbations(
             "px_cleaned_max": 1.8e-6,
             "py_cleaned_max": 7e-7,
         },
-        (0.0, True, 123): {
+        (0.0, True): {
             "px_nonoise_max": 2e-6,
             "py_nonoise_max": 2.5e-7,
             "px_noisy_min": 2e-6,
@@ -349,21 +354,21 @@ def test_calculate_pz_with_corrections_and_perturbations(
     json_path = xsuite_json_path("lhcb1.seq")
     test_id = f"test_{delta_p}_{do_apply_magnet_perturbations}"
 
-    tracking_df, truth, tws, _ = _setup_xsuite_simulation(
+    tracking_df, truth, model_details, _ = _setup_xsuite_simulation(
         delta_p,
         "all" if do_apply_magnet_perturbations else "",
-        magnet_seed,
+        12,
         json_path,
         seq_b1,
         tmp_path,
         test_id,
     )
 
-    tol_dict = tolerance_values[(delta_p, do_apply_magnet_perturbations, magnet_seed)]
+    tol_dict = tolerance_values[(delta_p, do_apply_magnet_perturbations)]
     _verify_pz_reconstruction(
         tracking_df,
         truth,
-        tws,
+        model_details,
         **tol_dict,
         rng_seed=42,
     )
