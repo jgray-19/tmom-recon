@@ -13,10 +13,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-pytest.importorskip("pymadng_utils")
-pytest.importorskip("xtrack_tools")
-
-from tmom_recon import ACDipoleConfig, ACDipolePzGenerator, calculate_pz
+from tmom_recon import ACDipoleConfig, ACDipolePzGenerator, ModelDetails, calculate_pz
 
 from .acd_test_helpers import AC_DIPOLE_ELEMENT, _ac_dipole_segment_around_element, _get_driver
 
@@ -24,12 +21,17 @@ SEQ_FILE = "lhcb1.seq"
 DRIVEN_TUNES = (0.27, 0.322)
 
 
-def _config(driver, *, bpm_upstream: str, bpm_downstream: str) -> ACDipoleConfig:
+def _model_details(driver, tws) -> ModelDetails:
+    return ModelDetails(
+        accelerator=driver.accelerator,
+        pt=driver.pt,
+    )
+
+
+def _config(*, bpm_upstream: str, bpm_downstream: str) -> ACDipoleConfig:
     return ACDipoleConfig(
         ac_dipole_marker=AC_DIPOLE_ELEMENT,
-        model=driver,
-        dpx_tune=DRIVEN_TUNES[0],
-        dpy_tune=DRIVEN_TUNES[1],
+        driven_tunes=DRIVEN_TUNES,
         bpm_upstream=bpm_upstream,
         bpm_downstream=bpm_downstream,
     )
@@ -50,16 +52,19 @@ def _setup(data_dir, acd_tracking_setup):
 
 @pytest.mark.slow
 def test_generator_update_matches_acd_only(data_dir, acd_tracking_setup) -> None:
-    """gen.update(tws) is identical to a one-shot calculate_pz(acd_only=True)."""
+    """gen.update() is identical to a one-shot calculate_pz(acd_only=True)."""
     tracking_df, tws, driver, bpm_up, bpm_dn = _setup(data_dir, acd_tracking_setup)
-    config = _config(driver, bpm_upstream=bpm_up, bpm_downstream=bpm_dn)
+    model_details = _model_details(driver, tws)
+    config = _config(bpm_upstream=bpm_up, bpm_downstream=bpm_dn)
 
-    generator = calculate_pz(tracking_df, model_tws=tws, acd=config, acd_only=True, generator=True)
+    generator = calculate_pz(
+        tracking_df, model_details=model_details, acd=config, acd_only=True, generator=True
+    )
     assert isinstance(generator, ACDipolePzGenerator)
-    assert generator.model is driver
+    assert generator.model.accelerator is driver.accelerator
 
-    from_generator = generator.update(tws)
-    one_shot = calculate_pz(tracking_df, model_tws=tws, acd=config, acd_only=True)
+    from_generator = generator.update()
+    one_shot = calculate_pz(tracking_df, model_details=model_details, acd=config, acd_only=True)
 
     pd.testing.assert_frame_equal(from_generator, one_shot)
     pd.testing.assert_frame_equal(from_generator.attrs["summary"], one_shot.attrs["summary"])
@@ -70,32 +75,14 @@ def test_generator_update_matches_acd_only(data_dir, acd_tracking_setup) -> None
 def test_generator_repeated_update_is_deterministic(data_dir, acd_tracking_setup) -> None:
     """The frozen data means re-running with the same twiss is bit-for-bit stable."""
     tracking_df, tws, driver, bpm_up, bpm_dn = _setup(data_dir, acd_tracking_setup)
-    config = _config(driver, bpm_upstream=bpm_up, bpm_downstream=bpm_dn)
+    model_details = _model_details(driver, tws)
+    config = _config(bpm_upstream=bpm_up, bpm_downstream=bpm_dn)
 
-    generator = calculate_pz(tracking_df, model_tws=tws, acd=config, acd_only=True, generator=True)
-    first = generator.update(tws)
-    second = generator.update(tws)
+    generator = calculate_pz(
+        tracking_df, model_details=model_details, acd=config, acd_only=True, generator=True
+    )
+    assert isinstance(generator, ACDipolePzGenerator)
+    first = generator.update()
+    second = generator.update()
 
     pd.testing.assert_frame_equal(first, second)
-
-
-@pytest.mark.slow
-def test_generator_tracks_optics_change(data_dir, acd_tracking_setup) -> None:
-    """Updating with new optics changes the result and matches a fresh one-shot."""
-    tracking_df, tws, driver, bpm_up, bpm_dn = _setup(data_dir, acd_tracking_setup)
-    config = _config(driver, bpm_upstream=bpm_up, bpm_downstream=bpm_dn)
-
-    perturbed = tws.copy(deep=True)
-    perturbed["beta11"] = perturbed["beta11"].to_numpy(dtype=float) * 1.05
-    perturbed["beta22"] = perturbed["beta22"].to_numpy(dtype=float) * 0.95
-
-    generator = calculate_pz(tracking_df, model_tws=tws, acd=config, acd_only=True, generator=True)
-    baseline = generator.update(tws)
-    changed = generator.update(perturbed)
-
-    # The optics change must move the reconstructed momenta.
-    assert not baseline["px"].equals(changed["px"])
-
-    # ...and it must equal a fresh one-shot run with the perturbed optics.
-    fresh = calculate_pz(tracking_df, model_tws=perturbed, acd=config, acd_only=True)
-    pd.testing.assert_frame_equal(changed, fresh)

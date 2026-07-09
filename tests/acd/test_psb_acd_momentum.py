@@ -22,9 +22,6 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-pytest.importorskip("pymadng_utils")
-pytest.importorskip("xtrack_tools")
-
 from tests.psb_tracking import ACD_ELEMENT, DRIVEN_TUNES
 from tmom_recon import inject_noise_xy
 from tmom_recon.acd.reconstruction import calculate_ac_dipole_momentum
@@ -62,6 +59,7 @@ def test_psb_ac_dipole_momentum_reconstruction(psb_acd_setup, noise_std: float) 
         model=model,
         dpx_tune=DRIVEN_TUNES[0],
         dpy_tune=DRIVEN_TUNES[1],
+        closed_orbit_tws=tws,
     )
 
     assert_acd_momenta_match_truth(

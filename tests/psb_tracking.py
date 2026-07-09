@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 from pymadng_utils.accelerators import PSB
 from xtrack_tools.acd import run_ac_dipole_tracking_with_particles
 from xtrack_tools.env import create_xsuite_environment
@@ -32,20 +33,89 @@ DRIVEN_TUNES = (0.16, 0.24)
 RAMP_TURNS = 1000
 FLATTOP_TURNS = 1000
 
+# The 16 powered PSB main bending dipoles are each modelled as two half-bends
+# named ``br.bhzN1`` / ``br.bhzN2`` in xsuite (upper-cased in MAD-NG). These are
+# the only powered (non-zero-angle) bends; the ``bi3.bsw*`` injection bumpers have
+# zero nominal field.
+MAIN_BEND_PREFIX = "br.bhz"
+
+
+def _main_bend_specs(line: Any) -> list[tuple[str, float, float]]:
+    """Return ``(name, angle, length)`` for every powered PSB main bend in *line*."""
+    specs: list[tuple[str, float, float]] = []
+    for name in line.element_names:
+        element = line[name]
+        try:
+            angle = float(getattr(element, "angle", 0.0))
+        except (TypeError, ValueError):
+            angle = 0.0
+        if angle == 0.0 or not str(name).lower().startswith(MAIN_BEND_PREFIX):
+            continue
+        specs.append((str(name), angle, float(getattr(element, "length", 0.0))))
+    specs.sort()
+    return specs
+
+
+def _apply_bend_errors_to_line(line: Any, *, rms: float, seed: int) -> dict[str, float]:
+    """Apply a seeded relative dipole field error to every powered main bend.
+
+    A field error scales the dipole field ``k0`` by ``(1 + rel_error)`` while
+    leaving the reference geometry ``h = angle / length`` unchanged — the physical
+    meaning of a 0.08% error in the bends. The PSB main bends are sector bends with
+    ``k0 = from_h`` (so nominally ``k0 == h``); we set ``k0 = h * (1 + rel_error)``.
+
+    Perturbing the native ``k0`` (rather than adding a separate ``knl[0]``
+    multipole) is what makes the xsuite and MAD-NG orbits agree to the codes' floor
+    (~1e-8): a stand-alone dipole multipole inside a *curved* element is transported
+    differently by the two codes (~0.1% orbit disagreement), whereas the native
+    dipole field is handled identically.
+
+    Returns ``{name: k0_after}`` so the *identical* absolute ``k0`` values can be
+    written onto the MAD-NG model.
+    """
+    rng = np.random.default_rng(seed)
+    new_k0: dict[str, float] = {}
+    for name, angle, length in _main_bend_specs(line):
+        k0 = (angle / length) * (1.0 + float(rng.normal(0.0, rms)))
+        line[name].k0 = k0
+        new_k0[name] = k0
+    return new_k0
+
+
+def _apply_bend_errors_to_model(model: ACDipoleMadDriver, new_k0: dict[str, float]) -> None:
+    """Write the same absolute bend ``k0`` values onto the MAD-NG model.
+
+    The MAD-NG main bends share xsuite's geometry (identical ``angle``/``length``)
+    and nominal ``k0 == h``, so writing the exact ``k0`` computed in
+    :func:`_apply_bend_errors_to_line` gives the two codes the same distorted
+    closed orbit (agreeing to ~1e-8 at the BPMs).
+    """
+    for name, k0 in new_k0.items():
+        model.mad.send(f"loaded_sequence['{name.upper()}'].k0 = {k0!r}")
+
 
 def build_psb_tracking_setup(
     data_dir: Path,
     delta_p: float,
     *,
+    driven_tunes: tuple[float, float] = DRIVEN_TUNES,
     ramp_turns: int = RAMP_TURNS,
     flattop_turns: int = FLATTOP_TURNS,
     state_markers: bool = True,
+    bend_error_rms: float = 0.0,
+    bend_error_seed: int = 0,
 ) -> dict[str, Any]:
     """Track one PSB AC-dipole excitation seeded on the ``delta_p`` closed orbit.
 
     Returns a dict with the tracked BPM data (``tracking_df``), the MAD-NG model
     twiss (``tws``), the per-turn truth momenta (``truth``), the MAD-NG ``model``
     and the requested ``delta_p``.
+
+    When ``bend_error_rms > 0`` a seeded relative dipole error of that RMS is added
+    to every powered main bend, in a *matched* way across the xsuite tracking line
+    and the MAD-NG model, so both share the same distorted (dipole-error) closed
+    orbit. The returned ``tws`` then carries that non-zero closed orbit and matches
+    the model, mirroring the real off-orbit PSB measurement.
     """
     delta_p = float(delta_p)
     seq = data_dir / "sequences" / SEQ_FILE
@@ -59,23 +129,29 @@ def build_psb_tracking_setup(
     )
     line = env[SEQ_NAME].copy()
 
-    # Seed the tracked particle on the (off-)momentum closed orbit so the
-    # excitation starts from the correct dispersive coordinates.
-    co = line.twiss(method="4d", delta0=delta_p)
+    bend_k0: dict[str, float] = {}
+    if bend_error_rms > 0.0:
+        bend_k0 = _apply_bend_errors_to_line(line, rms=bend_error_rms, seed=bend_error_seed)
+
+    # Use explicit on- and off-momentum natural tunes: reconstruction optics are
+    # matched off momentum, while the closed-orbit reference is on momentum only
+    # (never including the dispersive orbit).
+    off_momentum_tws = line.twiss(method="4d", delta0=delta_p)
     particle_coords = {
-        "x": [float(co.x[0])],
-        "px": [float(co.px[0])],
-        "y": [float(co.y[0])],
-        "py": [float(co.py[0])],
+        "x": [float(off_momentum_tws.x[0])],
+        "px": [float(off_momentum_tws.px[0])],
+        "y": [float(off_momentum_tws.y[0])],
+        "py": [float(off_momentum_tws.py[0])],
         "delta": [delta_p],
     }
     monitored_line = run_ac_dipole_tracking_with_particles(
         line=line,
         acd_marker=ACD_ELEMENT,
         sequence_name=SEQ_NAME,
+        tws=off_momentum_tws,
         ramp_turns=ramp_turns,
         flattop_turns=flattop_turns,
-        driven_tunes=list(DRIVEN_TUNES),
+        driven_tunes=list(driven_tunes),
         bpm_pattern=BPM_PATTERN,
         particle_coords=particle_coords,
         state_markers=state_markers,
@@ -88,9 +164,32 @@ def build_psb_tracking_setup(
     model = ACDipoleMadDriver(
         accelerator=accelerator, pt=accelerator.dp2pt(delta_p), observed_elements=ACD_ELEMENT
     )
+    if bend_k0:
+        # Give the MAD-NG model the same distorted closed orbit as the tracked line,
+        # then refresh the cached element twiss the closed-orbit check reads.
+        _apply_bend_errors_to_model(model, bend_k0)
+        model.twiss_elements = model.run_twiss(observe=0)
     # coupling=true so the twiss carries the MAD-X betx/alfx columns the dispersive
     # measurement pipeline needs when converting to MAD-X format.
     tws = model.run_twiss(observe=1, coupling=True)
+
+    # The observed twiss handed to the reconstruction must report the *same* closed
+    # orbit as the model's full-element twiss; they are one MAD-NG solution sampled at
+    # different points. Assert it so a twiss/observe regression cannot silently feed a
+    # mismatched orbit into the reconstruction.
+    common = tws.index.intersection(model.twiss_elements.index)
+    for coord in ("x", "px", "y", "py"):
+        max_diff = float(
+            np.abs(
+                tws.loc[common, coord].to_numpy(float)
+                - model.twiss_elements.loc[common, coord].to_numpy(float)
+            ).max()
+        )
+        assert max_diff < 1e-12, (
+            f"observed twiss {coord} disagrees with model.twiss_elements at "
+            f"{len(common)} common rows (max|diff|={max_diff:.3e})"
+        )
+
     truth = get_truth(tracking_df, tws)
     return {
         "tracking_df": tracking_df,
@@ -98,4 +197,5 @@ def build_psb_tracking_setup(
         "truth": truth,
         "model": model,
         "delta_p": delta_p,
+        "bend_k0": bend_k0,
     }

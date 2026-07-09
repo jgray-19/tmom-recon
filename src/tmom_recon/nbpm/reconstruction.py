@@ -9,10 +9,7 @@ import numpy as np
 import pandas as pd
 
 from tmom_recon.acd.integration import (
-    ACDipoleConfig,
-    apply_ac_dipole_bpm_overrides,
     apply_precomputed_ac_dipole_bpm_overrides,
-    run_ac_dipole_reconstruction,
 )
 from tmom_recon.data.config import POSITION_STD_DEV
 from tmom_recon.lattice.core import (
@@ -513,7 +510,6 @@ def calculate_transverse_pz_nbpm(
     min_abs_cos: float = 0.10,
     bad_phase_threshold_rad: float = 2.0 * np.pi * 1.0e-2,
     measurement_variance_floor: float | None = None,
-    ac_dipole_config: ACDipoleConfig | None = None,
 ) -> pd.DataFrame:
     window_radius = max(1, (int(max_bpm_distance) - 1) // 2)
     LOGGER.info(
@@ -543,30 +539,12 @@ def calculate_transverse_pz_nbpm(
     bpm_names = tws_bpm.index.astype(str).tolist()
     twiss_reference = None if twiss_elements is None else _normalise_twiss(twiss_elements)
 
-    acd_result: pd.DataFrame | None = None
-    data_for_acd = data.copy(deep=True)
-    if ac_dipole_config is not None:
-        if acd_kicks is not None:
-            raise ValueError("Provide either acd_kicks or ac_dipole_config to N-BPM, not both")
-        acd_result = run_ac_dipole_reconstruction(data_for_acd, tws, ac_dipole_config)
-        acd_kicks = acd_result
-        if acdipole_element_name is None:
-            acdipole_element_name = str(
-                acd_result.attrs.get("acd_marker", ac_dipole_config.ac_dipole_marker)
-            )
-        if twiss_reference is None:
-            twiss_reference = _normalise_twiss(ac_dipole_config.model.twiss_elements)
-
     data = remove_closed_orbit(data, tws_bpm)
     observation_cube = _build_observation_cube(data, bpm_names)
     kick_by_turn_x: np.ndarray | None = None
     kick_by_turn_y: np.ndarray | None = None
     if acd_kicks is not None:
-        kick_frame = acd_kicks.copy(deep=True)
-        if "row_type" in kick_frame.columns:
-            kick_frame = kick_frame.loc[kick_frame["row_type"].fillna("summary") == "summary"].copy(
-                deep=True
-            )
+        kick_frame = acd_kicks.attrs["summary"].copy(deep=True)
         kick_frame["turn"] = kick_frame["turn"].astype(int)
         kick_col_x = "dpx" if "dpx" in kick_frame.columns else "dpx_fit_rad"
         kick_col_y = "dpy" if "dpy" in kick_frame.columns else "dpy_fit_rad"
@@ -628,25 +606,12 @@ def calculate_transverse_pz_nbpm(
     result["var_px"] = var_px_cube[observation_cube.row_bpm_idx, observation_cube.row_turn_idx]
     result["var_py"] = var_py_cube[observation_cube.row_bpm_idx, observation_cube.row_turn_idx]
     result = restore_closed_orbit_and_reference_momenta(result, tws_bpm)
-    if ac_dipole_config is not None:
-        result = apply_ac_dipole_bpm_overrides(
-            result=result,
-            data=data_for_acd,
-            tws=tws,
-            config=ac_dipole_config,
-            acd_result=acd_result,
-        )
-    elif (
-        acd_kicks is not None
-        and {
-            "px_bpm_upstream_cleaned",
-            "py_bpm_upstream_cleaned",
-            "px_bpm_downstream_cleaned",
-            "py_bpm_downstream_cleaned",
-        }.issubset(acd_kicks.columns)
-        and ("bpm_upstream" in acd_kicks.columns or "bpm_upstream" in acd_kicks.attrs)
-        and ("bpm_downstream" in acd_kicks.columns or "bpm_downstream" in acd_kicks.attrs)
-    ):
+    if acd_kicks is not None and {
+        "px_bpm_upstream_cleaned",
+        "py_bpm_upstream_cleaned",
+        "px_bpm_downstream_cleaned",
+        "py_bpm_downstream_cleaned",
+    }.issubset(acd_kicks.attrs["summary"].columns):
         result = apply_precomputed_ac_dipole_bpm_overrides(
             result=result,
             acd_result=acd_kicks,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pymadng_utils.accelerators import LHC
 
-from .momentum_test_utils import assert_dispersive_measurement_recovers_pt
+from .momentum_test_utils import assert_dispersive_measurement_recovers_pt, model_details_for
 
 
 @pytest.mark.slow
@@ -28,6 +28,10 @@ def test_dispersive_measurement_recovers_pt(
         setup["truth"],
         tmp_path / "dispersive_measurement",
         accelerator.dp2pt(delta_p),
+        # Plain dispersive reconstruction: the model is the nominal (on-momentum)
+        # optics and the beam pt is estimated, so the dispersive orbit is not
+        # double-counted.
+        model_details_for(accelerator, pt=0.0),
         px_rmse_max=3.4e-7,
         py_rmse_max=2.8e-7,
         reverse_meas_tws=False,  # Always working with B4
@@ -51,6 +55,7 @@ def test_offmomentum_psb(tmp_path, delta_p, psb_tracking_setup):
         setup["truth"],
         tmp_path / "dispersive_measurement_psb",
         setup["model"].pt,
+        model_details_for(setup["model"].accelerator, pt=0.0),
         px_rmse_max=9e-7,
         py_rmse_max=9e-7,
     )

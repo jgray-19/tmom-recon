@@ -15,9 +15,10 @@ from omc3.optics_measurements.constants import (
     ORBIT_NAME,
 )
 from omc3.scripts.fake_measurement_from_model import generate as generate_fake_measurement
+from pymadng_utils.accelerators import LHC
 from pymadng_utils.madx import convert_tfs_to_madx
 
-from tmom_recon import calculate_pz, inject_noise_xy
+from tmom_recon import ModelDetails, calculate_pz, inject_noise_xy
 from tmom_recon.svd import svd_clean_measurements
 
 if TYPE_CHECKING:
@@ -33,28 +34,46 @@ def rmse(actual: np.ndarray, predicted: np.ndarray) -> float:
     return float(np.sqrt(np.mean((predicted - actual) ** 2)))
 
 
+def model_details_for(accelerator, *, pt: float) -> ModelDetails:
+    """Build :class:`ModelDetails` with tunes read from a tracking twiss.
+
+    ``calculate_pz`` generates the MAD-NG optics itself; the test only supplies the
+    accelerator, target tunes and momentum.
+    """
+    return ModelDetails(
+        accelerator=accelerator,
+        pt=float(pt),
+    )
+
+
+def lhc_model_details(seq_file: str, data_dir, tws, *, delta_p: float = 0.0) -> ModelDetails:
+    """Build LHC :class:`ModelDetails` matching a tracking setup's optics."""
+    accelerator = LHC(beam=1, sequence_file=data_dir / "sequences" / seq_file, kinetic_energy=6800)
+    return model_details_for(accelerator, pt=accelerator.dp2pt(delta_p))
+
+
 def transverse_calc(
     df: pd.DataFrame,
-    tws: pd.DataFrame | None = None,
+    model_details: ModelDetails,
     *,
     ac_dipole_config=None,
     **kwargs,
 ) -> pd.DataFrame:
     """Model-only reconstruction without dispersion (old transverse behaviour)."""
-    result = calculate_pz(df, model_tws=tws, use_dispersion=False, acd=ac_dipole_config, **kwargs)
+    result = calculate_pz(df, model_details, use_dispersion=False, acd=ac_dipole_config, **kwargs)
     assert isinstance(result, pd.DataFrame), "Result should be a DataFrame"
     return result
 
 
 def dispersive_calc(
     df: pd.DataFrame,
-    tws: pd.DataFrame | None = None,
+    model_details: ModelDetails,
     *,
     ac_dipole_config=None,
     **kwargs,
 ) -> pd.DataFrame:
     """Model-only reconstruction with dispersion (old dispersive behaviour)."""
-    result = calculate_pz(df, model_tws=tws, use_dispersion=True, acd=ac_dipole_config, **kwargs)
+    result = calculate_pz(df, model_details, use_dispersion=True, acd=ac_dipole_config, **kwargs)
     assert isinstance(result, pd.DataFrame), "Result should be a DataFrame"
     return result
 
@@ -111,7 +130,7 @@ def get_truth(tracking_df: pd.DataFrame, tws: pd.DataFrame) -> pd.DataFrame:
 def verify_pz_reconstruction(
     tracking_df,
     truth: pd.DataFrame,
-    tws: pd.DataFrame,
+    model_details: ModelDetails,
     calculate_pz_func: Callable[..., pd.DataFrame],  # Assuming return type is Any; adjust if needed
     px_nonoise_max: float,
     py_nonoise_max: float,
@@ -163,7 +182,7 @@ def verify_pz_reconstruction(
     """
     no_noise_result = calculate_pz_func(
         tracking_df.copy(deep=True),
-        tws=tws,
+        model_details,
         info=True,
     ).rename(columns={"px": "px_calc", "py": "py_calc"})
 
@@ -172,7 +191,7 @@ def verify_pz_reconstruction(
     noisy_df = inject_noise_xy(noisy_df, rng, noise_std=1e-4)
     noisy_result = calculate_pz_func(
         noisy_df,
-        tws=tws,
+        model_details,
         info=True,
     ).rename(columns={"px": "px_calc", "py": "py_calc"})
 
@@ -180,7 +199,7 @@ def verify_pz_reconstruction(
     cleaned_df = svd_clean_measurements(noisy_df)
     cleaned_noise_result = calculate_pz_func(
         cleaned_df,
-        tws=tws,
+        model_details,
         info=True,
     ).rename(columns={"px": "px_calc", "py": "py_calc"})
 
@@ -275,6 +294,7 @@ def assert_dispersive_measurement_recovers_pt(
     truth: pd.DataFrame,
     meas_dir,
     expected_pt: float,
+    model_details: ModelDetails,
     *,
     px_rmse_max: float,
     py_rmse_max: float,
@@ -304,8 +324,8 @@ def assert_dispersive_measurement_recovers_pt(
     # The function handles closed orbit removal and px/py restoration internally.
     result = calculate_pz(
         tracking_df.copy(deep=True),
+        model_details,
         measurement_dir=str(meas_dir),
-        model_tws=ng_tws,
         reverse_meas_tws=reverse_meas_tws,
         info=False,
     )

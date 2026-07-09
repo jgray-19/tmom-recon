@@ -7,6 +7,8 @@ import pytest
 
 from tmom_recon import PzGenerator, calculate_pz
 
+from .momentum_test_utils import lhc_model_details
+
 pytest.importorskip("xtrack_tools")
 
 
@@ -18,19 +20,20 @@ def test_generator_update_matches_calculate_pz_and_accepts_bpm_subset(
     setup = acd_tracking_setup("lhcb1.seq", data_dir, delta_p=0.0, flattop_turns=100)
     tracking_df = setup["tracking_df"]
     tws = setup["tws"]
+    model_details = lhc_model_details("lhcb1.seq", data_dir, tws)
 
-    generator = calculate_pz(tracking_df, model_tws=tws, generator=True, info=False)
+    generator = calculate_pz(tracking_df, model_details, generator=True, info=False)
     assert isinstance(generator, PzGenerator)
 
-    from_generator = generator.update(tws)
-    one_shot = calculate_pz(tracking_df, model_tws=tws, info=False)
+    from_generator = generator.update()
+    one_shot = calculate_pz(tracking_df, model_details, info=False)
     assert isinstance(one_shot, pd.DataFrame)
 
     pd.testing.assert_frame_equal(from_generator, one_shot)
     assert generator.latest is from_generator
 
     bpm_subset = [str(name) for name in tws.index[5:8]]
-    subset = generator.update(tws, bpm_names=bpm_subset)
+    subset = generator.update(bpm_names=bpm_subset)
     expected = one_shot[one_shot["name"].isin(bpm_subset)].reset_index(drop=True)
 
     pd.testing.assert_frame_equal(subset, expected)

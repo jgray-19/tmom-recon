@@ -8,13 +8,20 @@ from __future__ import annotations
 
 from .lattice.core import inject_noise_xy
 from .measurements.twiss_from_measurement import build_twiss_from_measurements
+from .model import ModelDetails
 from .nbpm import calculate_transverse_pz_nbpm
 from .optics import ModelOpticsErrors, ResolvedOptics, resolve_optics
-from .reconstruction import ACDipoleConfig, ACDipolePzGenerator, PzGenerator, calculate_pz
+from .reconstruction import (
+    ACDipoleConfig,
+    ACDipolePzGenerator,
+    PzGenerator,
+    calculate_pz,
+)
 
 __all__ = [
     "ACDipoleConfig",
     "ACDipolePzGenerator",
+    "ModelDetails",
     "ModelOpticsErrors",
     "PzGenerator",
     "ResolvedOptics",

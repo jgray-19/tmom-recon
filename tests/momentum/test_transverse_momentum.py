@@ -2,23 +2,20 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any, cast
+
 import numpy as np
+import pandas as pd
 import pytest
 import tfs
 from pymadng_utils.accelerators import LHC
-
-pytest.importorskip("pymadng_utils")
-pytest.importorskip("xtrack_tools")
-
-from typing import TYPE_CHECKING, Any, cast
-
-import pandas as pd
 from pymadng_utils.mad.accelerator_mad_interface import AcceleratorMadInterface
 from xtrack_tools.acd import run_ac_dipole_tracking_with_particles
 from xtrack_tools.env import create_xsuite_environment, initialise_env
 from xtrack_tools.monitors import process_tracking_data
 
 from tests.acd.acd_test_helpers import AC_DIPOLE_ELEMENT
+from tmom_recon import ModelDetails
 
 from .momentum_test_utils import (  # noqa: E402
     transverse_calc as calculate_pz,
@@ -242,10 +239,14 @@ local a = seq:replace({{
         .loc[lambda df: df.index.str.contains("BPM")]
     )
 
+    model_details = ModelDetails(
+        accelerator=LHC(beam=1, sequence_file=seq_b1, kinetic_energy=6800),
+        pt=0.0,
+    )
     _verify_pz_reconstruction(
         tracking_df,
         truth,
-        tws,
+        model_details,
         px_nonoise_max=3.5e-7,
         py_nonoise_max=2.5e-7,
         px_noisy_min=1e-6,
@@ -261,7 +262,7 @@ local a = seq:replace({{
 def _verify_pz_reconstruction(
     tracking_df,
     truth,
-    tws,
+    model_details,
     px_nonoise_max,
     py_nonoise_max,
     px_noisy_min,
@@ -276,7 +277,7 @@ def _verify_pz_reconstruction(
     verify_pz_reconstruction(
         tracking_df,
         truth,
-        tws,
+        model_details,
         calculate_pz,
         px_nonoise_max,
         py_nonoise_max,

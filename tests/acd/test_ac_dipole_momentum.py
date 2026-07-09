@@ -87,6 +87,7 @@ def test_ac_dipole_momentum_reconstruction(
         model=model,
         dpx_tune=DRIVEN_TUNES[0],
         dpy_tune=DRIVEN_TUNES[1],
+        closed_orbit_tws=tws,
         bpm_upstream=bpm_upstream,
         bpm_downstream=bpm_downstream,
     )

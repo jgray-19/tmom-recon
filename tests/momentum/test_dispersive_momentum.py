@@ -14,7 +14,7 @@ from tests.acd.acd_test_helpers import (
 from tmom_recon import ACDipoleConfig, inject_noise_xy
 from tmom_recon.svd import svd_clean_measurements  # noqa: E402
 
-from .momentum_test_utils import dispersive_calc, rmse, transverse_calc
+from .momentum_test_utils import dispersive_calc, lhc_model_details, rmse, transverse_calc
 
 
 @pytest.mark.slow
@@ -29,18 +29,19 @@ def test_dispersive_momentum_on_momentum(seq_file, data_dir, acd_tracking_setup)
     tracking_df = setup["tracking_df"]
     tws = setup["tws"]
     truth = setup["truth"]
+    model_details = lhc_model_details(seq_file, data_dir, tws)
 
     # Transverse reconstruction (baseline)
     trans_result = transverse_calc(
         tracking_df.copy(deep=True),
-        tws=tws,
+        model_details,
         info=True,
     ).rename(columns={"px": "px_trans", "py": "py_trans"})
 
     # Dispersive reconstruction
     disp_result = dispersive_calc(
         tracking_df.copy(deep=True),
-        tws=tws,
+        model_details,
         info=True,
     ).rename(columns={"px": "px_disp", "py": "py_disp"})
 
@@ -91,6 +92,7 @@ def test_dispersive_momentum_on_momentum_with_ac_dipole_config(
     tracking_df = setup["tracking_df"]
     tws = setup["tws"]
     truth = setup["truth"]
+    model_details = lhc_model_details(seq_file, data_dir, tws)
     seq = data_dir / "sequences" / seq_file
     model = _get_driver(seq, pt=0.0)
     bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
@@ -101,19 +103,17 @@ def test_dispersive_momentum_on_momentum_with_ac_dipole_config(
 
     baseline = dispersive_calc(
         tracking_df.copy(deep=True),
-        tws=tws,
+        model_details,
         info=False,
     ).rename(columns={"px": "px_base", "py": "py_base"})
 
     with_acd = dispersive_calc(
         tracking_df.copy(deep=True),
-        tws=tws,
+        model_details,
         info=False,
         ac_dipole_config=ACDipoleConfig(
             ac_dipole_marker=AC_DIPOLE_ELEMENT,
-            model=model,
-            dpx_tune=0.27,
-            dpy_tune=0.322,
+            driven_tunes=(0.27, 0.322),
             bpm_upstream=bpm_upstream,
             bpm_downstream=bpm_downstream,
         ),
@@ -177,6 +177,7 @@ def test_dispersive_momentum_off_momentum_with_ac_dipole_config(
     tracking_df = setup["tracking_df"]
     tws = setup["tws"]
     truth = setup["truth"]
+    model_details = lhc_model_details(seq_file, data_dir, tws, delta_p=delta_p)
     seq = data_dir / "sequences" / seq_file
     accelerator = LHC(beam=1, sequence_file=seq, kinetic_energy=6800)
     model = _get_driver(seq, pt=accelerator.dp2pt(delta_p))
@@ -188,19 +189,17 @@ def test_dispersive_momentum_off_momentum_with_ac_dipole_config(
 
     baseline = dispersive_calc(
         tracking_df.copy(deep=True),
-        tws=tws,
+        model_details,
         info=False,
     ).rename(columns={"px": "px_base", "py": "py_base"})
 
     with_acd = dispersive_calc(
         tracking_df.copy(deep=True),
-        tws=tws,
+        model_details,
         info=False,
         ac_dipole_config=ACDipoleConfig(
             ac_dipole_marker=AC_DIPOLE_ELEMENT,
-            model=model,
-            dpx_tune=0.27,
-            dpy_tune=0.322,
+            driven_tunes=(0.27, 0.322),
             bpm_upstream=bpm_upstream,
             bpm_downstream=bpm_downstream,
         ),
@@ -265,17 +264,19 @@ def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, acd
     tracking_df = setup["tracking_df"]
     tws = setup["tws"]
     truth = setup["truth"]
+    # Plain reconstruction: nominal (on-momentum) model, pt estimated.
+    model_details = lhc_model_details(seq_file, data_dir, tws)
 
     trans_result = transverse_calc(
         tracking_df.copy(deep=True),
-        tws=tws,
+        model_details,
         info=True,
     ).rename(columns={"px": "px_trans", "py": "py_trans"})
 
     # Clean reconstruction (no noise)
     clean_result = dispersive_calc(
         tracking_df.copy(deep=True),
-        tws=tws,
+        model_details,
         info=True,
     ).rename(columns={"px": "px_clean", "py": "py_clean"})
 
@@ -285,7 +286,7 @@ def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, acd
     noisy_df = inject_noise_xy(noisy_df, rng)
     noisy_result = dispersive_calc(
         noisy_df,
-        tws=tws,
+        model_details,
         info=False,
     ).rename(columns={"px": "px_noisy", "py": "py_noisy"})
 
@@ -293,7 +294,7 @@ def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, acd
     cleaned_df = svd_clean_measurements(noisy_df)
     svd_result = dispersive_calc(
         cleaned_df,
-        tws=tws,
+        model_details,
         info=False,
     ).rename(columns={"px": "px_svd", "py": "py_svd"})
 

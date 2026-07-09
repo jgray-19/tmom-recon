@@ -10,6 +10,7 @@ import numpy as np
 from pymadng_utils.mad import KnobMadInterface
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
     from pymadng_utils.accelerators import Accelerator
@@ -70,6 +71,12 @@ class ACDipoleMadDriver(KnobMadInterface):
         accelerator: Owns sequence loading, beam parameters, and BPM patterns.
         pt: MAD-NG longitudinal energy coordinate for the tracked beam.
         observed_elements: Element name(s) to observe in addition to all BPMs.
+        magnet_strengths: Additional magnet strengths applied after setup via
+            :meth:`apply_strengths`.
+        install_ac_dipole_markers: Insert the before/after AC-dipole monitors and
+            replace the thick AC-dipole element with a thin copy. Required for
+            AC-dipole state transport; leave ``False`` for a plain model that only
+            needs optics and closed orbit.
         tune_knobs_file: Knob file applied for tune corrections.
         corrector_knobs_file: Knob file applied for corrector settings.
         debug: If ``True``, enables MAD-NG debug output.
@@ -84,6 +91,8 @@ class ACDipoleMadDriver(KnobMadInterface):
         accelerator: Accelerator,
         pt: float = 0.0,
         observed_elements: str | list[str] | None = None,
+        magnet_strengths: Mapping[str, float] | None = None,
+        install_ac_dipole_markers: bool = True,
         tune_knobs_file: Path | None = None,
         corrector_knobs_file: Path | None = None,
         debug: bool = False,
@@ -106,18 +115,31 @@ class ACDipoleMadDriver(KnobMadInterface):
         self.observe(self.accelerator.bpm_pattern)
         for element in _normalise_element_list(observed_elements):
             self.observe(element, unobserve_first=False)
-        self.acd_before, self.acd_after = self.insert_acd_markers()
-        # insert_acd_markers installs the before/after monitors and replaces the
-        # AC-dipole element with a thin copy; none of these carry the observed
-        # flag. Without it, track(observe=1) emits no row at them, so transport
-        # to a marker would silently return the source state. Flag them by exact
-        # name (observe_element anchors/escapes, unlike the pattern-based observe).
-        # for element in (self.acd_before, self.acd_after, self.accelerator.ac_dipole_name):
-        self.observe_elements(
-            [self.acd_before, self.acd_after, self.accelerator.ac_dipole_name],
-            unobserve_first=False,
-        )
+        self.acd_before: str | None = None
+        self.acd_after: str | None = None
+        if install_ac_dipole_markers:
+            self.acd_before, self.acd_after = self.insert_acd_markers()
+            self.observe_elements(
+                [self.acd_before, self.acd_after, self.accelerator.ac_dipole_name],
+                unobserve_first=False,
+            )
+        if magnet_strengths is not None:
+            self.apply_strengths(magnet_strengths)
+
         self.twiss_elements = self.run_twiss(observe=0)
+
+    def apply_strengths(self, strengths: Mapping[str, float]) -> None:
+        variables = {str(k): float(v) for k, v in strengths.items() if "." not in str(k)}
+        elements = {str(k): float(v) for k, v in strengths.items() if "." in str(k)}
+        if variables:
+            self.set_madx_variables(**variables)
+        if elements:
+            self.set_variables(
+                **{
+                    f"loaded_sequence['{name.rsplit('.', 1)[0]}'].{name.rsplit('.', 1)[1]}": value
+                    for name, value in elements.items()
+                }
+            )
 
     # ------------------------------------------------------------------
     # Public tracking API

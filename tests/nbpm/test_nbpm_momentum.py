@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from tests.momentum.momentum_test_utils import rmse
+from tests.momentum.momentum_test_utils import lhc_model_details, rmse
 from tmom_recon import (
     calculate_pz,
     calculate_transverse_pz_nbpm,
@@ -68,9 +68,9 @@ def test_nbpm_improves_noisy_local_window_over_two_bpm_baseline(data_dir, tracki
 
     baseline = calculate_pz(
         noisy_df.copy(deep=True),
-        model_tws=tws,
+        lhc_model_details("lhcb1.seq", data_dir, tws),
         info=False,
-    ).rename(columns={"px": "px_base", "py": "py_base"})
+    ).rename(columns={"px": "px_base", "py": "py_base"})  # ty:ignore[possibly-missing-attribute]
 
     nbpm = calculate_transverse_pz_nbpm(
         noisy_df.copy(deep=True),

@@ -15,7 +15,7 @@ from tmom_recon.lattice.core import (
     remove_closed_orbit,
     validate_input,
 )
-from tmom_recon.lattice.names import normalise_measurement_names, normalise_twiss_index
+from tmom_recon.lattice.names import normalise_measurement_names
 from tmom_recon.optics import AMPLITUDE_COLUMNS, DISPERSION_COLUMNS, PHASE_COLUMNS
 
 from .bpm_reconstruction import (
@@ -48,6 +48,13 @@ SUMMARY_ATTR_NAME = "summary"
 # Optics columns taken from a resolved twiss (see tmom_recon.optics.resolve_optics)
 # when one is supplied; error/variance columns are copied alongside.
 ACD_TWISS_OVERRIDE_COLUMNS = frozenset(PHASE_COLUMNS + AMPLITUDE_COLUMNS + DISPERSION_COLUMNS)
+
+
+def _normalise_observed_twiss(tws: pd.DataFrame) -> pd.DataFrame:
+    """Return an observed twiss with upper-case string element names."""
+    out = tws.copy(deep=True)
+    out.index = out.index.astype(str).str.upper()
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -325,8 +332,8 @@ def _assemble_result_dataframe(
     """
     result["dpx_rad"] = fit.dpx_raw
     result["dpy_rad"] = fit.dpy_raw
-    result["dpx_fit_rad"] = fit.dpx_fit.fitted
-    result["dpy_fit_rad"] = fit.dpy_fit.fitted
+    result["dpx_fit_rad"] = fit.dpx_fit.fitted - fit.dpx_fit.offset
+    result["dpy_fit_rad"] = fit.dpy_fit.fitted - fit.dpy_fit.offset
     result["pt_used"] = pt_est
     return result
 
@@ -516,8 +523,8 @@ def prepare_ac_dipole_inputs(
     lattice_names = [str(name) for name in model.twiss_elements.index]
     marker_name = resolve_name(ac_dipole_marker, lattice_names)
     data = normalise_measurement_names(data, lattice_names)
-    tws = normalise_twiss_index(tws, lattice_names)
 
+    tws = _normalise_observed_twiss(tws)
     measured_bpm_names = [str(name) for name in data["name"].unique()]
     available_bpm_names = [name for name in measured_bpm_names if name in set(tws.index)]
     window = select_ac_dipole_bpm_window(
@@ -554,53 +561,6 @@ def prepare_ac_dipole_inputs(
     )
 
 
-def _check_has_zero_closed_orbit(model: ACDipoleMadDriver, tws: pd.DataFrame) -> bool:
-    """Check that the model has either a zero closed orbit or that the closed orbit of the twiss matches the model.
-
-    Args:
-        model: MAD-NG driver providing the lattice element ordering.
-        tws: Twiss DataFrame used to check against the model.
-
-    Raises:
-        ValueError: If the model has a non-zero closed orbit and the twiss
-        does not match the model.
-
-    Returns:
-        True if the model has a zero closed orbit or False if the twiss
-        matches the model and the model has a non-zero closed orbit.
-
-    """
-    coords = ["x", "px", "y", "py"]
-    model_tws = model.twiss_elements.copy()
-
-    common_index = model_tws.index.intersection(tws.index)
-    if common_index.empty:
-        raise ValueError(
-            "The ACDipoleMadDriver model and the provided twiss share no common "
-            "elements; cannot check the closed orbit."
-        )
-    model_tws = model_tws.loc[common_index, coords]
-    tws = tws.loc[common_index, coords]
-
-    model_tws_max = model_tws.abs().max().max()
-    tws_max = tws.abs().max().max()
-    if model_tws_max < 1e-10 and tws_max < 1e-10:
-        return True
-
-    # Take the diff between the model twiss and the user twiss (now sharing an
-    # index) and check whether the closed orbits match.
-    diff = model_tws - tws
-    if diff.abs().max().max() < 2e-9:
-        return False
-
-    raise ValueError(
-        "The ACDipoleMadDriver model or the provided twiss has a non-zero closed orbit.\n"
-        "Also the provided twiss does not match the model.\n"
-        "Please provide a twiss that matches the model, or use a model with a zero closed orbit. "
-        f"Model max closed orbit: {model_tws_max:.3e}, Twiss max closed orbit: {tws_max:.3e}, Diff max: {diff.abs().max().max():.3e}"
-    )
-
-
 def _check_bpm_state_consistency(
     frame: pd.DataFrame, bpm_name: str, predicted_state: ACDipoleStateSeries
 ) -> None:
@@ -625,7 +585,7 @@ def _check_bpm_state_consistency(
     # residual grows to ~3e-5, so 1e-4 leaves headroom while still catching gross
     # inconsistencies.
     tolerance = 1e-4  # Absolute tolerance for state consistency check
-    for coord in ["x", "px", "y", "py"]:
+    for coord in ("x", "px"):
         reconstructed_value = bpm_frame[coord].values
         predicted_value = getattr(predicted_state, coord)
         max_residual = np.max(np.abs(reconstructed_value - predicted_value))
@@ -640,6 +600,8 @@ def reconstruct_from_prepared(
     prepared: PreparedACDInputs,
     tws: pd.DataFrame,
     *,
+    closed_orbit_tws: pd.DataFrame,
+    dispersion_tws: pd.DataFrame | None = None,
     resolved_tws: pd.DataFrame | None = None,
 ) -> tfs.TfsDataFrame:
     """Reconstruct AC-dipole kicks for a given model twiss from prepared inputs.
@@ -653,12 +615,17 @@ def reconstruct_from_prepared(
     Args:
         prepared: Output of :func:`prepare_ac_dipole_inputs`.
         tws: Model twiss for this reconstruction (optics + tune headers ``q1`` /
-            ``q2``). Used for closed-orbit removal and state transport.
+            ``q2``). Used for model optics and state transport.
         resolved_tws: Optional resolved twiss from
             :func:`tmom_recon.optics.resolve_optics`. When provided, its optics,
             uncertainty and variance columns (and tune headers) override the
             model values for BPM-pair selection and the initial ``px``/``py``
             estimate.
+        closed_orbit_tws: Twiss carrying the closed-orbit reference to subtract
+            before the betatron reconstruction and restore before tracking.
+        dispersion_tws: Optional twiss carrying the dispersion columns to use for
+            off-momentum BPM reconstruction. If omitted, ``closed_orbit_tws`` is
+            used.
 
     Returns:
         A :class:`tfs.TfsDataFrame` with four long-form state row groups
@@ -673,15 +640,16 @@ def reconstruct_from_prepared(
     dpy_tune_frac = prepared.dpy_tune_frac
 
     data = prepared.data.copy(deep=True)
-    tws = normalise_twiss_index(tws, prepared.lattice_names)
-    non_zero_tws = _check_has_zero_closed_orbit(model, tws)
+    tws_bpm = _normalise_observed_twiss(tws).reindex(prepared.lattice_bpm_order)
 
-    tws_bpm = tws.reindex(prepared.lattice_bpm_order).copy(deep=True)
-    if non_zero_tws:
-        data = remove_closed_orbit(data, tws)
+    co_bpm = _normalise_observed_twiss(closed_orbit_tws).reindex(prepared.lattice_bpm_order)
+    disp_bpm = _normalise_observed_twiss(
+        dispersion_tws if dispersion_tws is not None else closed_orbit_tws
+    ).reindex(prepared.lattice_bpm_order)
+    data = remove_closed_orbit(data, co_bpm)
 
     if resolved_tws is not None:
-        resolved = normalise_twiss_index(resolved_tws, prepared.lattice_names)
+        resolved = _normalise_observed_twiss(resolved_tws)
         common = tws_bpm.index.intersection(resolved.index)
         override_cols = [
             col
@@ -697,6 +665,11 @@ def reconstruct_from_prepared(
                 if key in resolved_headers:
                     headers[key] = resolved_headers[key]
 
+    common = tws_bpm.index.intersection(disp_bpm.index)
+    for col in DISPERSION_COLUMNS:
+        if col in tws_bpm.columns and col in disp_bpm.columns:
+            tws_bpm.loc[common, col] = disp_bpm.loc[common, col].to_numpy(dtype=float)
+
     bpm_order = [str(name) for name in tws_bpm.index]
     bpm_index = {name: idx for idx, name in enumerate(bpm_order)}
     upstream_frames, downstream_frames = prepare_direct_bpm_reconstruction(
@@ -710,15 +683,14 @@ def reconstruct_from_prepared(
     upstream_side = ACDipoleSide("upstream", "before", +1, upstream_frames)
     downstream_side = ACDipoleSide("downstream", "after", -1, downstream_frames)
 
-    if non_zero_tws:
-        LOGGER.info(
-            "Adding closed orbit back to reconstructed BPM momenta before tracking and fitting ACD"
-        )
-        for side in (upstream_side, downstream_side):
-            for bpm_name, frame in side.bpm_frames.items():
-                for plane in ("x", "px", "y", "py"):
-                    if plane in frame:
-                        frame[plane] += tws_bpm.loc[bpm_name, plane]
+    LOGGER.info(
+        "Adding closed orbit back to reconstructed BPM momenta before tracking and fitting ACD"
+    )
+    for side in (upstream_side, downstream_side):
+        for bpm_name, frame in side.bpm_frames.items():
+            for plane in ("x", "px", "y", "py"):
+                if plane in frame and plane in co_bpm.columns:
+                    frame[plane] += co_bpm.loc[bpm_name, plane]
 
     fit = _fit_ac_dipole_from_frames(
         upstream_side=upstream_side,
@@ -826,6 +798,8 @@ def calculate_ac_dipole_momentum(
     bpm_downstream: str | None = None,
     smooth_lambda: float = 1,
     use_immediate_neighbors_for_bpms: bool = False,
+    closed_orbit_tws: pd.DataFrame,
+    dispersion_tws: pd.DataFrame | None = None,
     resolved_tws: pd.DataFrame | None = None,
 ) -> tfs.TfsDataFrame:
     """Reconstruct AC-dipole kicks and constrained BPM momenta in one pass.
@@ -839,9 +813,7 @@ def calculate_ac_dipole_momentum(
         orig_data: Turn-by-turn BPM measurement DataFrame with columns
             ``name, turn, x, y`` and optionally ``var_x, var_y``.
         tws: Model Twiss DataFrame indexed by element name with optics columns
-            and tune headers ``q1`` / ``q2``. Used for closed-orbit removal,
-            state transport, and as fallback optics when no measurement folder
-            is given.
+            and tune headers ``q1`` / ``q2``.
         ac_dipole_marker: Lattice element name at which the kick is modelled.
         model: MAD-NG driver used for state transport and Jacobian computation.
         dpx_tune: Horizontal driven tune (integer or fractional; fractional part
@@ -860,6 +832,8 @@ def calculate_ac_dipole_momentum(
             uncertainty and variance columns (and tune headers) override the
             model values for BPM-pair selection and the initial ``px``/``py``
             estimate.
+        closed_orbit_tws: Explicit closed-orbit reference.
+        dispersion_tws: Optional explicit dispersion source.
 
     Returns:
         A :class:`tfs.TfsDataFrame` with four long-form state row groups:
@@ -878,7 +852,13 @@ def calculate_ac_dipole_momentum(
         smooth_lambda=smooth_lambda,
         use_immediate_neighbors_for_bpms=use_immediate_neighbors_for_bpms,
     )
-    return reconstruct_from_prepared(prepared, tws, resolved_tws=resolved_tws)
+    return reconstruct_from_prepared(
+        prepared,
+        tws,
+        closed_orbit_tws=closed_orbit_tws,
+        dispersion_tws=dispersion_tws,
+        resolved_tws=resolved_tws,
+    )
 
 
 __all__ = [

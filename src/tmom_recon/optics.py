@@ -84,8 +84,9 @@ class ResolvedOptics:
     Attributes:
         tws: Twiss DataFrame (tfs, lowercase columns/headers) with all optics
             and uncertainty columns, indexed by BPM name in ring order.
-        co: Twiss used for closed-orbit removal/restoration and pt
-            estimation (the model twiss when available, else ``tws``).
+        co: Twiss used for closed-orbit removal/restoration (the explicit
+            closed-orbit twiss when available, else the model twiss, else
+            ``tws``).
         sources: Resolved source per optics category.
         use_dispersion: Whether dispersion is available and enabled.
     """
@@ -274,6 +275,7 @@ def _synthesise_dispersion_errors(tws: pd.DataFrame, errors: ModelOpticsErrors) 
 def resolve_optics(
     *,
     model_tws: tfs.TfsDataFrame | None = None,
+    closed_orbit_tws: tfs.TfsDataFrame | None = None,
     measurement_dir: str | Path | None = None,
     model_optics: Collection[OpticsCategory] = (),
     use_dispersion: bool = True,
@@ -287,6 +289,9 @@ def resolve_optics(
     Args:
         model_tws: Model twiss indexed by element name (lowercase optics
             columns ``beta11/alfa11/mu1/...`` and tune headers ``q1``/``q2``).
+        closed_orbit_tws: Model twiss carrying the closed-orbit reference to
+            subtract and restore. This is deliberately separate from
+            ``model_tws`` so off-momentum optics do not become the closed orbit.
         measurement_dir: omc3 optics measurement directory.
         model_optics: Categories forced to come from the model. Categories not
             listed come from the measurement when available, model otherwise.
@@ -310,6 +315,7 @@ def resolve_optics(
         raise ValueError("At least one of model_tws or measurement_dir must be provided")
     model_categories = _validate_categories(model_optics)
     errors = model_errors if model_errors is not None else ModelOpticsErrors()
+    co_tws = closed_orbit_tws if closed_orbit_tws is not None else model_tws
 
     measured_tws = None
     measurement_dispersion_found = False
@@ -376,7 +382,7 @@ def resolve_optics(
 
     return ResolvedOptics(
         tws=tws,
-        co=model_tws if model_tws is not None else tws,
+        co=co_tws if co_tws is not None else tws,
         sources=sources,
         use_dispersion=dispersion_on,
     )

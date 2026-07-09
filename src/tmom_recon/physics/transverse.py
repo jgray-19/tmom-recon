@@ -137,8 +137,7 @@ def reconstruct_momenta(
         pt_est = float(pt_override)
         LOGGER.info("Using provided pt override: %s", pt_est)
     elif optics.use_dispersion:
-        pt_tws = optics.co if "dx" in optics.co.columns else tws
-        pt_est = estimate_pt_from_model(complete_data, pt_tws, info)
+        pt_est = estimate_pt_from_model(complete_data, tws, info)
     else:
         pt_est = 0.0
 

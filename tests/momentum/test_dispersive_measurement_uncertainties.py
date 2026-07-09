@@ -14,7 +14,7 @@ from pymadng_utils.madx import convert_tfs_to_madx
 from tmom_recon import calculate_pz, inject_noise_xy
 from tmom_recon.svd import svd_clean_measurements
 
-from .momentum_test_utils import add_error_to_orbit_measurement, rmse
+from .momentum_test_utils import add_error_to_orbit_measurement, lhc_model_details, rmse
 
 
 @pytest.mark.slow
@@ -86,8 +86,8 @@ def test_dispersive_measurement_with_uncertainties(
     # Call the measurement-based function with uncertainties
     result = calculate_pz(
         calc_df,
+        lhc_model_details("lhcb1.seq", data_dir, ng_tws),
         measurement_dir=str(temp_dir),
-        model_tws=ng_tws,
         reverse_meas_tws=False,  # Always working with B4
         info=False,
     )

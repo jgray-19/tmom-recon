@@ -235,6 +235,7 @@ def psb_tracking_setup(data_dir: Path):
             "truth": bundle["truth"].copy(deep=True),
             "model": bundle["model"],
             "delta_p": bundle["delta_p"],
+            "bend_k0": dict(bundle["bend_k0"]),
         }
 
     return _get

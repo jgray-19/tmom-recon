@@ -9,19 +9,25 @@ dipole with the ACD kick reconstruction.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from tmom_recon.acd.integration import (
     ACDipoleConfig,
+    ResolvedACDipoleConfig,
     apply_precomputed_ac_dipole_bpm_overrides,
-    ensure_position_variances,
-    run_ac_dipole_reconstruction,
+    resolve_ac_dipole_config,
 )
 from tmom_recon.acd.reconstruction import (
+    calculate_ac_dipole_momentum,
     prepare_ac_dipole_inputs,
     reconstruct_from_prepared,
 )
 from tmom_recon.lattice.core import validate_input
+from tmom_recon.model import (
+    ModelDetails,
+    ResolvedModel,
+    resolve_model_details,
+)
 from tmom_recon.optics import (
     LoadedMeasurement,
     ModelOpticsErrors,
@@ -32,7 +38,7 @@ from tmom_recon.optics import (
 from tmom_recon.physics.transverse import reconstruct_momenta
 
 if TYPE_CHECKING:  # pragma: no cover - typing helpers only
-    from collections.abc import Collection
+    from collections.abc import Collection, Mapping
     from pathlib import Path
 
     import pandas as pd
@@ -46,6 +52,7 @@ LOGGER = logging.getLogger(__name__)
 __all__ = [
     "ACDipoleConfig",
     "ACDipolePzGenerator",
+    "ModelDetails",
     "ModelOpticsErrors",
     "PzGenerator",
     "calculate_pz",
@@ -54,8 +61,8 @@ __all__ = [
 
 def calculate_pz(
     data: pd.DataFrame,
+    model_details: ModelDetails,
     *,
-    model_tws: pd.DataFrame | None = None,
     measurement_dir: str | Path | None = None,
     model_optics: Collection[OpticsCategory] = (),
     use_dispersion: bool = True,
@@ -70,17 +77,16 @@ def calculate_pz(
 ) -> pd.DataFrame | PzGenerator | ACDipolePzGenerator:
     """Reconstruct transverse momenta at every BPM from turn-by-turn data.
 
-    Optics are sourced per category (``phase``, ``amplitude`` = beta/alpha,
-    ``dispersion``): categories listed in *model_optics* come from
-    *model_tws*; everything else comes from *measurement_dir* when given,
-    model otherwise. Uncertainties are propagated automatically — measured
-    errors where the measurement is used, rough *model_errors* where the
-    model is used.
+    The model optics are always generated from *model_details*. The user never
+    provides a twiss to this entry point. When *measurement_dir* is supplied,
+    measured optics can override selected categories, but the model-side optics
+    and closed-orbit references are still generated here.
 
     Args:
         data: Turn-by-turn BPM data with columns ``name, turn, x, y`` and
             position variances ``var_x, var_y``.
-        model_tws: Model twiss indexed by element name with tune headers.
+        model_details: Accelerator, tunes, momentum and optional strengths used
+            to generate the MAD-NG model optics.
         measurement_dir: omc3 optics measurement directory.
         model_optics: Optics categories forced to come from the model.
         use_dispersion: If ``False``, run a pure transverse reconstruction
@@ -115,13 +121,11 @@ def calculate_pz(
         ``attrs["acd_result"]``.
 
     Raises:
-        ValueError: If no optics source is given, a source request cannot be
+        ValueError: If *model_details* is missing, a source request cannot be
             satisfied, or *acd_only* is set without *acd*.
     """
     if acd_only and acd is None:
         raise ValueError("acd_only requires an ACDipoleConfig via acd=")
-    if acd is not None and model_tws is None:
-        raise ValueError("AC-dipole reconstruction requires model_tws for state transport")
     if generator and acd is not None and not acd_only:
         raise ValueError("generator=True with an ACDipoleConfig requires acd_only=True")
     if barrier_s is None and acd is not None:
@@ -129,14 +133,20 @@ def calculate_pz(
 
     validate_input(data)
     bpm_names = [str(name) for name in data["name"].unique()]
+    if acd is not None:
+        resolved_acd = resolve_ac_dipole_config(model_details, acd)
+        model_tws = resolved_acd.optics_tws
+        closed_orbit_tws = resolved_acd.closed_orbit_tws
+    else:
+        resolved_model = resolve_model_details(model_details)
+        model_tws = resolved_model.optics_tws
+        closed_orbit_tws = resolved_model.closed_orbit_tws
 
     if generator and acd_only:
         assert acd is not None
-        assert model_tws is not None
         return ACDipolePzGenerator._build(
             data=data,
-            model_tws=model_tws,
-            acd=acd,
+            resolved_acd=resolved_acd,
             measurement_dir=measurement_dir,
             model_optics=tuple(model_optics),
             use_dispersion=use_dispersion,
@@ -148,7 +158,7 @@ def calculate_pz(
     if generator:
         return PzGenerator._build(
             data=data,
-            model_tws=model_tws,
+            resolved_model=resolved_model,
             measurement_dir=measurement_dir,
             model_optics=tuple(model_optics),
             use_dispersion=use_dispersion,
@@ -162,6 +172,7 @@ def calculate_pz(
 
     optics = resolve_optics(
         model_tws=model_tws,
+        closed_orbit_tws=closed_orbit_tws,
         measurement_dir=measurement_dir,
         model_optics=model_optics,
         use_dispersion=use_dispersion,
@@ -170,10 +181,30 @@ def calculate_pz(
         bpm_names=bpm_names,
     )
 
+    if acd is not None:
+        data_for_acd = data.copy(deep=True)
+        if "var_x" not in data_for_acd.columns:
+            data_for_acd["var_x"] = 1.0
+        if "var_y" not in data_for_acd.columns:
+            data_for_acd["var_y"] = 1.0
+        acd_result = calculate_ac_dipole_momentum(
+            data_for_acd,
+            resolved_acd.optics_tws,
+            ac_dipole_marker=resolved_acd.config.ac_dipole_marker,
+            model=resolved_acd.model,
+            dpx_tune=resolved_acd.config.driven_tunes[0],
+            dpy_tune=resolved_acd.config.driven_tunes[1],
+            bpm_upstream=resolved_acd.config.bpm_upstream,
+            bpm_downstream=resolved_acd.config.bpm_downstream,
+            smooth_lambda=resolved_acd.config.smooth_lambda,
+            closed_orbit_tws=resolved_acd.closed_orbit_tws,
+            dispersion_tws=resolved_acd.tracking_tws,
+            resolved_tws=optics.tws,
+        )
+
     if acd_only:
         assert acd is not None
-        assert model_tws is not None
-        return run_ac_dipole_reconstruction(data, model_tws, acd, resolved_tws=optics.tws)
+        return acd_result
 
     result = reconstruct_momenta(
         data,
@@ -184,30 +215,19 @@ def calculate_pz(
     )
 
     if acd is not None:
-        assert model_tws is not None
-        acd_result = run_ac_dipole_reconstruction(data, model_tws, acd, resolved_tws=optics.tws)
-        result = apply_precomputed_ac_dipole_bpm_overrides(
-            result=result, acd_result=acd_result, config=acd
-        )
+        result = apply_precomputed_ac_dipole_bpm_overrides(result=result, acd_result=acd_result)
         result.attrs["acd_result"] = acd_result
 
     return result
 
 
 class ACDipolePzGenerator:
-    """Fast repeated AC-dipole reconstruction for a fixed dataset, varying optics.
+    """Fast repeated AC-dipole reconstruction for a fixed dataset.
 
     Built by ``calculate_pz(..., acd_only=True, generator=True)``. The
-    measurement data and the BPM-window selection are frozen at
-    construction; each :meth:`update` only re-runs the optics-dependent part of
-    the pipeline for a new model twiss, returning the small 4-point ACD frame.
-
-    The MAD-NG driver (``self.model``) may have its magnets changed between
-    updates — transport is re-tracked each time, so results stay correct. To
-    drive an optics optimiser / live monitor: mutate the magnets on
-    ``generator.model``, then call ``generator.update()`` (the new twiss is read
-    back from the driver) or ``generator.update(model_tws)`` with an explicit
-    twiss.
+    measurement data, generated optics, generated closed orbit and BPM-window
+    selection are frozen at construction; each :meth:`update` re-runs the
+    reconstruction with those generated model inputs.
 
     Attributes:
         latest: The most recent :meth:`update` result, or ``None`` before the
@@ -218,7 +238,7 @@ class ACDipolePzGenerator:
         self,
         *,
         prepared: PreparedACDInputs,
-        acd: ACDipoleConfig,
+        resolved_acd: ResolvedACDipoleConfig,
         measured: LoadedMeasurement | None,
         model_optics: Collection[OpticsCategory],
         use_dispersion: bool,
@@ -227,7 +247,10 @@ class ACDipolePzGenerator:
         bpm_names: Collection[str],
     ) -> None:
         self._prepared = prepared
-        self._acd = acd
+        self._resolved_acd = resolved_acd
+        self._optics_tws = resolved_acd.optics_tws
+        self._tracking_tws = resolved_acd.tracking_tws
+        self._closed_orbit_tws = resolved_acd.closed_orbit_tws
         self._measured = measured
         self._model_optics = tuple(model_optics)
         self._use_dispersion = use_dispersion
@@ -241,8 +264,7 @@ class ACDipolePzGenerator:
         cls,
         *,
         data: pd.DataFrame,
-        model_tws: tfs.TfsDataFrame,
-        acd: ACDipoleConfig,
+        resolved_acd: ResolvedACDipoleConfig,
         measurement_dir: str | Path | None,
         model_optics: Collection[OpticsCategory],
         use_dispersion: bool,
@@ -251,6 +273,7 @@ class ACDipolePzGenerator:
         bpm_names: Collection[str],
     ) -> ACDipolePzGenerator:
         """Freeze the data side of the pipeline and return a generator."""
+        acd = resolved_acd.config
         measured = (
             load_measurement(
                 measurement_dir,
@@ -260,20 +283,25 @@ class ACDipolePzGenerator:
             if measurement_dir is not None
             else None
         )
+        data_for_acd = data.copy(deep=True)
+        if "var_x" not in data_for_acd.columns:
+            data_for_acd["var_x"] = 1.0
+        if "var_y" not in data_for_acd.columns:
+            data_for_acd["var_y"] = 1.0
         prepared = prepare_ac_dipole_inputs(
-            ensure_position_variances(data),
-            model_tws,
+            data_for_acd,
+            resolved_acd.optics_tws,
             ac_dipole_marker=acd.ac_dipole_marker,
-            model=acd.model,
-            dpx_tune=acd.dpx_tune,
-            dpy_tune=acd.dpy_tune,
+            model=resolved_acd.model,
+            dpx_tune=acd.driven_tunes[0],
+            dpy_tune=acd.driven_tunes[1],
             bpm_upstream=acd.bpm_upstream,
             bpm_downstream=acd.bpm_downstream,
             smooth_lambda=acd.smooth_lambda,
         )
         return cls(
             prepared=prepared,
-            acd=acd,
+            resolved_acd=resolved_acd,
             measured=measured,
             model_optics=model_optics,
             use_dispersion=use_dispersion,
@@ -285,21 +313,23 @@ class ACDipolePzGenerator:
     @property
     def model(self) -> ACDipoleMadDriver:
         """The MAD-NG driver used for state transport (mutate magnets here)."""
-        return self._acd.model
+        return self._resolved_acd.model
 
     def update(
         self,
-        model_tws: pd.DataFrame | None = None,
         *,
+        magnet_strengths: Mapping[str, float] | None = None,
         pt: float | None = None,
     ) -> tfs.TfsDataFrame:
-        """Recompute the ACD reconstruction for a new model twiss.
+        """Recompute the ACD reconstruction from the generated model inputs.
 
         Args:
-            model_tws: New model optics (indexed by element name, lowercase
-                optics columns and ``q1`` / ``q2`` tune headers). When ``None``,
-                a fresh twiss is read back from the driver via
-                ``self.model.run_twiss(observe=0)`` (use after mutating magnets).
+            magnet_strengths: New magnet strengths to apply to the persisted
+                driver before reconstructing. When given, the driven optics and
+                the undriven ``dp/p=0`` closed-orbit reference are regenerated
+                from the mutated model (see
+                :meth:`ACDipoleMadDriver.apply_strengths`). Tunes are *not*
+                re-matched, so the strength change is observed directly.
             pt: New MAD-NG ``pt`` for the tracked beam. When given, the driver's
                 energy coordinate is updated before reconstructing, so the
                 marker-state transport and BPM momenta re-track at this energy.
@@ -312,13 +342,19 @@ class ACDipolePzGenerator:
         """
         if pt is not None:
             self.model.pt = float(pt)
-        active_model_tws = (
-            cast("tfs.TfsDataFrame", self.model.run_twiss(observe=0))
-            if model_tws is None
-            else model_tws
-        )
+        deltap = self.model.accelerator.pt2dp(self.model.pt)
+        if magnet_strengths is not None:
+            # Transport (undriven) and optics (driven) are separate models; both
+            # must see the new strengths.
+            self.model.apply_strengths(magnet_strengths)
+            optics_model = self._resolved_acd.optics_model
+            optics_model.apply_strengths(magnet_strengths)
+            self._closed_orbit_tws = self.model.run_twiss(observe=1, coupling=True, deltap=0.0)
+            self._tracking_tws = self.model.run_twiss(observe=1, coupling=True, deltap=deltap)
+            self._optics_tws = optics_model.run_twiss(observe=1, coupling=True, deltap=deltap)
         optics = resolve_optics(
-            model_tws=active_model_tws,
+            model_tws=self._optics_tws,
+            closed_orbit_tws=self._closed_orbit_tws,
             measured=self._measured,
             model_optics=self._model_optics,
             use_dispersion=self._use_dispersion,
@@ -327,7 +363,11 @@ class ACDipolePzGenerator:
             bpm_names=self._bpm_names,
         )
         self.latest = reconstruct_from_prepared(
-            self._prepared, active_model_tws, resolved_tws=optics.tws
+            self._prepared,
+            self._optics_tws,
+            resolved_tws=optics.tws,
+            closed_orbit_tws=self._closed_orbit_tws,
+            dispersion_tws=self._tracking_tws,
         )
         return self.latest
 
@@ -335,17 +375,17 @@ class ACDipolePzGenerator:
 class PzGenerator:
     """Fast repeated all-BPM momentum reconstruction for fixed turn data.
 
-    Built by ``calculate_pz(..., generator=True)``. The tracking data and any
-    measurement directory are cached at construction; each :meth:`update`
-    resolves optics for the supplied model twiss and reconstructs either all
-    BPMs or the requested subset.
+    Built by ``calculate_pz(..., generator=True)``. The tracking data, generated
+    model optics and any measurement directory are cached at construction; each
+    :meth:`update` resolves optics from those generated inputs and reconstructs
+    either all BPMs or the requested subset.
     """
 
     def __init__(
         self,
         *,
         data: pd.DataFrame,
-        model_tws: tfs.TfsDataFrame | None,
+        resolved_model: ResolvedModel,
         measured: LoadedMeasurement | None,
         model_optics: Collection[OpticsCategory],
         use_dispersion: bool,
@@ -357,7 +397,9 @@ class PzGenerator:
         bpm_names: Collection[str],
     ) -> None:
         self._data = data.copy(deep=True)
-        self._model_tws = model_tws
+        self._resolved_model = resolved_model
+        self._optics_tws = self._resolved_model.optics_tws
+        self._closed_orbit_tws = self._resolved_model.closed_orbit_tws
         self._measured = measured
         self._model_optics = tuple(model_optics)
         self._use_dispersion = use_dispersion
@@ -374,7 +416,7 @@ class PzGenerator:
         cls,
         *,
         data: pd.DataFrame,
-        model_tws: tfs.TfsDataFrame | None,
+        resolved_model: ResolvedModel,
         measurement_dir: str | Path | None,
         model_optics: Collection[OpticsCategory],
         use_dispersion: bool,
@@ -396,7 +438,7 @@ class PzGenerator:
         )
         return cls(
             data=data,
-            model_tws=model_tws,
+            resolved_model=resolved_model,
             measured=measured,
             model_optics=model_optics,
             use_dispersion=use_dispersion,
@@ -408,25 +450,38 @@ class PzGenerator:
             bpm_names=bpm_names,
         )
 
+    @property
+    def model(self) -> ACDipoleMadDriver:
+        """The MAD-NG driver used to generate the optics (mutate magnets here)."""
+        return self._resolved_model.model
+
     def update(
         self,
-        model_tws: pd.DataFrame | None = None,
         *,
+        magnet_strengths: Mapping[str, float] | None = None,
         bpm_names: Collection[str] | None = None,
         pt: float | None = None,
     ) -> pd.DataFrame:
-        """Recompute momentum for a new model twiss and optional BPM subset.
+        """Recompute momentum for an optional BPM subset.
 
-        When *pt* is given it overrides the build-time ``pt_override`` for this
-        call (and all subsequent calls), so the reconstruction tracks a new beam
-        energy without rebuilding the generator. When ``None`` the build-time
-        ``pt_override`` is kept.
+        When *magnet_strengths* is given they are applied to the persisted driver
+        and the model optics are regenerated (a new closed orbit and new optics),
+        without re-matching the tunes. When *pt* is given it overrides the
+        build-time ``pt_override`` for this call (and all subsequent calls), so
+        the reconstruction tracks a new beam energy without rebuilding the
+        generator. When ``None`` the build-time ``pt_override`` is kept.
         """
         if pt is not None:
             self._pt_override = float(pt)
-        model_tws = self._model_tws if model_tws is None else model_tws
+        if magnet_strengths is not None:
+            model = self._resolved_model.model
+            model.apply_strengths(magnet_strengths)
+            deltap = model.accelerator.pt2dp(model.pt)
+            self._closed_orbit_tws = model.run_twiss(observe=1, coupling=True, deltap=0.0)
+            self._optics_tws = model.run_twiss(observe=1, coupling=True, deltap=deltap)
         optics = resolve_optics(
-            model_tws=model_tws,
+            model_tws=self._optics_tws,
+            closed_orbit_tws=self._closed_orbit_tws,
             measured=self._measured,
             model_optics=self._model_optics,
             use_dispersion=self._use_dispersion,
