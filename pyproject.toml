@@ -24,6 +24,7 @@ dependencies = [
 test = [
     "pytest",
     "pytest-cov",
+    "pytest-xdist",
     "cpymad",
 ]
 dev = [
@@ -46,7 +47,7 @@ source = ["src/tmom_recon"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-norecursedirs = ["tests/data"]
+norecursedirs = ["tests/data", "tests/experimental", "tests/kalman"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]
@@ -55,6 +56,7 @@ addopts = [
     "--log-level=INFO",
     "--log-cli-format=%(levelname)s %(name)s %(message)s",
     "-s",
+    "-n4",
 ]
 
 [tool.ruff]
@@ -66,6 +68,7 @@ exclude = [
   "_build",
   "build",
   "dist",
+  "tests/kalman",
 ]
 
 target-version = "py311"

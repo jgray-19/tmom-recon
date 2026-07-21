@@ -15,6 +15,7 @@ from tmom_recon.model import (
     ModelDetails,
     resolve_model_details,
 )
+from tmom_recon.physics.closed_orbit import parse_plane_spec
 
 from .madng_driver import ACDipoleMadDriver
 from .reconstruction import SUMMARY_ATTR_NAME
@@ -41,6 +42,22 @@ class ACDipoleConfig:
     bpm_downstream: str | None = None
     smooth_lambda: float = 1.0
     barrier_s: float | None = None
+    data_mean_closed_orbit_planes: str | None = None
+    """Planes in which to take the closed orbit from the measured data rather
+    than from the model twiss.
+
+    ``None`` (the default) or ``""`` takes the closed orbit directly from the
+    ``dp/p=0`` model twiss in both planes. Pass ``"x"``, ``"y"``, ``"xy"`` or
+    ``"yx"`` (case-insensitive, any order) to instead use the per-BPM turn-mean
+    of the data in those planes — valid because an AC-dipole driven oscillation
+    has ~zero mean over the flat-top turns. That orbit is removed before the
+    betatron reconstruction and restored afterwards, its angle inferred from its
+    own positions with the model optics. Use this when the model twiss does not
+    represent the machine closed orbit in that plane."""
+
+    def __post_init__(self) -> None:
+        # Fail on a bad plane spec at construction, not deep inside a MAD-NG run.
+        parse_plane_spec(self.data_mean_closed_orbit_planes, field="data_mean_closed_orbit_planes")
 
 
 @dataclass(frozen=True)
@@ -87,23 +104,24 @@ def resolve_ac_dipole_config(
         tune_knobs_file=model_details.tune_knobs_file,
         corrector_knobs_file=model_details.corrector_knobs_file,
     )
-    deltap = tracking_model.accelerator.pt2dp(tracking_model.pt)
     tracking_model.twiss_elements = tracking_model.run_twiss(observe=0)
     closed_orbit_tws = tracking_model.run_twiss(observe=1, coupling=True, deltap=0.0)
-    tracking_tws = tracking_model.run_twiss(observe=1, coupling=True, deltap=deltap)
+    tracking_tws = tracking_model.run_twiss(observe=1, coupling=True, pt=tracking_model.pt)
 
     optics = resolve_model_details(
         model_details,
         observed_elements=config.ac_dipole_marker,
         install_ac_dipole_markers=True,
     )
-    natural = optics.model.run_twiss(observe=0, coupling=True, deltap=deltap)
+    natural = optics.model.run_twiss(observe=0, coupling=True, pt=optics.model.pt)
+    # install_ac_dipole takes an explicit deltap (its own API, not a twiss
+    # closed-orbit search), so the pt -> dp/p conversion is still required here.
     optics.model.install_ac_dipole(
         nat_tunes=(float(natural.headers["q1"] % 1.0), float(natural.headers["q2"] % 1.0)),
         drv_tunes=(float(config.driven_tunes[0]), float(config.driven_tunes[1])),
-        deltap=deltap,
+        deltap=optics.model.accelerator.pt2dp(optics.model.pt),
     )
-    optics_tws = optics.model.run_twiss(observe=1, coupling=True, deltap=deltap)
+    optics_tws = optics.model.run_twiss(observe=1, coupling=True, pt=optics.model.pt)
     return ResolvedACDipoleConfig(
         config=config,
         model=tracking_model,

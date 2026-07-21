@@ -200,6 +200,7 @@ def calculate_pz(
             closed_orbit_tws=resolved_acd.closed_orbit_tws,
             dispersion_tws=resolved_acd.tracking_tws,
             resolved_tws=optics.tws,
+            data_mean_closed_orbit_planes=acd.data_mean_closed_orbit_planes,
         )
 
     if acd_only:
@@ -342,7 +343,6 @@ class ACDipolePzGenerator:
         """
         if pt is not None:
             self.model.pt = float(pt)
-        deltap = self.model.accelerator.pt2dp(self.model.pt)
         if magnet_strengths is not None:
             # Transport (undriven) and optics (driven) are separate models; both
             # must see the new strengths.
@@ -350,8 +350,8 @@ class ACDipolePzGenerator:
             optics_model = self._resolved_acd.optics_model
             optics_model.apply_strengths(magnet_strengths)
             self._closed_orbit_tws = self.model.run_twiss(observe=1, coupling=True, deltap=0.0)
-            self._tracking_tws = self.model.run_twiss(observe=1, coupling=True, deltap=deltap)
-            self._optics_tws = optics_model.run_twiss(observe=1, coupling=True, deltap=deltap)
+            self._tracking_tws = self.model.run_twiss(observe=1, coupling=True, pt=self.model.pt)
+            self._optics_tws = optics_model.run_twiss(observe=1, coupling=True, pt=self.model.pt)
         optics = resolve_optics(
             model_tws=self._optics_tws,
             closed_orbit_tws=self._closed_orbit_tws,
@@ -368,6 +368,7 @@ class ACDipolePzGenerator:
             resolved_tws=optics.tws,
             closed_orbit_tws=self._closed_orbit_tws,
             dispersion_tws=self._tracking_tws,
+            data_mean_closed_orbit_planes=self._resolved_acd.config.data_mean_closed_orbit_planes,
         )
         return self.latest
 
@@ -476,9 +477,8 @@ class PzGenerator:
         if magnet_strengths is not None:
             model = self._resolved_model.model
             model.apply_strengths(magnet_strengths)
-            deltap = model.accelerator.pt2dp(model.pt)
             self._closed_orbit_tws = model.run_twiss(observe=1, coupling=True, deltap=0.0)
-            self._optics_tws = model.run_twiss(observe=1, coupling=True, deltap=deltap)
+            self._optics_tws = model.run_twiss(observe=1, coupling=True, pt=model.pt)
         optics = resolve_optics(
             model_tws=self._optics_tws,
             closed_orbit_tws=self._closed_orbit_tws,

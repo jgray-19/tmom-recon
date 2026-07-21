@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -127,11 +126,20 @@ def _sequence_name_from_file(seq: Path) -> str:
     return seq.stem
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def tracking_artifacts(xsuite_json_path):
-    """Return cached ACD tracking artifacts for a sequence."""
+    """Return ACD tracking artifacts for a sequence, built once per test module.
 
-    @cache
+    Module-scoped (rather than a session-wide cache) so at most one test file's
+    worth of tracking bundles is resident at a time: each holds a full xtrack
+    Line (~240 MB), and this machine does not have the memory to keep several
+    modules' worth alive simultaneously. Within a module, repeated calls with
+    identical arguments share the same dict entry so tests in the same file
+    still only pay the tracking cost once.
+    """
+
+    _cache: dict[tuple, TrackingArtifacts] = {}
+
     def _load(
         seq_path: str,
         json_path: str,
@@ -142,6 +150,18 @@ def tracking_artifacts(xsuite_json_path):
         flattop_turns: int,
         state_markers: bool,
     ):
+        key = (
+            seq_path,
+            json_path,
+            acd_marker,
+            sequence_name,
+            delta_p,
+            ramp_turns,
+            flattop_turns,
+            state_markers,
+        )
+        if key in _cache:
+            return _cache[key]
         tracking_df, tws_xsuite, baseline_line = run_acd_track(
             sequence_file=Path(seq_path),
             acd_marker=acd_marker,
@@ -154,7 +174,7 @@ def tracking_artifacts(xsuite_json_path):
         )
         tws = xsuite_to_ngtws(tws_xsuite)
         truth = get_truth(tracking_df, tws)
-        return TrackingArtifacts(
+        artifacts = TrackingArtifacts(
             tracking_df=tracking_df,
             tws=tws,
             truth=truth,
@@ -162,6 +182,8 @@ def tracking_artifacts(xsuite_json_path):
             baseline_line=baseline_line,
             baseline_twiss_4d=baseline_line.twiss(method="4d"),
         )
+        _cache[key] = artifacts
+        return artifacts
 
     def _get(
         seq_file: str,
@@ -191,7 +213,7 @@ def tracking_artifacts(xsuite_json_path):
     return _get
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def tracking_setup(tracking_artifacts):
     """Compatibility wrapper returning tracking data, twiss, and truth."""
 
@@ -214,18 +236,27 @@ def tracking_setup(tracking_artifacts):
     return _get
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def psb_tracking_setup(data_dir: Path):
-    """Cached PSB ring-3 AC-dipole tracking setup, keyed by ``delta_p``.
+    """PSB ring-3 AC-dipole tracking setup, keyed by ``delta_p``, built once per module.
 
     Returns a factory ``_get(delta_p)`` yielding a fresh copy of the bundle built by
     :func:`tests.psb_tracking.build_psb_tracking_setup` (``tracking_df``, ``tws``,
     ``truth``, ``model`` and ``delta_p``).
+
+    Module-scoped so only one test file's worth of PSB tracking bundles is resident
+    at a time; within a module, repeated calls for the same ``delta_p`` reuse the
+    same dict entry instead of re-tracking.
     """
 
-    @cache
+    _cache: dict[float, dict[str, Any]] = {}
+
     def _load(delta_p: float):
-        return build_psb_tracking_setup(data_dir, delta_p)
+        if delta_p in _cache:
+            return _cache[delta_p]
+        bundle = build_psb_tracking_setup(data_dir, delta_p)
+        _cache[delta_p] = bundle
+        return bundle
 
     def _get(delta_p: float = 0.0):
         bundle = _load(float(delta_p))
@@ -241,7 +272,7 @@ def psb_tracking_setup(data_dir: Path):
     return _get
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def acd_tracking_setup(tracking_artifacts):
     """Compatibility wrapper exposing the richer tracking artifact bundle."""
 

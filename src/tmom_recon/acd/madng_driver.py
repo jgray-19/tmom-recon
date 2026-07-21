@@ -129,17 +129,17 @@ class ACDipoleMadDriver(KnobMadInterface):
         self.twiss_elements = self.run_twiss(observe=0)
 
     def apply_strengths(self, strengths: Mapping[str, float]) -> None:
-        variables = {str(k): float(v) for k, v in strengths.items() if "." not in str(k)}
-        elements = {str(k): float(v) for k, v in strengths.items() if "." in str(k)}
-        if variables:
-            self.set_madx_variables(**variables)
-        if elements:
-            self.set_variables(
-                **{
-                    f"loaded_sequence['{name.rsplit('.', 1)[0]}'].{name.rsplit('.', 1)[1]}": value
-                    for name, value in elements.items()
-                }
-            )
+        """Apply magnet-strength knobs to the loaded sequence.
+
+        Delegates to the tested pymadng-utils
+        :meth:`AcceleratorMadInterface.set_magnet_strengths`, which folds
+        integrated multipole knobs (``<element>.dk0l``/``dk1l``/``dk2l`` == delta
+        of ``k*L``) into the element field through the deferred ``dknl`` table so
+        they actually move the closed orbit / TWISS. Previously this set a raw
+        ``element.dk0l`` attribute that the MAD-NG field never reads, silently
+        no-op'ing every fixed-bend knob.
+        """
+        self.set_magnet_strengths(strengths)
 
     # ------------------------------------------------------------------
     # Public tracking API

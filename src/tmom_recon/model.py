@@ -80,9 +80,8 @@ def resolve_model_details(
         tune_knobs_file=details.tune_knobs_file,
         corrector_knobs_file=details.corrector_knobs_file,
     )
-    deltap = model.accelerator.pt2dp(model.pt)
     closed_orbit_tws = model.run_twiss(observe=1, coupling=True, deltap=0.0)
-    optics_tws = model.run_twiss(observe=1, coupling=True, deltap=deltap)
+    optics_tws = model.run_twiss(observe=1, coupling=True, pt=model.pt)
     return ResolvedModel(model=model, optics_tws=optics_tws, closed_orbit_tws=closed_orbit_tws)
 
 

@@ -15,6 +15,10 @@ import numpy as np
 from pymadng_utils.accelerators import PSB
 from xtrack_tools.acd import run_ac_dipole_tracking_with_particles
 from xtrack_tools.env import create_xsuite_environment
+from xtrack_tools.errors import (
+    apply_relative_bend_field_errors,
+    apply_vertical_quad_misalignment,
+)
 from xtrack_tools.monitors import process_tracking_data
 
 from tests.momentum.momentum_test_utils import get_truth
@@ -38,48 +42,8 @@ FLATTOP_TURNS = 1000
 # the only powered (non-zero-angle) bends; the ``bi3.bsw*`` injection bumpers have
 # zero nominal field.
 MAIN_BEND_PREFIX = "br.bhz"
-
-
-def _main_bend_specs(line: Any) -> list[tuple[str, float, float]]:
-    """Return ``(name, angle, length)`` for every powered PSB main bend in *line*."""
-    specs: list[tuple[str, float, float]] = []
-    for name in line.element_names:
-        element = line[name]
-        try:
-            angle = float(getattr(element, "angle", 0.0))
-        except (TypeError, ValueError):
-            angle = 0.0
-        if angle == 0.0 or not str(name).lower().startswith(MAIN_BEND_PREFIX):
-            continue
-        specs.append((str(name), angle, float(getattr(element, "length", 0.0))))
-    specs.sort()
-    return specs
-
-
-def _apply_bend_errors_to_line(line: Any, *, rms: float, seed: int) -> dict[str, float]:
-    """Apply a seeded relative dipole field error to every powered main bend.
-
-    A field error scales the dipole field ``k0`` by ``(1 + rel_error)`` while
-    leaving the reference geometry ``h = angle / length`` unchanged — the physical
-    meaning of a 0.08% error in the bends. The PSB main bends are sector bends with
-    ``k0 = from_h`` (so nominally ``k0 == h``); we set ``k0 = h * (1 + rel_error)``.
-
-    Perturbing the native ``k0`` (rather than adding a separate ``knl[0]``
-    multipole) is what makes the xsuite and MAD-NG orbits agree to the codes' floor
-    (~1e-8): a stand-alone dipole multipole inside a *curved* element is transported
-    differently by the two codes (~0.1% orbit disagreement), whereas the native
-    dipole field is handled identically.
-
-    Returns ``{name: k0_after}`` so the *identical* absolute ``k0`` values can be
-    written onto the MAD-NG model.
-    """
-    rng = np.random.default_rng(seed)
-    new_k0: dict[str, float] = {}
-    for name, angle, length in _main_bend_specs(line):
-        k0 = (angle / length) * (1.0 + float(rng.normal(0.0, rms)))
-        line[name].k0 = k0
-        new_k0[name] = k0
-    return new_k0
+# PSB ring quadrupoles are ``br.qde*`` / ``br.qfo*``.
+QUAD_PREFIX = "br.q"
 
 
 def _apply_bend_errors_to_model(model: ACDipoleMadDriver, new_k0: dict[str, float]) -> None:
@@ -104,6 +68,9 @@ def build_psb_tracking_setup(
     state_markers: bool = True,
     bend_error_rms: float = 0.0,
     bend_error_seed: int = 0,
+    apply_bend_errors_to_model: bool = True,
+    quad_misalign_y_rms: float = 0.0,
+    quad_misalign_seed: int = 0,
 ) -> dict[str, Any]:
     """Track one PSB AC-dipole excitation seeded on the ``delta_p`` closed orbit.
 
@@ -112,10 +79,17 @@ def build_psb_tracking_setup(
     and the requested ``delta_p``.
 
     When ``bend_error_rms > 0`` a seeded relative dipole error of that RMS is added
-    to every powered main bend, in a *matched* way across the xsuite tracking line
-    and the MAD-NG model, so both share the same distorted (dipole-error) closed
-    orbit. The returned ``tws`` then carries that non-zero closed orbit and matches
-    the model, mirroring the real off-orbit PSB measurement.
+    to the xsuite tracking line's powered main bends. If
+    ``apply_bend_errors_to_model`` (the default), the *same* absolute ``k0`` values
+    are also written onto the MAD-NG model so both share the same distorted
+    (dipole-error) closed orbit and the returned ``tws`` matches the model. Set it
+    ``False`` to distort only the tracked data while the model stays nominal — a
+    "twiss on zero" scenario where the model twiss does not represent the machine
+    closed orbit.
+
+    When ``quad_misalign_y_rms > 0`` a seeded vertical misalignment of that RMS
+    (metres) is applied to the tracking line's quadrupoles only, distorting the
+    vertical closed orbit of the data while the MAD-NG model stays nominal.
     """
     delta_p = float(delta_p)
     seq = data_dir / "sequences" / SEQ_FILE
@@ -131,7 +105,13 @@ def build_psb_tracking_setup(
 
     bend_k0: dict[str, float] = {}
     if bend_error_rms > 0.0:
-        bend_k0 = _apply_bend_errors_to_line(line, rms=bend_error_rms, seed=bend_error_seed)
+        bend_k0 = apply_relative_bend_field_errors(
+            line, rms=bend_error_rms, seed=bend_error_seed, name_prefix=MAIN_BEND_PREFIX
+        )
+    if quad_misalign_y_rms > 0.0:
+        apply_vertical_quad_misalignment(
+            line, rms=quad_misalign_y_rms, seed=quad_misalign_seed, name_prefix=QUAD_PREFIX
+        )
 
     # Use explicit on- and off-momentum natural tunes: reconstruction optics are
     # matched off momentum, while the closed-orbit reference is on momentum only
@@ -164,7 +144,7 @@ def build_psb_tracking_setup(
     model = ACDipoleMadDriver(
         accelerator=accelerator, pt=accelerator.dp2pt(delta_p), observed_elements=ACD_ELEMENT
     )
-    if bend_k0:
+    if bend_k0 and apply_bend_errors_to_model:
         # Give the MAD-NG model the same distorted closed orbit as the tracked line,
         # then refresh the cached element twiss the closed-orbit check reads.
         _apply_bend_errors_to_model(model, bend_k0)
