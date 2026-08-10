@@ -60,7 +60,7 @@ ACD_DRIVEN_TUNES = (0.18, DRIVEN_TUNES[1])
     "delta_p",
     [
         pytest.param(0.0, id="on_momentum"),
-        pytest.param(3.0e-3, id="off_momentum"),
+        pytest.param(8.0e-3, id="off_momentum"),
     ],
 )
 def test_psb_acd_reconstruction_with_dipole_closed_orbit(delta_p, data_dir) -> None:

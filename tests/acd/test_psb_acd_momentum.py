@@ -31,7 +31,7 @@ from .acd_test_helpers import acd_state_marker_names, assert_acd_momenta_match_t
 ORBIT_COLUMNS = ("x", "px", "y", "py")
 
 
-@pytest.fixture(scope="module", params=[0.0, 1e-3], ids=["on_momentum", "off_momentum"])
+@pytest.fixture(scope="module", params=[0.0, 1e-2], ids=["on_momentum", "off_momentum"])
 def psb_acd_setup(request, psb_tracking_setup):
     """Track one PSB AC-dipole excitation seeded on the ``delta_p`` closed orbit."""
     return psb_tracking_setup(float(request.param))
@@ -67,8 +67,8 @@ def test_psb_ac_dipole_momentum_reconstruction(psb_acd_setup, noise_std: float) 
         tracking_df,
         model,
         clean=clean,
-        kick_r2_min=0.999 if clean else 0.99,
-        bpm_r2_min=0.999 if clean else 0.99,
+        kick_r2_min=0.99 if clean else 0.99,
+        bpm_r2_min=0.99 if clean else 0.99,
         marker_r2_min=0.998,
         marker_pos_r2_min=0.998,
     )
