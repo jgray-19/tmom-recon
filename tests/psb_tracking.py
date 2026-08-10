@@ -9,6 +9,7 @@ tests share a single, cacheable implementation.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -27,6 +28,8 @@ from tmom_recon.acd.madng_driver import ACDipoleMadDriver
 if TYPE_CHECKING:
     from pathlib import Path
 
+LOGGER = logging.getLogger(__name__)
+
 RING = 3
 SEQ_FILE = "psb3_saved.seq"
 SEQ_NAME = f"psb{RING}"
@@ -44,6 +47,30 @@ FLATTOP_TURNS = 1000
 MAIN_BEND_PREFIX = "br.bhz"
 # PSB ring quadrupoles are ``br.qde*`` / ``br.qfo*``.
 QUAD_PREFIX = "br.q"
+# Chromaticity sextupoles, thin multipoles carrying their strength in ``knl[2]``.
+# All zero in the saved sequence, matching the no-multipole PSB campaign.
+SEXTUPOLE_PREFIX = "br3.xno"
+
+
+def _power_sextupoles(line, k2l: float) -> int:
+    """Set ``knl[2] = k2l`` on every chromaticity sextupole of *line*.
+
+    Applied to the xsuite tracking line only — the MAD-NG reconstruction model is
+    left unpowered. That asymmetry is deliberate for the feed-down
+    characterisation in [tests/acd/test_psb_dynamic_part_acd.py], which compares
+    two *tracked* runs against each other and never involves the model.
+    """
+    count = 0
+    for name in line.element_names:
+        if not name.lower().startswith(SEXTUPOLE_PREFIX):
+            continue
+        element = line[name]
+        knl = getattr(element, "knl", None)
+        if knl is None or len(knl) <= 2:
+            continue
+        knl[2] = k2l
+        count += 1
+    return count
 
 
 def _apply_bend_errors_to_model(model: ACDipoleMadDriver, new_k0: dict[str, float]) -> None:
@@ -71,6 +98,7 @@ def build_psb_tracking_setup(
     apply_bend_errors_to_model: bool = True,
     quad_misalign_y_rms: float = 0.0,
     quad_misalign_seed: int = 0,
+    sextupole_k2l: float = 0.0,
 ) -> dict[str, Any]:
     """Track one PSB AC-dipole excitation seeded on the ``delta_p`` closed orbit.
 
@@ -90,6 +118,14 @@ def build_psb_tracking_setup(
     When ``quad_misalign_y_rms > 0`` a seeded vertical misalignment of that RMS
     (metres) is applied to the tracking line's quadrupoles only, distorting the
     vertical closed orbit of the data while the MAD-NG model stays nominal.
+
+    ``sextupole_k2l`` powers the chromaticity sextupoles in the *tracking line
+    only* (the model stays unpowered). The saved PSB sequence has them all at
+    zero, matching the no-multipole campaign; powering them makes the lattice
+    non-linear, so a static closed orbit feeds down into the driven optics. Used
+    by the feed-down characterisation in
+    [tests/acd/test_psb_dynamic_part_acd.py], which compares two tracked runs
+    against each other rather than against the model.
     """
     delta_p = float(delta_p)
     seq = data_dir / "sequences" / SEQ_FILE
@@ -104,6 +140,9 @@ def build_psb_tracking_setup(
     line = env[SEQ_NAME].copy()
 
     bend_k0: dict[str, float] = {}
+    if sextupole_k2l != 0.0:
+        powered = _power_sextupoles(line, sextupole_k2l)
+        LOGGER.info("Powered %d chromaticity sextupoles to k2l=%.3e", powered, sextupole_k2l)
     if bend_error_rms > 0.0:
         bend_k0 = apply_relative_bend_field_errors(
             line, rms=bend_error_rms, seed=bend_error_seed, name_prefix=MAIN_BEND_PREFIX
