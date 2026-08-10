@@ -822,6 +822,7 @@ def reconstruct_from_prepared(
     dispersion_tws: pd.DataFrame | None = None,
     resolved_tws: pd.DataFrame | None = None,
     data_mean_closed_orbit_planes: str | tuple[str, ...] | None = None,
+    dispersive_closed_orbit: bool = False,
 ) -> tfs.TfsDataFrame:
     """Reconstruct AC-dipole kicks for a given model twiss from prepared inputs.
 
@@ -852,6 +853,15 @@ def reconstruct_from_prepared(
             reconstruction and restored afterwards, with its angle inferred from
             its own positions. Default takes the closed orbit from the twiss in
             both planes.
+        dispersive_closed_orbit: Whether ``closed_orbit_tws`` already carries the
+            *dispersive* closed orbit, i.e. the orbit MAD-NG solves at the
+            model's ``pt`` rather than the ``dp/p=0`` orbit. When ``True`` the
+            first-order ``pt * D`` dispersion correction is skipped in the
+            betatron stage, because subtracting the exact orbit already leaves
+            pure betatron motion; ``model.pt`` still drives MAD-NG transport.
+            When ``False`` (the default) the closed orbit is the on-momentum one
+            and the dispersive orbit is modelled as ``pt * D``, which is only
+            first-order correct and degrades as ``pt`` grows.
 
     Returns:
         A :class:`tfs.TfsDataFrame` with four long-form state row groups
@@ -868,6 +878,14 @@ def reconstruct_from_prepared(
     data = prepared.data.copy(deep=True)
     tws_bpm = _normalise_observed_twiss(tws).reindex(prepared.lattice_bpm_order)
 
+    # ``pt`` enters twice with different meanings. It always seeds MAD-NG
+    # transport (``model.pt``), but in the betatron stage it is only the
+    # coefficient of the *first-order* dispersive orbit ``pt * D``. When the
+    # closed-orbit reference already carries the exact dispersive orbit, that
+    # first-order model must not be applied on top of it, so the betatron stage
+    # sees ``pt = 0`` and works in pure betatron coordinates.
+    betatron_pt = 0.0 if dispersive_closed_orbit else model.pt
+
     co_bpm = _normalise_observed_twiss(closed_orbit_tws).reindex(prepared.lattice_bpm_order)
     disp_bpm = _normalise_observed_twiss(
         dispersion_tws if dispersion_tws is not None else closed_orbit_tws
@@ -882,7 +900,7 @@ def reconstruct_from_prepared(
     override_planes = parse_plane_spec(
         data_mean_closed_orbit_planes, field="data_mean_closed_orbit_planes"
     )
-    mean_co = _data_mean_closed_orbit(data, prepared.lattice_bpm_order, disp_bpm, model.pt)
+    mean_co = _data_mean_closed_orbit(data, prepared.lattice_bpm_order, disp_bpm, betatron_pt)
     warn_on_closed_orbit_mismatch(
         co_bpm,
         mean_co,
@@ -938,7 +956,7 @@ def reconstruct_from_prepared(
         tws_bpm,
         window=window,
         bpm_index=bpm_index,
-        pt_est=model.pt,
+        pt_est=betatron_pt,
         use_immediate_neighbors=prepared.use_immediate_neighbors,
     )
     upstream_side = ACDipoleSide("upstream", "before", +1, upstream_frames)
@@ -1067,6 +1085,7 @@ def calculate_ac_dipole_momentum(
     dispersion_tws: pd.DataFrame | None = None,
     resolved_tws: pd.DataFrame | None = None,
     data_mean_closed_orbit_planes: str | tuple[str, ...] | None = None,
+    dispersive_closed_orbit: bool = False,
 ) -> tfs.TfsDataFrame:
     """Reconstruct AC-dipole kicks and constrained BPM momenta in one pass.
 
@@ -1103,6 +1122,9 @@ def calculate_ac_dipole_momentum(
         data_mean_closed_orbit_planes: Planes (``"x"``, ``"y"``, ``"xy"``,
             ``"yx"``, or ``None``) in which the closed orbit is taken from the
             per-BPM data mean instead of ``closed_orbit_tws``.
+        dispersive_closed_orbit: Whether ``closed_orbit_tws`` already carries the
+            dispersive (off-momentum) closed orbit, so the first-order ``pt * D``
+            correction is skipped. See :func:`reconstruct_from_prepared`.
 
     Returns:
         A :class:`tfs.TfsDataFrame` with four long-form state row groups:
@@ -1128,6 +1150,7 @@ def calculate_ac_dipole_momentum(
         dispersion_tws=dispersion_tws,
         resolved_tws=resolved_tws,
         data_mean_closed_orbit_planes=data_mean_closed_orbit_planes,
+        dispersive_closed_orbit=dispersive_closed_orbit,
     )
 
 

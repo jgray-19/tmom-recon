@@ -51,6 +51,21 @@ class ACDipoleConfig:
     own positions with the model optics. Use this when the model twiss does not
     represent the machine closed orbit in that plane."""
 
+    dispersive_closed_orbit: bool = False
+    """Whether to reference the *dispersive* closed orbit instead of ``dp/p=0``.
+
+    ``False`` (the default) takes the closed orbit from the ``dp/p=0`` twiss and
+    models the dispersive orbit as ``pt * D``. That is first-order correct only:
+    the neglected ``pt**2 * D2`` term is a constant per-BPM offset that grows
+    quadratically with ``pt``, and magnet errors amplify it further (the error
+    orbit feeds down through the quadrupoles, so the error and dispersive orbits
+    do not superpose).
+
+    ``True`` instead references ``tracking_tws`` — the orbit MAD-NG solves at the
+    model's ``pt``, exact to all orders and including any magnet errors carried
+    by the model — and skips the ``pt * D`` correction. Prefer it whenever the
+    model represents the machine; it matters above ``|dp/p| ~ 1e-3``."""
+
     def __post_init__(self) -> None:
         # Fail on a bad plane spec at construction, not deep inside a MAD-NG run.
         parse_plane_spec(self.data_mean_closed_orbit_planes, field="data_mean_closed_orbit_planes")

@@ -197,10 +197,15 @@ def calculate_pz(
             bpm_upstream=resolved_acd.config.bpm_upstream,
             bpm_downstream=resolved_acd.config.bpm_downstream,
             smooth_lambda=resolved_acd.config.smooth_lambda,
-            closed_orbit_tws=resolved_acd.closed_orbit_tws,
+            closed_orbit_tws=(
+                resolved_acd.tracking_tws
+                if acd.dispersive_closed_orbit
+                else resolved_acd.closed_orbit_tws
+            ),
             dispersion_tws=resolved_acd.tracking_tws,
             resolved_tws=optics.tws,
             data_mean_closed_orbit_planes=acd.data_mean_closed_orbit_planes,
+            dispersive_closed_orbit=acd.dispersive_closed_orbit,
         )
 
     if acd_only:
@@ -366,9 +371,14 @@ class ACDipolePzGenerator:
             self._prepared,
             self._optics_tws,
             resolved_tws=optics.tws,
-            closed_orbit_tws=self._closed_orbit_tws,
+            closed_orbit_tws=(
+                self._tracking_tws
+                if self._resolved_acd.config.dispersive_closed_orbit
+                else self._closed_orbit_tws
+            ),
             dispersion_tws=self._tracking_tws,
             data_mean_closed_orbit_planes=self._resolved_acd.config.data_mean_closed_orbit_planes,
+            dispersive_closed_orbit=self._resolved_acd.config.dispersive_closed_orbit,
         )
         return self.latest
 
