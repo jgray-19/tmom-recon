@@ -29,6 +29,15 @@ be a data/model mismatch — it isolates a bug in the reconstruction's closed-or
 handling in ``reconstruct_from_prepared``. If this test fails at that check, that is
 the signal to debug the CO handling there.
 
+Both a dipole *field* error and a quadrupole *gradient* error are applied, again
+matched between the tracking line and the model. The gradient error does not kick
+the orbit by itself; it perturbs beta, tune and dispersion, so the distorted orbit
+samples the perturbed gradients off-axis. That is what makes the error orbit and
+the dispersive orbit non-separable — measured on this setup, ``CO(err, 0) +
+CO(0, dp)`` differs from ``CO(err, dp)`` by ~6e-4 in ``x``, far above the 1e-4
+consistency tolerance — so no scheme that adds an error-orbit term to a dispersion
+term can be correct here.
+
 The test is parametrised over ``delta_p``:
 
 * ``delta_p == 0``: a pure *dipole-error* closed orbit (orbit distortion at
@@ -38,6 +47,21 @@ The test is parametrised over ``delta_p``:
   off-momentum). This reproduces a separate ``x`` failure at
   ``_check_bpm_state_consistency`` (max|residual| ~3e-4) that the on-momentum case
   does not, isolating the dispersive branch of the closed-orbit handling.
+
+and over the two ways ``pt`` can enter the closed-orbit reference
+(``ACDipoleConfig.dispersive_closed_orbit``):
+
+* ``linear``: the ``dp/p=0`` twiss closed orbit plus a first-order ``pt * D``
+  dispersive orbit. Correct only to first order — the neglected ``pt**2 * D2``
+  term is a constant per-BPM offset, so the reconstructed momenta keep their
+  shape but acquire a bias, which is why it shows up as a mildly degraded R^2
+  rather than as noise. Off momentum this is expected to fail, and is marked
+  ``xfail(strict=True)`` so that fixing it is noticed rather than silently
+  absorbed.
+* ``exact``: the closed orbit MAD-NG solves at the model's ``pt``, exact to all
+  orders and carrying the magnet errors the model knows about, with the
+  ``pt * D`` correction switched off. Required to hold to the same strict
+  thresholds on and off momentum.
 """
 
 from __future__ import annotations
@@ -52,31 +76,59 @@ from .acd_test_helpers import acd_state_marker_names, assert_acd_momenta_match_t
 # 0.08% relative bend error, matching the orbit scale seen in the real measurement.
 BEND_ERROR_RMS = 8e-4
 BEND_ERROR_SEED = 7
+# 0.1% relative quadrupole gradient error: perturbs the optics (beta beating,
+# tune, dispersion) without kicking the orbit directly.
+QUAD_ERROR_RMS = 1e-3
+QUAD_ERROR_SEED = 11
 ACD_DRIVEN_TUNES = (0.18, DRIVEN_TUNES[1])
+OFF_MOMENTUM_DELTA_P = 8.0e-3
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize(
-    "delta_p",
+    ("delta_p", "dispersive_closed_orbit"),
     [
-        pytest.param(0.0, id="on_momentum"),
-        pytest.param(8.0e-3, id="off_momentum"),
+        pytest.param(0.0, False, id="on_momentum-linear"),
+        pytest.param(0.0, True, id="on_momentum-exact"),
+        pytest.param(
+            OFF_MOMENTUM_DELTA_P,
+            False,
+            id="off_momentum-linear",
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason=(
+                    "First-order pt*D dispersive orbit: the neglected pt**2*D2 term is a "
+                    "constant per-BPM offset (~1e-5 rad in px against ~1e-4 rad of driven "
+                    "px), amplified by the error orbit feeding down through the perturbed "
+                    "quadrupoles. Use dispersive_closed_orbit=True instead."
+                ),
+            ),
+        ),
+        pytest.param(OFF_MOMENTUM_DELTA_P, True, id="off_momentum-exact"),
     ],
 )
-def test_psb_acd_reconstruction_with_dipole_closed_orbit(delta_p, data_dir) -> None:
+def test_psb_acd_reconstruction_with_dipole_closed_orbit(
+    delta_p, dispersive_closed_orbit, data_dir
+) -> None:
     setup = build_psb_tracking_setup(
         data_dir,
         delta_p=delta_p,
         driven_tunes=ACD_DRIVEN_TUNES,
         bend_error_rms=BEND_ERROR_RMS,
         bend_error_seed=BEND_ERROR_SEED,
+        quad_error_rms=QUAD_ERROR_RMS,
+        quad_error_seed=QUAD_ERROR_SEED,
     )
     tracking_df = setup["tracking_df"]
     tws = setup["tws"]
     model = setup["model"]
-    # natural_tunes = setup["natural_tunes"]
-    # onmom_tunes = setup["onmom_tunes"]
-    bend_strengths = {f"{name.upper()}.k0": value for name, value in setup["bend_k0"].items()}
+    # The regenerated model inside `calculate_pz` must carry the same errors as the
+    # tracked line, otherwise its closed orbit is the wrong lattice's and neither
+    # pt method can be correct.
+    magnet_strengths = {f"{name.upper()}.k0": value for name, value in setup["bend_k0"].items()}
+    magnet_strengths.update(
+        {f"{name.upper()}.k1": value for name, value in setup["quad_k1"].items()}
+    )
 
     # The dipole errors (plus dispersion when off-momentum) must actually distort
     # the closed orbit, otherwise this test would not exercise the non-zero-CO
@@ -95,11 +147,12 @@ def test_psb_acd_reconstruction_with_dipole_closed_orbit(delta_p, data_dir) -> N
         model_details=ModelDetails(
             accelerator=model.accelerator,
             pt=model.pt,
-            magnet_strengths=bend_strengths,
+            magnet_strengths=magnet_strengths,
         ),
         acd=ACDipoleConfig(
             ac_dipole_marker=ACD_ELEMENT,
             driven_tunes=ACD_DRIVEN_TUNES,
+            dispersive_closed_orbit=dispersive_closed_orbit,
         ),
         acd_only=True,
     )
