@@ -135,11 +135,11 @@ def calculate_pz(
     bpm_names = [str(name) for name in data["name"].unique()]
     if acd is not None:
         resolved_acd = resolve_ac_dipole_config(model_details, acd)
-        model_tws = resolved_acd.optics_tws
+        optics_tws = resolved_acd.optics_tws
         closed_orbit_tws = resolved_acd.closed_orbit_tws
     else:
         resolved_model = resolve_model_details(model_details)
-        model_tws = resolved_model.optics_tws
+        optics_tws = resolved_model.optics_tws
         closed_orbit_tws = resolved_model.closed_orbit_tws
 
     if generator and acd_only:
@@ -171,7 +171,7 @@ def calculate_pz(
         )
 
     optics = resolve_optics(
-        model_tws=model_tws,
+        optics_tws=optics_tws,
         closed_orbit_tws=closed_orbit_tws,
         measurement_dir=measurement_dir,
         model_optics=model_optics,
@@ -353,7 +353,7 @@ class ACDipolePzGenerator:
             self._tracking_tws = self.model.run_twiss(observe=1, coupling=True, pt=self.model.pt)
             self._optics_tws = optics_model.run_twiss(observe=1, coupling=True, pt=self.model.pt)
         optics = resolve_optics(
-            model_tws=self._optics_tws,
+            optics_tws=self._optics_tws,
             closed_orbit_tws=self._closed_orbit_tws,
             measured=self._measured,
             model_optics=self._model_optics,
@@ -480,7 +480,7 @@ class PzGenerator:
             self._closed_orbit_tws = model.run_twiss(observe=1, coupling=True, deltap=0.0)
             self._optics_tws = model.run_twiss(observe=1, coupling=True, pt=model.pt)
         optics = resolve_optics(
-            model_tws=self._optics_tws,
+            optics_tws=self._optics_tws,
             closed_orbit_tws=self._closed_orbit_tws,
             measured=self._measured,
             model_optics=self._model_optics,

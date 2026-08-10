@@ -123,20 +123,21 @@ def _build_model_twiss() -> tfs.TfsDataFrame:
 
 def test_resolve_optics_uses_measured_phase_with_model_optics(tmp_path: Path) -> None:
     _build_measurement_folder(tmp_path)
-    model_tws = _build_model_twiss()
+    optics_tws = _build_model_twiss()
 
-    # Force amplitude and dispersion from the model; phase (and tunes) stays measured.
+    # Force beta, alpha and dispersion from the model; phase (and tunes) stays measured.
     resolved = resolve_optics(
-        model_tws=model_tws,
+        optics_tws=optics_tws,
         measurement_dir=tmp_path,
-        model_optics=["amplitude", "dispersion"],
+        model_optics=["beta", "alpha", "dispersion"],
         bpm_names=["BPM1", "BPM2", "BPM3"],
     )
     tws = pd.DataFrame(resolved.tws)
 
     assert resolved.sources == {
         "phase": "measurement",
-        "amplitude": "model",
+        "beta": "model",
+        "alpha": "model",
         "dispersion": "model",
     }
     assert resolved.use_dispersion
@@ -148,20 +149,21 @@ def test_resolve_optics_uses_measured_phase_with_model_optics(tmp_path: Path) ->
     assert np.allclose(tws["dpx"].to_numpy(), [1.0, 2.0, 3.0])
 
 
-def test_resolve_optics_keeps_measured_dispersion_with_model_amplitude(tmp_path: Path) -> None:
+def test_resolve_optics_keeps_measured_dispersion_with_model_beta_and_alpha(tmp_path: Path) -> None:
     _build_measurement_folder(tmp_path)
-    model_tws = _build_model_twiss()
+    optics_tws = _build_model_twiss()
 
-    # Only amplitude from the model; phase and dispersion stay measured.
+    # Only beta and alpha from the model; phase and dispersion stay measured.
     resolved = resolve_optics(
-        model_tws=model_tws,
+        optics_tws=optics_tws,
         measurement_dir=tmp_path,
-        model_optics=["amplitude"],
+        model_optics=["beta", "alpha"],
         bpm_names=["BPM1", "BPM2", "BPM3"],
     )
     tws = pd.DataFrame(resolved.tws)
 
-    assert resolved.sources["amplitude"] == "model"
+    assert resolved.sources["beta"] == "model"
+    assert resolved.sources["alpha"] == "model"
     assert resolved.sources["dispersion"] == "measurement"
     assert resolved.use_dispersion
     assert np.allclose(tws["beta11"].to_numpy(), [101.0, 102.0, 103.0])
@@ -182,9 +184,92 @@ def test_resolve_optics_respects_reverse_phase_accumulation(tmp_path: Path) -> N
 
     assert resolved.sources == {
         "phase": "measurement",
-        "amplitude": "measurement",
+        "beta": "measurement",
+        "alpha": "measurement",
         "dispersion": "measurement",
     }
     assert list(tws.index) == ["BPM3", "BPM2", "BPM1"]
     assert np.allclose(tws["mu1"].to_numpy(), [0.0, 0.3, 0.5])
     assert np.allclose(tws["mu2"].to_numpy(), [0.0, 0.25, 0.4])
+
+
+def _add_alpha_less_amplitude_files(measurement_dir: Path) -> None:
+    """Rewrite the amplitude beta files the way omc3 really writes them.
+
+    ``beta_amplitude_x/y.tfs`` carry no alpha column, so a beta-from-amplitude
+    measurement can only get its alpha from ``beta_phase_x/y.tfs`` -- a
+    different estimator, with a different beta attached to it. The phase betas
+    here are deliberately unlike both the amplitude betas and the model.
+    """
+    names = ["BPM1", "BPM2", "BPM3"]
+    s = [0.0, 10.0, 20.0]
+    headers = {"Q1": 0.7, "Q2": 0.8}
+
+    _write_measurement_file(
+        measurement_dir / "beta_amplitude_x.tfs",
+        {"NAME": names, "S": s, "BETX": [11.0, 12.0, 13.0], "ERRBETX": [0.1, 0.1, 0.1]},
+        headers,
+    )
+    _write_measurement_file(
+        measurement_dir / "beta_amplitude_y.tfs",
+        {"NAME": names, "S": s, "BETY": [21.0, 22.0, 23.0], "ERRBETY": [0.1, 0.1, 0.1]},
+        headers,
+    )
+    _write_measurement_file(
+        measurement_dir / "beta_phase_x.tfs",
+        {
+            "NAME": names,
+            "S": s,
+            "BETX": [51.0, 52.0, 53.0],
+            "ERRBETX": [0.5, 0.5, 0.5],
+            "ALFX": [5.1, 5.2, 5.3],
+            "ERRALFX": [0.5, 0.5, 0.5],
+        },
+        headers,
+    )
+    _write_measurement_file(
+        measurement_dir / "beta_phase_y.tfs",
+        {
+            "NAME": names,
+            "S": s,
+            "BETY": [61.0, 62.0, 63.0],
+            "ERRBETY": [0.5, 0.5, 0.5],
+            "ALFY": [6.1, 6.2, 6.3],
+            "ERRALFY": [0.5, 0.5, 0.5],
+        },
+        headers,
+    )
+
+
+def test_resolve_optics_pairs_measured_beta_with_model_alpha(tmp_path: Path) -> None:
+    """``model_optics=["alpha"]`` keeps beta from amplitude and alpha from the model.
+
+    Without the split, alpha would come from the beta-from-phase files (5.1-5.3
+    here), which belong to a beta the reconstruction is not using.
+    """
+    _build_measurement_folder(tmp_path)
+    _add_alpha_less_amplitude_files(tmp_path)
+    optics_tws = _build_model_twiss()
+
+    resolved = resolve_optics(
+        optics_tws=optics_tws,
+        measurement_dir=tmp_path,
+        model_optics=["alpha"],
+        bpm_names=["BPM1", "BPM2", "BPM3"],
+    )
+    tws = pd.DataFrame(resolved.tws)
+
+    assert resolved.sources["beta"] == "measurement"
+    assert resolved.sources["alpha"] == "model"
+
+    # Beta from beta_amplitude_x/y.tfs, not from beta_phase_x/y.tfs.
+    assert np.allclose(tws["beta11"].to_numpy(), [11.0, 12.0, 13.0])
+    assert np.allclose(tws["beta22"].to_numpy(), [21.0, 22.0, 23.0])
+
+    # Alpha from the model, not the phase beta files.
+    assert np.allclose(tws["alfa11"].to_numpy(), [11.0, 12.0, 13.0])
+    assert np.allclose(tws["alfa22"].to_numpy(), [21.0, 22.0, 23.0])
+
+    # Errors follow their own category: measured for beta, synthesised for alpha.
+    assert np.allclose(tws["sqrt_betax_err"].to_numpy(), 0.1 / (2.0 * np.sqrt([11.0, 12.0, 13.0])))
+    assert np.allclose(tws["alfax_err"].to_numpy(), 0.01)

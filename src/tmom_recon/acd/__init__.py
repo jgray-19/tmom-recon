@@ -1,3 +1,5 @@
 """AC-dipole reconstruction helpers."""
 
-__all__ = []
+from .reconstruction import ACDipoleStateConsistencyError
+
+__all__ = ["ACDipoleStateConsistencyError"]

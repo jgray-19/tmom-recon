@@ -10,11 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from tmom_recon.model import (
-    # TUNE_MATCH_TOLERANCE,
-    ModelDetails,
-    resolve_model_details,
-)
+from tmom_recon.model import ModelDetails, resolve_model_details
 from tmom_recon.physics.closed_orbit import parse_plane_spec
 
 from .madng_driver import ACDipoleMadDriver

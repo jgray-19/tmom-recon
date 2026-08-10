@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import logging
+import os
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -16,7 +17,12 @@ from tmom_recon.lattice.core import (
     validate_input,
 )
 from tmom_recon.lattice.names import normalise_measurement_names
-from tmom_recon.optics import AMPLITUDE_COLUMNS, DISPERSION_COLUMNS, PHASE_COLUMNS
+from tmom_recon.optics import (
+    ALPHA_COLUMNS,
+    BETA_COLUMNS,
+    DISPERSION_COLUMNS,
+    PHASE_COLUMNS,
+)
 from tmom_recon.physics.closed_orbit import parse_plane_spec, warn_on_closed_orbit_mismatch
 
 from .bpm_reconstruction import (
@@ -48,7 +54,9 @@ SUMMARY_ATTR_NAME = "summary"
 
 # Optics columns taken from a resolved twiss (see tmom_recon.optics.resolve_optics)
 # when one is supplied; error/variance columns are copied alongside.
-ACD_TWISS_OVERRIDE_COLUMNS = frozenset(PHASE_COLUMNS + AMPLITUDE_COLUMNS + DISPERSION_COLUMNS)
+ACD_TWISS_OVERRIDE_COLUMNS = frozenset(
+    PHASE_COLUMNS + BETA_COLUMNS + ALPHA_COLUMNS + DISPERSION_COLUMNS
+)
 
 
 def _normalise_observed_twiss(tws: pd.DataFrame) -> pd.DataFrame:
@@ -562,10 +570,57 @@ def prepare_ac_dipole_inputs(
     )
 
 
+class ACDipoleStateConsistencyError(ValueError):
+    """The reconstructed BPM state disagrees with the model's prediction.
+
+    Its own type, so a batch caller can act on *this* verdict -- excluding the
+    acquisition it came from -- without catching unrelated ``ValueError``s or
+    matching on the message. It is a rejection of one measurement, not a bug:
+    the usual cause is an acquisition whose driven amplitude is too close to the
+    BPM noise floor, and the correct response is to drop that file, never to
+    widen the tolerance.
+
+    Attributes:
+        bpm_name: BPM the check failed at.
+        coord: Coordinate that failed (``"x"`` or ``"px"``).
+        max_residual: Largest per-turn residual [m or rad].
+        state_amplitude: Amplitude of the predicted state [m or rad].
+        tolerance: Tolerance that was applied.
+        records: Verdict record per coordinate checked before the rejection,
+            in the same shape as the ``acd_state_consistency`` attribute an
+            accepted reconstruction carries.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        bpm_name: str,
+        coord: str,
+        max_residual: float,
+        state_amplitude: float,
+        tolerance: float,
+    ) -> None:
+        super().__init__(message)
+        self.bpm_name = bpm_name
+        self.coord = coord
+        self.max_residual = max_residual
+        self.state_amplitude = state_amplitude
+        self.tolerance = tolerance
+        self.records: list[dict[str, object]] = []
+
+
 def _check_bpm_state_consistency(
     frame: pd.DataFrame, bpm_name: str, predicted_state: ACDipoleStateSeries
-) -> None:
+) -> list[dict[str, object]]:
     """Check that the reconstructed BPM state is consistent with the predicted state.
+
+    Returns one record per checked coordinate describing the verdict -- the
+    residual, the tolerance applied and whether it passed -- so a caller can
+    report *why* an acquisition was rejected, or plot the disagreement, instead
+    of only learning that it was. The records are produced whether or not the
+    check passes, and whether or not the escape hatch is set; raising is still
+    the default behaviour on failure.
 
     Args:
         frame: Reconstructed-momentum DataFrame for a BPM.
@@ -573,7 +628,9 @@ def _check_bpm_state_consistency(
         predicted_state: Predicted state at the BPM from the model.
 
     Raises:
-        ValueError: If the reconstructed BPM state is not consistent with the predicted state.
+        ValueError: If *bpm_name* has no data in *frame*.
+        ACDipoleStateConsistencyError: If the reconstructed BPM state is not
+            consistent with the predicted state.
     """
     bpm_frame = frame[frame["name"] == bpm_name]
     if bpm_frame.empty:
@@ -607,6 +664,7 @@ def _check_bpm_state_consistency(
     abs_floor = 1e-4  # Absolute tolerance floor for state consistency check
     rel_tolerance = 0.10  # Relative tolerance used once |state| exceeds 1 mm
     amplitude_threshold = 1e-3  # State amplitude above which the check goes relative
+    records: list[dict[str, object]] = []
     for coord in ("x", "px"):
         reconstructed_value = bpm_frame[coord].values
         predicted_value = getattr(predicted_state, coord)
@@ -616,12 +674,67 @@ def _check_bpm_state_consistency(
             tolerance = max(abs_floor, rel_tolerance * state_amplitude)
         else:
             tolerance = abs_floor
+        records.append(
+            {
+                "bpm": bpm_name,
+                "coord": coord,
+                "max_residual": float(max_residual),
+                "rms_residual": float(
+                    np.sqrt(np.mean((reconstructed_value - predicted_value) ** 2))
+                ),
+                "state_amplitude": float(state_amplitude),
+                "tolerance": float(tolerance),
+                "passed": bool(max_residual <= tolerance),
+            }
+        )
         if max_residual > tolerance:
-            raise ValueError(
+            # Report the residual as a fraction of the state as well as in metres.
+            # The absolute number alone is unreadable: below the 1 mm threshold the
+            # floor is a *looser* test than the relative branch (at |state|=7e-4 the
+            # 1e-4 floor is 14%, not 10%), so tripping it means the reconstruction is
+            # genuinely worse than 10% of the driven signal -- not that the tolerance
+            # is too tight. Note the fraction is frame-dependent: with the closed
+            # orbit removed from the data (dynamic-part reconstruction) |state| is the
+            # driven amplitude alone, so the same residual reads several times larger
+            # than it would against an absolute state carrying the orbit.
+            # DIAGNOSTIC ESCAPE HATCH. Set TMOM_RECON_IGNORE_ACD_STATE_GUARD=1 to
+            # log the verdict instead of raising it. This exists so a *known
+            # failing* reconstruction can still be plotted and looked at while
+            # comparing cleaning methods -- it is never a way to obtain a
+            # physics result. The guard's answer does not change; only whether
+            # the acquisition is dropped.
+            if os.environ.get("TMOM_RECON_IGNORE_ACD_STATE_GUARD") == "1":
+                LOGGER.warning(
+                    "ACD state-consistency guard IGNORED (diagnostic mode): %s at BPM %s "
+                    "max|residual|=%.3e vs tolerance %.1e (%.1f%% of |state|=%.3e)",
+                    coord,
+                    bpm_name,
+                    max_residual,
+                    tolerance,
+                    100 * max_residual / state_amplitude if state_amplitude else float("inf"),
+                    state_amplitude,
+                )
+                continue
+            error = ACDipoleStateConsistencyError(
                 f"Reconstructed {coord} at BPM {bpm_name} does not match the predicted "
                 f"value within tolerance {tolerance:.1e} (max|residual|={max_residual:.3e}, "
-                f"|state|={state_amplitude:.3e})."
+                f"|state|={state_amplitude:.3e}, "
+                f"residual={100 * max_residual / state_amplitude if state_amplitude else float('inf'):.1f}% of |state|"
+                f"{', below the 1 mm relative-branch threshold' if state_amplitude <= amplitude_threshold else ''})."
+                " This rejects the acquisition, most often because its driven"
+                " amplitude is too close to the BPM noise floor; drop the file"
+                " rather than widening the tolerance.",
+                bpm_name=bpm_name,
+                coord=coord,
+                max_residual=float(max_residual),
+                state_amplitude=float(state_amplitude),
+                tolerance=float(tolerance),
             )
+            # The records travel with the rejection so a batch caller can build
+            # the same table for rejected acquisitions as for accepted ones.
+            error.records = records
+            raise error
+    return records
 
 
 def _data_mean_closed_orbit(
@@ -857,6 +970,7 @@ def reconstruct_from_prepared(
 
     # Transport each side's cleaned marker state back to its primary BPM.
     cleaned_bpm_states: dict[str, ACDipoleStateSeries] = {}
+    consistency_records: list[dict[str, object]] = []
     for side, cleaned_marker in (
         (upstream_side, fit.cleaned_upstream),
         (downstream_side, fit.cleaned_downstream),
@@ -868,7 +982,9 @@ def reconstruct_from_prepared(
             marker_name=marker_name,
             direction=-side.direction,
         )
-        _check_bpm_state_consistency(side.primary_frame, side.primary, bpm_state)
+        consistency_records.extend(
+            _check_bpm_state_consistency(side.primary_frame, side.primary, bpm_state)
+        )
         cleaned_bpm_states[side.label] = bpm_state
         result[f"px_bpm_{side.label}_cleaned"] = bpm_state.px
         result[f"py_bpm_{side.label}_cleaned"] = bpm_state.py
@@ -923,6 +1039,7 @@ def reconstruct_from_prepared(
 
     result_out.attrs.update(metadata)
     result_out.attrs[SUMMARY_ATTR_NAME] = result
+    result_out.attrs["acd_state_consistency"] = consistency_records
     result_out.attrs["smooth_lambda"] = smooth_lambda
     result_out.attrs["qx_drive"] = dpx_tune_frac
     result_out.attrs["qy_drive"] = dpy_tune_frac
