@@ -72,7 +72,9 @@ class ACDipoleMadDriver(KnobMadInterface):
         pt: MAD-NG longitudinal energy coordinate for the tracked beam.
         observed_elements: Element name(s) to observe in addition to all BPMs.
         magnet_strengths: Additional magnet strengths applied after setup via
-            :meth:`apply_strengths`.
+            :meth:`apply_strengths`. The driver never matches tunes of its own:
+            the caller owns the lattice, so these are taken to already put the
+            machine on its tunes at this model's ``pt``.
         install_ac_dipole_markers: Insert the before/after AC-dipole monitors and
             replace the thick AC-dipole element with a thin copy. Required for
             AC-dipole state transport; leave ``False`` for a plain model that only
