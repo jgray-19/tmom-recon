@@ -225,3 +225,41 @@ def test_4d_least_squares_coupled_matrix() -> None:
     px_rec, py_rec = solve_kick_4d_least_squares({"BPM_C": m}, x_meas, y_meas)
     assert abs(px_rec - px_true) < 1e-13
     assert abs(py_rec - py_true) < 1e-13
+
+
+# ---------------------------------------------------------------------------
+# ring wrap
+# ---------------------------------------------------------------------------
+
+
+def test_upstream_target_wraps_by_the_tune(simple_twiss: pd.DataFrame) -> None:
+    """Transporting forward to an upstream element goes round the ring.
+
+    Reversing source and target on the quarter-wave pair leaves a raw phase
+    difference of -0.25. With a tune of 1.0 the forward advance is 0.75, whose
+    matrix is the inverse rotation [[0, -1], [1, 0]]. Without the wrap the raw
+    -0.25 would give the backwards map, whose r12 has the opposite sign.
+    """
+    m = transport_matrix_from_twiss(
+        simple_twiss, source="BPM1", target="kicker", plane="x", tune=1.0
+    )
+    assert abs(m.r11) < 1e-12
+    assert abs(m.r12 + 1.0) < 1e-12
+    assert abs(m.r21 - 1.0) < 1e-12
+    assert abs(m.r22) < 1e-12
+
+
+def test_upstream_target_without_tune_raises(simple_twiss: pd.DataFrame) -> None:
+    """A line has no wrap, so an upstream target is an error, not a sign flip."""
+    with pytest.raises(ValueError, match="upstream"):
+        transport_matrix_from_twiss(simple_twiss, source="BPM1", target="kicker", plane="x")
+
+
+def test_4d_wrap_uses_the_per_plane_tune(simple_twiss: pd.DataFrame) -> None:
+    """The 4x4 assembly wraps each plane with its own tune."""
+    mat = transport_matrix_4d_from_twiss(
+        simple_twiss, source="BPM1", target="kicker", tunes=(1.0, 1.0)
+    )
+    expected = np.array([[0.0, -1.0], [1.0, 0.0]])
+    assert np.allclose(mat[:2, :2], expected)
+    assert np.allclose(mat[2:, 2:], expected)

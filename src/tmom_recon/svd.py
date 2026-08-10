@@ -631,3 +631,143 @@ def known_noise_svd_clean_measurements(
         known_noise_threshold_x=threshold_x,
         known_noise_threshold_y=threshold_y,
     )
+
+
+# Trajectory-matrix (SSA) cleaning
+# ---------------------------------
+# The functions above decompose a turn-by-BPM matrix, i.e. they rebuild each
+# turn from modes shared *across BPMs*. That is the wrong axis for turn-by-turn
+# data that a model will later be fitted against, and the failure is not subtle.
+# Gavish-Donoho picks rank 2 for driven data, so all BPM readings at one turn
+# collapse onto two numbers -- exactly the number of free parameters in a
+# transverse initial condition. A tracked state then reproduces the whole ring
+# at its own turn identically: on PSB the residual falls to ~7 um against an
+# instrument whose own single-reading noise is ~86 um, while the first turn
+# outside that reach jumps back to ~57 um. The acquisition is one continuous
+# stream and nothing happens to the beam at a turn boundary, so that step is an
+# artefact of the cleaning axis alone.
+#
+# Cleaning along the continuous turn axis, one BPM at a time, removes it. Each
+# BPM keeps its own independent reading, so a two-parameter fit can absorb only
+# two of the ring's degrees of freedom instead of all of them. Measured on PSB
+# (16 BPMs, 8000 turns), residual same-turn vs next-turn:
+#
+#     raw, no cleaning                     86.1 -> 103.0 um   (step 1.20x)
+#     turn-by-BPM SVD, rank 2 (was used)    6.9 ->  57.1 um   (step 8.24x)
+#     turn-by-BPM SVD, rank 12 (harpy)     82.2 -> 101.1 um   (step 1.23x)
+#     per-BPM SSA, window 200, rank 4      26.2 ->  27.1 um   (step 1.04x)
+#
+# Only the last both denoises and leaves the stream continuous.
+
+
+def _trajectory_matrix(series: np.ndarray, window: int) -> np.ndarray:
+    """Return the ``window x (n - window + 1)`` Hankel view of one stream.
+
+    Built with stride tricks rather than fancy indexing: the index array alone
+    would be as large as the matrix, and this is called once per BPM per plane.
+    The view is read-only because neighbouring columns share memory.
+    """
+    n_columns = series.shape[0] - window + 1
+    return np.lib.stride_tricks.as_strided(
+        series,
+        shape=(window, n_columns),
+        strides=(series.strides[0], series.strides[0]),
+        writeable=False,
+    )
+
+
+def _ssa_clean_series(series: np.ndarray, *, window: int, rank: int) -> np.ndarray:
+    """Reconstruct one continuous stream from its leading trajectory modes."""
+    trajectory = _trajectory_matrix(series, window)
+    u_mat, s_mat, vt_mat = np.linalg.svd(trajectory, full_matrices=False)
+    keep = min(rank, s_mat.size)
+    reconstructed = (u_mat[:, :keep] * s_mat[:keep]) @ vt_mat[:keep]
+
+    # Diagonal averaging: every sample appears on one anti-diagonal of the
+    # trajectory matrix, so averaging that anti-diagonal turns the (no longer
+    # Hankel) reconstruction back into a single series.
+    n_samples = series.shape[0]
+    totals = np.zeros(n_samples, dtype=float)
+    counts = np.zeros(n_samples, dtype=float)
+    for offset in range(window):
+        totals[offset : offset + reconstructed.shape[1]] += reconstructed[offset]
+        counts[offset : offset + reconstructed.shape[1]] += 1.0
+    return totals / counts
+
+
+def ssa_clean_measurements(
+    meas_df: pd.DataFrame,
+    bpm_list: list[str] | None = None,
+    *,
+    window: int = 200,
+    rank: int = 4,
+    max_nan_gap: int = 5,
+) -> pd.DataFrame:
+    """Clean each BPM's turn-by-turn stream as continuous data.
+
+    Every BPM is cleaned independently, along turns, by truncating the SVD of
+    its own trajectory (Hankel) matrix. Use this -- not the turn-by-BPM
+    cleaners above -- for any frame a model will be fitted against; see the
+    block comment preceding this section for the measured reason.
+
+    Args:
+        meas_df: Long-format table with ``turn``, ``name``, ``x`` and ``y``.
+        bpm_list: Optional BPM ordering. Defaults to the order in ``meas_df``.
+        window: Embedding length in turns. Must comfortably exceed the
+            betatron period so one oscillation is resolved; 200 turns is
+            ~30 periods at the PSB driven tune.
+        rank: Trajectory modes to keep per BPM. Two modes describe a single
+            pure line (its sine and cosine); four leaves room for the drive
+            plus its modulation sidebands.
+        max_nan_gap: Largest contiguous missing span to interpolate before
+            decomposition. Longer gaps stay missing.
+
+    Returns:
+        Copy of the input with cleaned ``x`` and ``y``.
+
+    Raises:
+        ValueError: If ``window`` or ``rank`` is not usable for the data length.
+    """
+    logger.info("Starting SSA (continuous, per-BPM) cleaning of measurements")
+    if bpm_list is None:
+        bpm_list = meas_df["name"].unique().tolist()
+
+    turn_range = np.arange(int(meas_df["turn"].min()), int(meas_df["turn"].max()) + 1)
+    if not 1 < window <= turn_range.size:
+        raise ValueError(f"window must be in (1, n_turns={turn_range.size}], got {window}")
+    if not 0 < rank <= window:
+        raise ValueError(f"rank must be in (0, window={window}], got {rank}")
+
+    cleaned: dict[str, np.ndarray] = {}
+    for component in ("x", "y"):
+        matrix = _pivot_to_matrix(meas_df, component, turn_range, bpm_list)
+        missing_mask = np.isnan(matrix)
+        filled = _fill_small_nans(matrix, max_gap=max_nan_gap)
+        # Centre per BPM so the mean (the closed orbit) is never spent on a
+        # trajectory mode, and restore it afterwards.
+        offsets = np.nanmean(filled, axis=0, keepdims=True)
+        centred = np.nan_to_num(filled - offsets, copy=False)
+        out = np.empty_like(centred)
+        for index in range(centred.shape[1]):
+            out[:, index] = _ssa_clean_series(
+                np.ascontiguousarray(centred[:, index]), window=window, rank=rank
+            )
+        out += offsets
+        out[missing_mask] = np.nan
+        cleaned[component] = out
+
+    result = meas_df.set_index(["turn", "name"])
+    frame = pd.DataFrame(
+        {
+            "turn": np.repeat(turn_range, len(bpm_list)),
+            "name": np.tile(bpm_list, len(turn_range)),
+            "x": cleaned["x"].reshape(-1),
+            "y": cleaned["y"].reshape(-1),
+        }
+    ).set_index(["turn", "name"])
+    result["x"] = frame["x"]
+    result["y"] = frame["y"]
+    result.attrs["ssa_window"] = window
+    result.attrs["ssa_rank"] = rank
+    logger.info("SSA cleaning completed successfully")
+    return result.reset_index()
