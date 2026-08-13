@@ -66,9 +66,22 @@ class ACDipoleConfig:
     by the model — and skips the ``pt * D`` correction. Prefer it whenever the
     model represents the machine; it matters above ``|dp/p| ~ 1e-3``."""
 
+    use_reference_closed_orbit: bool = False
+    """Use ``calculate_pz(reference_co=...)`` as the ACD closed-orbit state.
+
+    This is for pipelines with an independently measured closed-orbit position
+    and model-derived angle, supplied together as ``x/px/y/py``. By default the
+    ACD reconstruction retains its historical behaviour and uses the generated
+    model twiss. This option is incompatible with ``dispersive_closed_orbit``.
+    """
+
     def __post_init__(self) -> None:
         # Fail on a bad plane spec at construction, not deep inside a MAD-NG run.
         parse_plane_spec(self.data_mean_closed_orbit_planes, field="data_mean_closed_orbit_planes")
+        if self.use_reference_closed_orbit and self.dispersive_closed_orbit:
+            raise ValueError(
+                "use_reference_closed_orbit and dispersive_closed_orbit are mutually exclusive"
+            )
 
 
 @dataclass(frozen=True)

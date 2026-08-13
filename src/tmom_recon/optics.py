@@ -53,6 +53,7 @@ PHASE_COLUMNS = ("mu1", "mu2")
 BETA_COLUMNS = ("beta11", "beta22")
 ALPHA_COLUMNS = ("alfa11", "alfa22")
 DISPERSION_COLUMNS = ("dx", "dy", "dpx", "dpy")
+SECOND_ORDER_DISPERSION_COLUMNS = ("ddx", "ddpx", "ddy", "ddpy")
 
 CATEGORY_COLUMNS: dict[OpticsCategory, tuple[str, ...]] = {
     "phase": PHASE_COLUMNS,
@@ -97,12 +98,19 @@ class ResolvedOptics:
         co: Twiss used for closed-orbit removal/restoration (the explicit
             closed-orbit twiss when available, else the model twiss, else
             ``tws``).
+        reference_co: **Measured** closed orbit at nominal RF, the momentum
+            reference for the pt estimate. Deliberately separate from ``co``:
+            ``co`` is a modelling convenience for removing and restoring the
+            orbit, while this is a physical measurement that no model can
+            substitute for (see
+            :func:`tmom_recon.physics.pt_calculation.estimate_pt_from_model`).
         sources: Resolved source per optics category.
         use_dispersion: Whether dispersion is available and enabled.
     """
 
     tws: pd.DataFrame
     co: pd.DataFrame
+    reference_co: pd.DataFrame | None
     sources: dict[OpticsCategory, OpticsSource]
     use_dispersion: bool
 
@@ -291,6 +299,7 @@ def resolve_optics(
     *,
     optics_tws: tfs.TfsDataFrame | None = None,
     closed_orbit_tws: tfs.TfsDataFrame | None = None,
+    reference_co: pd.DataFrame | None = None,
     measurement_dir: str | Path | None = None,
     model_optics: Collection[OpticsCategory] = (),
     use_dispersion: bool = True,
@@ -307,6 +316,11 @@ def resolve_optics(
         closed_orbit_tws: Model twiss carrying the closed-orbit reference to
             subtract and restore. This is deliberately separate from
             ``optics_tws`` so off-momentum optics do not become the closed orbit.
+        reference_co: Measured closed orbit at nominal RF (indexed by BPM name,
+            column ``x``), required by the reconstruction as the momentum
+            reference. A model closed orbit is not a substitute -- dipole errors
+            are exactly degenerate with the dispersive orbit at a single
+            momentum.
         measurement_dir: omc3 optics measurement directory.
         model_optics: Categories forced to come from the model. Categories not
             listed come from the measurement when available, model otherwise.
@@ -399,10 +413,18 @@ def resolve_optics(
         dispersion_on = False
     if dispersion_on:
         _synthesise_dispersion_errors(tws, errors)
+        # Second-order dispersion is never measured, so it always comes from the
+        # model when the twiss was run with chrom=True. Absent columns simply
+        # leave the reconstruction at first order.
+        if model_view is not None:
+            for column in SECOND_ORDER_DISPERSION_COLUMNS:
+                if column in model_view.columns:
+                    tws[column] = model_view[column].to_numpy(dtype=float)
 
     return ResolvedOptics(
         tws=tws,
         co=co_tws if co_tws is not None else tws,
+        reference_co=reference_co,
         sources=sources,
         use_dispersion=dispersion_on,
     )

@@ -47,6 +47,30 @@ if TYPE_CHECKING:  # pragma: no cover - typing helpers only
     from tmom_recon.acd.madng_driver import ACDipoleMadDriver
     from tmom_recon.acd.reconstruction import PreparedACDInputs
 
+
+def _acd_closed_orbit_reference(
+    resolved_acd: ResolvedACDipoleConfig,
+    reference_co: pd.DataFrame,
+    *,
+    tracking_tws: pd.DataFrame | None = None,
+    closed_orbit_tws: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Select the explicit closed-orbit state used by ACD reconstruction."""
+    config = resolved_acd.config
+    if config.dispersive_closed_orbit:
+        return tracking_tws if tracking_tws is not None else resolved_acd.tracking_tws
+    if config.use_reference_closed_orbit:
+        required = {"x", "px", "y", "py"}
+        missing = required.difference(reference_co.columns)
+        if missing:
+            raise ValueError(
+                "ACD reference closed orbit requires columns "
+                f"{sorted(required)}; missing {sorted(missing)}"
+            )
+        return reference_co
+    return closed_orbit_tws if closed_orbit_tws is not None else resolved_acd.closed_orbit_tws
+
+
 LOGGER = logging.getLogger(__name__)
 
 __all__ = [
@@ -63,6 +87,7 @@ def calculate_pz(
     data: pd.DataFrame,
     model_details: ModelDetails,
     *,
+    reference_co: pd.DataFrame,
     measurement_dir: str | Path | None = None,
     model_optics: Collection[OpticsCategory] = (),
     use_dispersion: bool = True,
@@ -87,6 +112,12 @@ def calculate_pz(
             position variances ``var_x, var_y``.
         model_details: Accelerator, tunes, momentum and optional strengths used
             to generate the MAD-NG model optics.
+        reference_co: **Measured** closed orbit at nominal RF, indexed by BPM name
+            with an ``x`` column. Required: it is the momentum reference the
+            reconstruction is expressed against. A model closed orbit is not a
+            substitute -- the bend response spans the whole horizontal BPM space,
+            so an unknown dipole-error orbit is exactly degenerate with the
+            dispersive orbit and a mismatched model biases pt by tens of percent.
         measurement_dir: omc3 optics measurement directory.
         model_optics: Optics categories forced to come from the model.
         use_dispersion: If ``False``, run a pure transverse reconstruction
@@ -147,6 +178,7 @@ def calculate_pz(
         return ACDipolePzGenerator._build(
             data=data,
             resolved_acd=resolved_acd,
+            reference_co=reference_co,
             measurement_dir=measurement_dir,
             model_optics=tuple(model_optics),
             use_dispersion=use_dispersion,
@@ -159,6 +191,7 @@ def calculate_pz(
         return PzGenerator._build(
             data=data,
             resolved_model=resolved_model,
+            reference_co=reference_co,
             measurement_dir=measurement_dir,
             model_optics=tuple(model_optics),
             use_dispersion=use_dispersion,
@@ -173,6 +206,7 @@ def calculate_pz(
     optics = resolve_optics(
         optics_tws=optics_tws,
         closed_orbit_tws=closed_orbit_tws,
+        reference_co=reference_co,
         measurement_dir=measurement_dir,
         model_optics=model_optics,
         use_dispersion=use_dispersion,
@@ -197,10 +231,9 @@ def calculate_pz(
             bpm_upstream=resolved_acd.config.bpm_upstream,
             bpm_downstream=resolved_acd.config.bpm_downstream,
             smooth_lambda=resolved_acd.config.smooth_lambda,
-            closed_orbit_tws=(
-                resolved_acd.tracking_tws
-                if acd.dispersive_closed_orbit
-                else resolved_acd.closed_orbit_tws
+            closed_orbit_tws=_acd_closed_orbit_reference(
+                resolved_acd,
+                reference_co,
             ),
             dispersion_tws=resolved_acd.tracking_tws,
             resolved_tws=optics.tws,
@@ -245,6 +278,7 @@ class ACDipolePzGenerator:
         *,
         prepared: PreparedACDInputs,
         resolved_acd: ResolvedACDipoleConfig,
+        reference_co: pd.DataFrame,
         measured: LoadedMeasurement | None,
         model_optics: Collection[OpticsCategory],
         use_dispersion: bool,
@@ -257,6 +291,7 @@ class ACDipolePzGenerator:
         self._optics_tws = resolved_acd.optics_tws
         self._tracking_tws = resolved_acd.tracking_tws
         self._closed_orbit_tws = resolved_acd.closed_orbit_tws
+        self._reference_co = reference_co
         self._measured = measured
         self._model_optics = tuple(model_optics)
         self._use_dispersion = use_dispersion
@@ -271,6 +306,7 @@ class ACDipolePzGenerator:
         *,
         data: pd.DataFrame,
         resolved_acd: ResolvedACDipoleConfig,
+        reference_co: pd.DataFrame,
         measurement_dir: str | Path | None,
         model_optics: Collection[OpticsCategory],
         use_dispersion: bool,
@@ -308,6 +344,7 @@ class ACDipolePzGenerator:
         return cls(
             prepared=prepared,
             resolved_acd=resolved_acd,
+            reference_co=reference_co,
             measured=measured,
             model_optics=model_optics,
             use_dispersion=use_dispersion,
@@ -360,6 +397,7 @@ class ACDipolePzGenerator:
         optics = resolve_optics(
             optics_tws=self._optics_tws,
             closed_orbit_tws=self._closed_orbit_tws,
+            reference_co=self._reference_co,
             measured=self._measured,
             model_optics=self._model_optics,
             use_dispersion=self._use_dispersion,
@@ -371,10 +409,11 @@ class ACDipolePzGenerator:
             self._prepared,
             self._optics_tws,
             resolved_tws=optics.tws,
-            closed_orbit_tws=(
-                self._tracking_tws
-                if self._resolved_acd.config.dispersive_closed_orbit
-                else self._closed_orbit_tws
+            closed_orbit_tws=_acd_closed_orbit_reference(
+                self._resolved_acd,
+                self._reference_co,
+                tracking_tws=self._tracking_tws,
+                closed_orbit_tws=self._closed_orbit_tws,
             ),
             dispersion_tws=self._tracking_tws,
             data_mean_closed_orbit_planes=self._resolved_acd.config.data_mean_closed_orbit_planes,
@@ -397,6 +436,7 @@ class PzGenerator:
         *,
         data: pd.DataFrame,
         resolved_model: ResolvedModel,
+        reference_co: pd.DataFrame,
         measured: LoadedMeasurement | None,
         model_optics: Collection[OpticsCategory],
         use_dispersion: bool,
@@ -411,6 +451,7 @@ class PzGenerator:
         self._resolved_model = resolved_model
         self._optics_tws = self._resolved_model.optics_tws
         self._closed_orbit_tws = self._resolved_model.closed_orbit_tws
+        self._reference_co = reference_co
         self._measured = measured
         self._model_optics = tuple(model_optics)
         self._use_dispersion = use_dispersion
@@ -428,6 +469,7 @@ class PzGenerator:
         *,
         data: pd.DataFrame,
         resolved_model: ResolvedModel,
+        reference_co: pd.DataFrame,
         measurement_dir: str | Path | None,
         model_optics: Collection[OpticsCategory],
         use_dispersion: bool,
@@ -450,6 +492,7 @@ class PzGenerator:
         return cls(
             data=data,
             resolved_model=resolved_model,
+            reference_co=reference_co,
             measured=measured,
             model_optics=model_optics,
             use_dispersion=use_dispersion,
@@ -492,6 +535,7 @@ class PzGenerator:
         optics = resolve_optics(
             optics_tws=self._optics_tws,
             closed_orbit_tws=self._closed_orbit_tws,
+            reference_co=self._reference_co,
             measured=self._measured,
             model_optics=self._model_optics,
             use_dispersion=self._use_dispersion,

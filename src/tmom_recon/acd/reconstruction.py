@@ -217,13 +217,13 @@ def _build_marker_state_rows(
     model: ACDipoleMadDriver,
     marker_states: list[tuple[ACDipoleSide, ACDipoleStateEstimate]],
 ) -> pd.DataFrame:
-    """Build the marker-side output rows for each side's cleaned marker state.
+    """Build marker-side output rows for the supplied state estimates.
 
     Args:
         turns: Turn numbers array.
         model: MAD-NG driver, used to resolve the marker element name per side.
-        marker_states: ``(side, cleaned_marker_state)`` pairs; each side supplies
-            the row type and marker end.
+        marker_states: ``(side, marker_state)`` pairs; each side supplies the row
+            type and marker end. The estimate may be raw or cleaned.
 
     Returns:
         Concatenated marker state rows, one group per side.
@@ -1015,6 +1015,14 @@ def reconstruct_from_prepared(
             (downstream_side, fit.cleaned_downstream),
         ],
     )
+    raw_marker_rows = _build_marker_state_rows(
+        turns=fit.turns,
+        model=model,
+        marker_states=[
+            (upstream_side, fit.raw_upstream),
+            (downstream_side, fit.raw_downstream),
+        ],
+    )
 
     metadata = _build_output_metadata(
         marker_name=marker_name,
@@ -1057,6 +1065,9 @@ def reconstruct_from_prepared(
 
     result_out.attrs.update(metadata)
     result_out.attrs[SUMMARY_ATTR_NAME] = result
+    # Keep the unregularised marker estimates for diagnostics. The rows in the
+    # result itself remain the cleaned states consumed by ACD-marker tracking.
+    result_out.attrs["raw_marker_states"] = raw_marker_rows
     result_out.attrs["acd_state_consistency"] = consistency_records
     result_out.attrs["smooth_lambda"] = smooth_lambda
     result_out.attrs["qx_drive"] = dpx_tune_frac

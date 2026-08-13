@@ -112,15 +112,15 @@ def _compute_nominal_momenta(
 
     .. math::
 
-       \tilde x = \frac{x - p_t D_x}{\sqrt{\beta_x}},
+       \tilde x = \frac{x - p_t D_x - p_t^2 D_x^{(2)}}{\sqrt{\beta_x}},
        \qquad
-       \tilde x_n = \frac{x_n - p_t D_{x,n}}{\sqrt{\beta_{x,n}}},
+       \tilde x_n = \frac{x_n - p_t D_{x,n} - p_t^2 D_{x,n}^{(2)}}{\sqrt{\beta_{x,n}}},
 
     .. math::
 
-       \tilde y = \frac{y - p_t D_y}{\sqrt{\beta_y}},
+       \tilde y = \frac{y - p_t D_y - p_t^2 D_y^{(2)}}{\sqrt{\beta_y}},
        \qquad
-       \tilde y_n = \frac{y_n - p_t D_{y,n}}{\sqrt{\beta_{y,n}}},
+       \tilde y_n = \frac{y_n - p_t D_{y,n} - p_t^2 D_{y,n}^{(2)}}{\sqrt{\beta_{y,n}}},
 
     where :math:`p_t` is the MAD-NG longitudinal energy coordinate. MAD-NG
     dispersion columns are derivatives with respect to ``pt``, not ``dp/p``.
@@ -134,14 +134,18 @@ def _compute_nominal_momenta(
        p_x =
        s \frac{\tilde x_n \sec \phi_x + \tilde x (\tan \phi_x + a \alpha_x)}
        {\sqrt{\beta_x}}
-       + D_x' p_t,
+       + D_x' p_t + D_x^{(2)\prime} p_t^2,
 
     .. math::
 
        p_y =
        s \frac{\tilde y_n \sec \phi_y + \tilde y (\tan \phi_y + a \alpha_y)}
        {\sqrt{\beta_y}}
-       + D_y' p_t.
+       + D_y' p_t + D_y^{(2)\prime} p_t^2.
+
+    The second-order terms :math:`D^{(2)}` come from a ``chrom=true`` twiss
+    (``ddx``/``ddpx``/``ddy``/``ddpy``, which already carry the Taylor
+    :math:`1/2`) and are taken as zero when those columns are absent.
 
     Args:
         data: DataFrame with position and optics columns.
@@ -173,6 +177,14 @@ def _compute_nominal_momenta(
     dy_neighbor = _column_or_zeros(data, names.dy, y_neighbor)
     dpy_current = _column_or_zeros(data, "dpy", y_current)
 
+    # Second-order dispersion, zero when the twiss carries no `chrom` columns.
+    ddx_current = _column_or_zeros(data, "ddx", x_current)
+    ddx_neighbor = _column_or_zeros(data, names.ddx, x_neighbor)
+    ddpx_current = _column_or_zeros(data, "ddpx", x_current)
+    ddy_current = _column_or_zeros(data, "ddy", y_current)
+    ddy_neighbor = _column_or_zeros(data, names.ddy, y_neighbor)
+    ddpy_current = _column_or_zeros(data, "ddpy", y_current)
+
     phi_x = data[names.delta_x].to_numpy() * 2 * np.pi
     phi_y = data[names.delta_y].to_numpy() * 2 * np.pi
 
@@ -184,10 +196,11 @@ def _compute_nominal_momenta(
     )
 
     # Vertical dispersion should be very small, or typically 0, but included for completeness
-    x_current_norm = (x_current - pt_est * dx_current) / sqrt_beta_x
-    x_neighbor_norm = (x_neighbor - pt_est * dx_neighbor) / sqrt_beta_x_neigh
-    y_current_norm = (y_current - pt_est * dy_current) / sqrt_beta_y
-    y_neighbor_norm = (y_neighbor - pt_est * dy_neighbor) / sqrt_beta_y_neigh
+    pt2 = pt_est * pt_est
+    x_current_norm = (x_current - pt_est * dx_current - pt2 * ddx_current) / sqrt_beta_x
+    x_neighbor_norm = (x_neighbor - pt_est * dx_neighbor - pt2 * ddx_neighbor) / sqrt_beta_x_neigh
+    y_current_norm = (y_current - pt_est * dy_current - pt2 * ddy_current) / sqrt_beta_y
+    y_neighbor_norm = (y_neighbor - pt_est * dy_neighbor - pt2 * ddy_neighbor) / sqrt_beta_y_neigh
 
     # Nominal momenta
     px = (
@@ -195,12 +208,14 @@ def _compute_nominal_momenta(
         * (x_neighbor_norm * sec_phi_x + x_current_norm * (tan_phi_x + alpha_sign_x * alpha_x))
         / sqrt_beta_x
         + dpx_current * pt_est
+        + ddpx_current * pt2
     )
     py = (
         sign_y
         * (y_neighbor_norm * sec_phi_y + y_current_norm * (tan_phi_y + alpha_sign_y * alpha_y))
         / sqrt_beta_y
         + dpy_current * pt_est
+        + ddpy_current * pt2
     )
 
     return px, py

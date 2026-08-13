@@ -92,6 +92,11 @@ def test_ac_dipole_momentum_reconstruction(
         bpm_downstream=bpm_downstream,
     )
 
+    raw_markers = result.attrs["raw_marker_states"]
+    assert set(raw_markers["name"].str.upper()) == {before_marker, after_marker}
+    assert len(raw_markers) == 2 * len(result.attrs["summary"])
+    assert raw_markers[["x", "px", "y", "py"]].notna().all().all()
+
     marker_r2_min = MARKER_R2_MIN[seq_file, on_momentum]
     kick_r2_min = 0.998 if noisy else (0.9999 if on_momentum else 0.999)
     assert_acd_momenta_match_truth(

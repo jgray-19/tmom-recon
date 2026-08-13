@@ -69,6 +69,7 @@ from __future__ import annotations
 import pytest
 
 from tests.psb_tracking import ACD_ELEMENT, DRIVEN_TUNES, build_psb_tracking_setup
+from tests.reference_co import zero_reference_co
 from tmom_recon import ACDipoleConfig, ModelDetails, calculate_pz
 
 from .acd_test_helpers import acd_state_marker_names, assert_acd_momenta_match_truth
@@ -144,6 +145,7 @@ def test_psb_acd_reconstruction_with_dipole_closed_orbit(
     # `_check_bpm_state_consistency`; that is the failure we want to catch here.
     result = calculate_pz(
         bpm_df,
+        reference_co=zero_reference_co(bpm_df),
         model_details=ModelDetails(
             accelerator=model.accelerator,
             pt=model.pt,

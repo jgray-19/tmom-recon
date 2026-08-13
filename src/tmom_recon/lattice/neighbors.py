@@ -77,6 +77,15 @@ def prepare_neighbor_views(
         data_p[PREV.dy] = data_p[PREV.bpm_y].map(maps.dy)
         data_n[NEXT.dx] = data_n[NEXT.bpm_x].map(maps.dx)
         data_n[NEXT.dy] = data_n[NEXT.bpm_y].map(maps.dy)
+        # Second-order dispersion is optional: only the neighbour *positions*
+        # need it, since the momentum reconstruction uses ddpx/ddpy at the
+        # current BPM only (already attached by `attach_lattice_columns`).
+        if maps.ddx is not None:
+            data_p[PREV.ddx] = data_p[PREV.bpm_x].map(maps.ddx)
+            data_n[NEXT.ddx] = data_n[NEXT.bpm_x].map(maps.ddx)
+        if maps.ddy is not None:
+            data_p[PREV.ddy] = data_p[PREV.bpm_y].map(maps.ddy)
+            data_n[NEXT.ddy] = data_n[NEXT.bpm_y].map(maps.ddy)
 
     return data_p, data_n, bpm_index, maps
 

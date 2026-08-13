@@ -14,7 +14,9 @@ Booster ring 3, end to end:
    ``<acd>_before`` / ``<acd>_after`` markers.
 
 The test is parametrised over the momentum offset ``delta_p``. The off-momentum
-(dispersive) case is expected to need further work on the reconstruction.
+case runs with ``dispersive_closed_orbit=True`` against the orbit MAD-NG solves
+at ``pt``; the first-order ``pt * D`` orbit model is not accurate enough at
+``delta_p = 1e-2``.
 """
 
 from __future__ import annotations
@@ -52,6 +54,14 @@ def test_psb_ac_dipole_momentum_reconstruction(psb_acd_setup, noise_std: float) 
     if not clean:
         bpm_df = inject_noise_xy(bpm_df, np.random.default_rng(42), noise_std)
 
+    # `tws` is solved around the on-momentum orbit (x == 0 for this error-free
+    # lattice), so using it as the closed-orbit reference models the dispersive
+    # orbit as the first-order `pt * D`. At delta_p = 1e-2 that is 2.3e-5 m short
+    # of the true orbit -- 10% of the driven amplitude -- so instead take the
+    # orbit MAD-NG solves at `pt`, which matches the tracked orbit to 2.4e-7 m,
+    # and tell the betatron stage not to add `pt * D` on top of it.
+    closed_orbit_tws = model.run_twiss(observe=1, coupling=True, pt=model.pt)
+
     result = calculate_ac_dipole_momentum(
         bpm_df,
         tws,
@@ -59,7 +69,9 @@ def test_psb_ac_dipole_momentum_reconstruction(psb_acd_setup, noise_std: float) 
         model=model,
         dpx_tune=DRIVEN_TUNES[0],
         dpy_tune=DRIVEN_TUNES[1],
-        closed_orbit_tws=tws,
+        closed_orbit_tws=closed_orbit_tws,
+        dispersion_tws=tws,
+        dispersive_closed_orbit=True,
     )
 
     assert_acd_momenta_match_truth(

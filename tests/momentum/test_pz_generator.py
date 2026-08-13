@@ -5,6 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from tests.reference_co import zero_reference_co
 from tmom_recon import PzGenerator, calculate_pz
 
 from .momentum_test_utils import lhc_model_details
@@ -22,11 +23,22 @@ def test_generator_update_matches_calculate_pz_and_accepts_bpm_subset(
     tws = setup["tws"]
     model_details = lhc_model_details("lhcb1.seq", data_dir, tws)
 
-    generator = calculate_pz(tracking_df, model_details, generator=True, info=False)
+    generator = calculate_pz(
+        tracking_df,
+        model_details,
+        reference_co=zero_reference_co(tracking_df),
+        generator=True,
+        info=False,
+    )
     assert isinstance(generator, PzGenerator)
 
     from_generator = generator.update()
-    one_shot = calculate_pz(tracking_df, model_details, info=False)
+    one_shot = calculate_pz(
+        tracking_df,
+        model_details,
+        reference_co=zero_reference_co(tracking_df),
+        info=False,
+    )
     assert isinstance(one_shot, pd.DataFrame)
 
     pd.testing.assert_frame_equal(from_generator, one_shot)

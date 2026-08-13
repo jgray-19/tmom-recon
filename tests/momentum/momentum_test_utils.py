@@ -18,7 +18,9 @@ from omc3.scripts.fake_measurement_from_model import generate as generate_fake_m
 from pymadng_utils.accelerators import LHC
 from pymadng_utils.madx import convert_tfs_to_madx
 
+from tests.reference_co import reference_co_from_twiss
 from tmom_recon import ModelDetails, calculate_pz, inject_noise_xy
+from tmom_recon.model import resolve_model_details
 from tmom_recon.svd import svd_clean_measurements
 
 if TYPE_CHECKING:
@@ -52,15 +54,70 @@ def lhc_model_details(seq_file: str, data_dir, tws, *, delta_p: float = 0.0) -> 
     return model_details_for(accelerator, pt=accelerator.dp2pt(delta_p))
 
 
+def reference_co_from_model(model_details: ModelDetails, df: pd.DataFrame) -> pd.DataFrame:
+    """The nominal-RF reference closed orbit, taken from the model's own twiss.
+
+    Deliberately *not* the turn mean of the tracking data. That data is driven,
+    so its per-BPM mean carries the AC dipole's forced offset rather than the
+    closed orbit -- on ``lhcb1``, whose true orbit is zero, the mean is ~4e-5 m
+    of pure contamination and lands in ``px`` as ~1.4e-6.
+
+    A hardcoded zero is equally wrong the other way: the crossing optics run
+    separation bumps of several mm, which the pt estimate would read as a
+    momentum offset. The model orbit is right in both cases because these
+    simulated machines carry no errors the model lacks, so model and machine
+    closed orbits agree by construction. On a real machine this substitution is
+    illegal -- an unknown dipole-error orbit is exactly degenerate with the
+    dispersive orbit, so the reference must be measured.
+    """
+    names = pd.Index(pd.unique(df["name"]), name="name")
+    # The reference has to cover every name the data carries, which on the PSB
+    # includes the AC-dipole before/after markers. Those only exist in the twiss
+    # when the markers are installed, so ask for them when the data needs them.
+    wants_markers = any(str(name).endswith(("_BEFORE", "_AFTER")) for name in names)
+    closed_orbit = resolve_model_details(
+        model_details,
+        observed_elements=[str(name) for name in names],
+        install_ac_dipole_markers=wants_markers,
+    ).closed_orbit_tws
+    # MAD-NG emits the inserted markers as ``..._before``/``..._after`` while the
+    # tracking data carries them uppercased, so match on case-folded names.
+    by_upper = closed_orbit.rename(index=lambda name: str(name).upper())
+    wanted = pd.Index([str(name).upper() for name in names], name="name")
+    missing = wanted.difference(by_upper.index)
+    if len(missing):
+        raise ValueError(
+            f"Model twiss is missing {len(missing)} name(s) present in the data: "
+            f"{sorted(map(str, missing))[:10]}"
+        )
+    reference = reference_co_from_twiss(by_upper.loc[wanted])
+    reference.index = names
+    return reference
+
+
 def transverse_calc(
     df: pd.DataFrame,
     model_details: ModelDetails,
+    reference_co: pd.DataFrame,
     *,
     ac_dipole_config=None,
     **kwargs,
 ) -> pd.DataFrame:
-    """Model-only reconstruction without dispersion (old transverse behaviour)."""
-    result = calculate_pz(df, model_details, use_dispersion=False, acd=ac_dipole_config, **kwargs)
+    """Model-only reconstruction without dispersion (old transverse behaviour).
+
+    *reference_co* is positional and required on purpose. It used to default to a
+    zero orbit, which silently produced wrong answers twice: the crossing optics
+    run mm-scale separation bumps that the pt estimate then reads as momentum.
+    Build it with :func:`reference_co_from_model`.
+    """
+    result = calculate_pz(
+        df,
+        model_details,
+        reference_co=reference_co,
+        use_dispersion=False,
+        acd=ac_dipole_config,
+        **kwargs,
+    )
     assert isinstance(result, pd.DataFrame), "Result should be a DataFrame"
     return result
 
@@ -68,12 +125,26 @@ def transverse_calc(
 def dispersive_calc(
     df: pd.DataFrame,
     model_details: ModelDetails,
+    reference_co: pd.DataFrame,
     *,
     ac_dipole_config=None,
     **kwargs,
 ) -> pd.DataFrame:
-    """Model-only reconstruction with dispersion (old dispersive behaviour)."""
-    result = calculate_pz(df, model_details, use_dispersion=True, acd=ac_dipole_config, **kwargs)
+    """Model-only reconstruction with dispersion (old dispersive behaviour).
+
+    *reference_co* is positional and required on purpose. It used to default to a
+    zero orbit, which silently produced wrong answers twice: the crossing optics
+    run mm-scale separation bumps that the pt estimate then reads as momentum.
+    Build it with :func:`reference_co_from_model`.
+    """
+    result = calculate_pz(
+        df,
+        model_details,
+        reference_co=reference_co,
+        use_dispersion=True,
+        acd=ac_dipole_config,
+        **kwargs,
+    )
     assert isinstance(result, pd.DataFrame), "Result should be a DataFrame"
     return result
 
@@ -180,9 +251,15 @@ def verify_pz_reconstruction(
     rng_seed : int
         Random seed for noise generation.
     """
+    # The nominal-RF reference must come from the model, not a hardcoded zero:
+    # these setups perturb magnets and run orbit correction, and the model
+    # carries both, so the machine's closed orbit is non-zero by construction.
+    reference_co = reference_co_from_model(model_details, tracking_df)
+
     no_noise_result = calculate_pz_func(
         tracking_df.copy(deep=True),
         model_details,
+        reference_co=reference_co,
         info=True,
     ).rename(columns={"px": "px_calc", "py": "py_calc"})
 
@@ -192,6 +269,7 @@ def verify_pz_reconstruction(
     noisy_result = calculate_pz_func(
         noisy_df,
         model_details,
+        reference_co=reference_co,
         info=True,
     ).rename(columns={"px": "px_calc", "py": "py_calc"})
 
@@ -200,6 +278,7 @@ def verify_pz_reconstruction(
     cleaned_noise_result = calculate_pz_func(
         cleaned_df,
         model_details,
+        reference_co=reference_co,
         info=True,
     ).rename(columns={"px": "px_calc", "py": "py_calc"})
 
@@ -325,6 +404,7 @@ def assert_dispersive_measurement_recovers_pt(
     result = calculate_pz(
         tracking_df.copy(deep=True),
         model_details,
+        reference_co=reference_co_from_model(model_details, tracking_df),
         measurement_dir=str(meas_dir),
         reverse_meas_tws=reverse_meas_tws,
         info=False,

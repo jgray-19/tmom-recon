@@ -35,6 +35,16 @@ class ModelDetails:
             sequence (see :meth:`ACDipoleMadDriver.apply_strengths`). Nothing
             here rematches tunes: the supplied lattice is taken to already sit on
             the machine's tunes at *pt*.
+
+            This is also the seam for a *fitted* lattice. The closed-orbit angle
+            ``px``/``py`` cannot be measured, so it comes from
+            ``closed_orbit_tws``; with a nominal model that angle is simply
+            wrong, and on PSB ring 3 its error equals the entire true angle.
+            Passing magnet strengths fitted to a measured closed orbit and phase
+            (``aba_optimiser.momentum_reference`` in the sgd-magnet-tuner
+            project does this) cut that error ~20x in simulation. The coupling
+            is deliberately plain data -- a mapping of strengths -- so this
+            package never imports the fitting code.
         tune_knobs_file: Optional knob file applied for tune corrections.
         corrector_knobs_file: Optional knob file applied for corrector settings.
     """
@@ -76,8 +86,12 @@ def resolve_model_details(
         tune_knobs_file=details.tune_knobs_file,
         corrector_knobs_file=details.corrector_knobs_file,
     )
-    closed_orbit_tws = model.run_twiss(observe=1, coupling=True, deltap=0.0)
-    optics_tws = model.run_twiss(observe=1, coupling=True, pt=model.pt)
+    # `chrom=True` adds the second-order dispersion columns ddx/ddpx/ddy/ddpy,
+    # which the pt estimate and the dispersive momentum term both use. They are
+    # optional downstream, so a twiss without them still works -- just to first
+    # order in pt.
+    closed_orbit_tws = model.run_twiss(observe=1, coupling=True, chrom=True, deltap=0.0)
+    optics_tws = model.run_twiss(observe=1, coupling=True, chrom=True, pt=model.pt)
     return ResolvedModel(model=model, optics_tws=optics_tws, closed_orbit_tws=closed_orbit_tws)
 
 
