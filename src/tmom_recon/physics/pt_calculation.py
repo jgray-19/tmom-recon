@@ -289,17 +289,82 @@ def get_mean_pt(data: pd.DataFrame, tws: pd.DataFrame, info: bool = True) -> flo
 LHC_ARC_PATTERN = r"BPM.*\.0*(1[5-9]|[2-9]\d|[1-9]\d{2,})[RL]"
 
 
-def estimate_pt_from_model(data: pd.DataFrame, tws: pd.DataFrame, info: bool = True) -> float:
+def _solve_pt_quadratic(numerator: float, s_dx2: float, s_ddx_dx: float) -> float:
+    """Solve ``numerator = pt*s_dx2 + pt**2*s_ddx_dx`` for pt.
+
+    ``pt`` and ``pt**2`` are one unknown, not two, so a single orbit determines
+    the second-order solution -- no momentum scan is needed. Of the two roots,
+    the physical one is adjacent to the first-order solution ``numerator/s_dx2``
+    (the quadratic term is a ~0.2% correction at dp/p = 8e-3, so the roots are
+    nowhere near each other).
     """
-    Estimate MAD-NG pt using model-based dispersion with the sum method.
+    linear = numerator / s_dx2
+    if s_ddx_dx == 0.0:
+        return linear
+    discriminant = s_dx2 * s_dx2 + 4.0 * s_ddx_dx * numerator
+    if discriminant < 0.0:
+        LOGGER.warning(
+            "Second-order pt solve has no real root (discriminant %.3e); "
+            "falling back to the first-order estimate.",
+            discriminant,
+        )
+        return linear
+    root = np.sqrt(discriminant)
+    candidates = ((-s_dx2 + root) / (2.0 * s_ddx_dx), (-s_dx2 - root) / (2.0 * s_ddx_dx))
+    return min(candidates, key=lambda value: abs(value - linear))
+
+
+def estimate_pt_from_model(
+    data: pd.DataFrame,
+    tws: pd.DataFrame,
+    *,
+    reference_co: pd.DataFrame,
+    info: bool = True,
+) -> float:
+    """
+    Estimate MAD-NG pt from the closed orbit, using first- and second-order dispersion.
+
+    The orbit is projected onto the model dispersion,
+    ``pt = sum(x_co*dx) / sum(dx**2)``, extended to second order by solving
+    ``sum(x_co*dx) = pt*sum(dx**2) + pt**2*sum(ddx*dx)`` whenever the twiss
+    carries ``ddx``. On PSB ring 3 that removes a relative bias of 2.3e-4 to
+    2.3e-3 (growing with dp/p), leaving 3e-7 to 2e-5 -- a 97-670x reduction.
+    Note this is a *bias*: unlike BPM noise it does not average down with turns.
+
+    ``reference_co`` is mandatory and must be a **measured** closed orbit taken at
+    nominal RF. It cannot be replaced by a model closed orbit: the bend response
+    matrix spans the entire horizontal BPM space (rank 16 of 16 on PSB ring 3),
+    so an unknown dipole-error orbit is exactly degenerate with the dispersive
+    orbit and a model that does not carry the machine's real errors biases pt by
+    ~43% at dp/p = 1e-3. Subtracting a measured orbit cancels the error orbit
+    identically, whatever it is, without needing to know the bend errors at all.
+
+    The estimate is relative to whatever momentum the reference orbit sat at. A
+    reference at ``pt_r != 0`` leaves a flat gain error of ~``2*pt_r*ddx/dx``
+    (4.6e-5 at dp/p_ref = 1e-4), which is why the reference must be at nominal RF.
 
     Args:
         data: Tracking data with BPM readings. Must contain columns: ["name", "x"].
-        tws: Twiss parameters DataFrame. Must have column "dx" and be indexed by BPM name.
+        tws: Twiss parameters DataFrame. Must have column "dx" and be indexed by BPM
+            name. When "ddx" is present the second-order solution is used.
+        reference_co: Measured closed orbit at nominal RF, indexed by BPM name with
+            an "x" column. Must cover every BPM used for the estimate.
         info: If True, log diagnostic information.
     Returns:
-        Estimated pt value as a float.
+        Estimated pt value as a float, relative to *reference_co*.
+    Raises:
+        ValueError: If *reference_co* is missing, malformed, or does not cover the
+            BPMs selected for the estimate.
     """
+    if reference_co is None:
+        raise ValueError(
+            "estimate_pt_from_model requires `reference_co`, a measured closed orbit "
+            "at nominal RF. A model closed orbit is not a valid substitute: dipole "
+            "errors are exactly degenerate with the dispersive orbit at a single "
+            "momentum, so a mismatched model biases pt by tens of percent."
+        )
+    if "x" not in getattr(reference_co, "columns", ()):
+        raise ValueError('`reference_co` must be a DataFrame with an "x" column.')
     data_bpms = set(data["name"].unique())
     tws_bpms = set(tws.index)
 
@@ -335,12 +400,41 @@ def estimate_pt_from_model(data: pd.DataFrame, tws: pd.DataFrame, info: bool = T
             )
     if filtered_tws.empty:
         raise ValueError("No BPMs available for δ estimation after filtering.")
-    numerator = np.sum(filtered_co["x"] * filtered_tws["dx"])
-    denominator = np.sum(filtered_tws["dx"] ** 2)
-    pt = numerator / denominator
+
+    missing_reference = filtered_co.index.difference(reference_co.index)
+    if len(missing_reference):
+        raise ValueError(
+            "`reference_co` is missing BPMs used for the pt estimate: "
+            f"{sorted(map(str, missing_reference))}"
+        )
+    # Referencing to a *measured* nominal-RF orbit cancels the machine's error
+    # closed orbit identically; see the docstring for why a model CO cannot.
+    orbit = filtered_co["x"] - reference_co.loc[filtered_co.index, "x"].astype(float)
+
+    numerator = float(np.sum(orbit * filtered_tws["dx"]))
+    denominator = float(np.sum(filtered_tws["dx"] ** 2))
+
+    if "ddx" in filtered_tws.columns:
+        s_ddx_dx = float(np.sum(filtered_tws["ddx"] * filtered_tws["dx"]))
+        pt = _solve_pt_quadratic(numerator, denominator, s_ddx_dx)
+        order = "second"
+    else:
+        LOGGER.warning(
+            "Twiss has no 'ddx' column; falling back to first-order dispersion. "
+            "This leaves a relative pt bias growing with dp/p (2.3e-3 at 1e-2 on "
+            "PSB ring 3). Run the model twiss with chrom=True to enable it."
+        )
+        pt = numerator / denominator
+        order = "first"
 
     if info:
         LOGGER.info(
-            f"Estimated pt from model-based dispersion: {pt} from {numerator:.2e}/{denominator:.2e}"
+            "Estimated pt from %s-order dispersion: %s (from %.2e/%.2e), "
+            "referenced to a measured nominal-RF closed orbit over %d BPMs",
+            order,
+            pt,
+            numerator,
+            denominator,
+            len(filtered_tws),
         )
     return pt

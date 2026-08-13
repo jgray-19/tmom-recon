@@ -1,0 +1,144 @@
+FULL INVESTIGATION: off-momentum closed-orbit handling in a realistic PSB
+measurement scenario.
+
+Read NOTES_offmomentum_closed_orbit.md in the repo root FIRST. It contains the
+established findings from the 2026-08-10 session and the numbers you should treat
+as your baseline. Do not re-derive them; extend them.
+
+Work on a new branch (e.g. `investigate/offmom-co-2am`). Do NOT commit to master
+and do NOT push. Leave the working tree on that branch with your work committed
+to it.
+
+The test environment is `.venv` in the repo root (run pytest as
+`.venv/bin/python -m pytest`). PYTHONPATH=. is needed for standalone scripts that
+import `tests.*`. PSB tracking setups take ~1-2 min each to build; cache/reuse
+them within a script rather than rebuilding per configuration.
+
+=======================================================================
+BACKGROUND (established, do not re-litigate)
+=======================================================================
+
+Two independent error sources degrade off-momentum ACD reconstruction:
+
+1. TRUNCATION ERROR. The dispersive closed orbit is modelled first-order as
+   pt*D. The neglected pt^2*D2 term is a constant per-BPM offset scaling as pt^2
+   (px residual 1.4e-7 / 1.3e-6 / 1.4e-5 rad at dp = 1e-3 / 3e-3 / 1e-2 on PSB
+   ring 3). Already addressed by the opt-in
+   `ACDipoleConfig.dispersive_closed_orbit=True`, which references the exact
+   MAD-NG orbit at pt and sets the betatron-stage pt to zero. Restores
+   px_downstream R^2 from 0.9836 to 0.999999 -- BUT ONLY when the model carries
+   the machine's magnet errors.
+
+2. MODEL ERROR. When the model does not know the machine's magnet errors, the
+   reconstruction collapses (6 mm model/machine CO mismatch, px_downstream R^2
+   NEGATIVE). The pt method is then irrelevant. The designated remedy, the
+   data-mean closed orbit, is algebraically a NO-OP for the BPM momenta:
+   `_closed_orbit_momenta` infers the CO angle with the same linear neighbour-pair
+   operator used to reconstruct the momenta, so removing the orbit and restoring
+   its angle cancels identically. Verified numerically (bit-identical R^2).
+
+The kick fit (dpx/dpy R^2) is BLIND to all of this -- it stays at 0.999999
+because a harmonic fit absorbs a constant into its offset parameter. Validate on
+the absolute BPM momenta (px_bpm_upstream / px_bpm_downstream vs tracked truth),
+never on kick-fit quality.
+
+=======================================================================
+THE INVESTIGATION
+=======================================================================
+
+The scenario is a REAL PSB measurement: the machine has both bend field errors
+and quadrupole gradient errors, and the model knows NEITHER a priori. The
+operational handle we do have is that the closed orbit can be measured at
+several different delta_p values.
+
+--- Part A: estimate the bend errors from closed orbits at different delta_p ---
+
+Build a PSB ring-3 setup with bend errors AND quad gradient errors applied to the
+tracking line only (`apply_bend_errors_to_model=False`,
+`apply_quad_errors_to_model=False` in tests/psb_tracking.py -- both flags exist).
+
+Measure the closed orbit at a set of delta_p values (choose a sensible spread,
+e.g. 0, +/-1e-3, +/-3e-3, +/-8e-3; the CO is the per-BPM turn-mean of the ACD
+flat-top data, or track a single particle without excitation if that is cleaner
+and faster -- justify whichever you pick).
+
+Fit the bend errors from that family of orbits. The physics: a dipole field error
+produces an orbit distortion that is (to first order) independent of delta_p,
+while the dispersive orbit scales with pt. Measuring at several delta_p therefore
+separates the two. Decide and document the estimator you use -- a linear response
+matrix from MAD-NG (orbit response to each bend's k0) inverted with SVD is the
+obvious route; `tmom_recon/svd.py` exists and may already have machinery.
+
+Report honestly: how well are the individual bend k0 errors recovered, and how
+well is the resulting MODEL closed orbit matched to the machine's? The second
+number is what actually matters. Also check what the un-modelled QUAD errors do
+to this estimate -- they are a systematic the bend fit cannot absorb, and
+quantifying that contamination is a key result.
+
+--- Part B: is the truncation fix still worth anything? ---
+
+With the model improved by the Part A bend-error estimate (quads still unknown),
+re-run the comparison from NOTES_offmomentum_closed_orbit.md section 3:
+
+  - linear pt*D    vs    dispersive_closed_orbit=True (exact CO)
+
+at several delta_p. The question the user is asking: once the dominant model
+error is reduced, does the pt^2*D2 truncation become the limiting term again, or
+is it still buried under residual model error? I.e. IS WHAT WE HAVE ENOUGH?
+
+Produce the crossover: at what level of residual model CO error does the choice
+of pt method start to matter? Express it as a curve or table, not a single point.
+
+--- Part C: second-order dispersion ---
+
+MAD-NG twiss with `chrom=true` provides `ddx`, `ddpx`, `ddy`, `ddpy` -- the
+chromatic derivatives of the dispersion functions (confirmed in
+MADdocs/refman/source/mad_cmd_twiss.rst). It also provides `dmu1`/`dmu2`
+(chromatic phase derivatives) and `wx`/`phix` (Montague functions).
+
+Determine empirically:
+
+  1. The exact convention/normalisation. Is the second-order orbit
+     pt*dx + 0.5*pt^2*ddx, or pt*dx + pt^2*ddx, and is ddx per unit pt or per
+     unit delta? (Recall MAD dx/dpx are per unit PT, not per delta -- PSB
+     beta~0.52 at 160 MeV kinetic, so a 1/beta factor is a real ~1.92x trap
+     here.) Fit it against the exact MAD-NG off-momentum CO and state the
+     convention you established, with the residual.
+
+  2. Whether a second-order closed-orbit model (pt*D + second-order term) is a
+     useful THIRD method sitting between "linear pt*D" and "exact CO". It would
+     matter in the case where you have good dispersion knowledge but cannot
+     trust the model's closed orbit -- e.g. combined with a MEASURED dispersion.
+     Quantify the residual it leaves vs the exact CO.
+
+  3. Whether the chromatic optics terms (dmu1, wx/phix) explain and can correct
+     the smaller LINEAR-in-pt gain error documented in the notes (1-slope =
+     6.2e-4 / 1.8e-3 / 5.8e-3 at dp = 1e-3 / 3e-3 / 1e-2). This is a separate
+     effect from the orbit truncation and is currently unaddressed.
+
+=======================================================================
+DELIVERABLE
+=======================================================================
+
+Write NOTES_offmom_investigation_<date>.md in the repo root, in the same style as
+NOTES_offmomentum_closed_orbit.md: numbers first, tables, explicit statements of
+what was measured vs what was inferred, and a clearly separated "open items"
+section.
+
+Answer these three questions explicitly and near the top:
+
+  Q1. Can bend errors be usefully estimated from closed orbits at multiple
+      delta_p when quad errors are also present and unknown?
+  Q2. After that, is the existing first-order pt*D treatment sufficient, or is
+      the exact-CO route (or a second-order route) needed?
+  Q3. Is second-order dispersion (ddx/ddpx) usable, and what does it buy?
+
+Include any new test files or scripts you wrote, committed on the branch. If you
+add tests, mark slow ones appropriately and make sure `.venv/bin/python -m pytest
+tests/acd -q` still reports the same pass/xfail counts as the notes record
+(3 passed / 1 xfailed for test_psb_closed_orbit_acd.py; the two
+test_psb_acd_momentum.py off_momentum failures are known and pre-existing).
+
+Be rigorous about the difference between "the model now matches the machine" and
+"the reconstruction R^2 improved" -- report both, and if a result looks too good,
+check whether an operator is cancelling itself as in the data-mean no-op above.

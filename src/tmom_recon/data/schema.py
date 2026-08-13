@@ -27,6 +27,8 @@ class NeighborNames:
     var_y: str
     dx: str
     dy: str
+    ddx: str
+    ddy: str
 
 
 PREV = NeighborNames(
@@ -42,6 +44,8 @@ PREV = NeighborNames(
     var_y="var_y_p",
     dx="dx_p",
     dy="dy_p",
+    ddx="ddx_p",
+    ddy="ddy_p",
 )
 
 NEXT = NeighborNames(
@@ -57,6 +61,8 @@ NEXT = NeighborNames(
     var_y="var_y_n",
     dx="dx_n",
     dy="dy_n",
+    ddx="ddx_n",
+    ddy="ddy_n",
 )
 
 POSITION_COLS = ("x", "y")

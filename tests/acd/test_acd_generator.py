@@ -13,6 +13,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from tests.reference_co import zero_reference_co
 from tmom_recon import ACDipoleConfig, ACDipolePzGenerator, ModelDetails, calculate_pz
 
 from .acd_test_helpers import AC_DIPOLE_ELEMENT, _ac_dipole_segment_around_element, _get_driver
@@ -58,13 +59,24 @@ def test_generator_update_matches_acd_only(data_dir, acd_tracking_setup) -> None
     config = _config(bpm_upstream=bpm_up, bpm_downstream=bpm_dn)
 
     generator = calculate_pz(
-        tracking_df, model_details=model_details, acd=config, acd_only=True, generator=True
+        tracking_df,
+        reference_co=zero_reference_co(tracking_df),
+        model_details=model_details,
+        acd=config,
+        acd_only=True,
+        generator=True,
     )
     assert isinstance(generator, ACDipolePzGenerator)
     assert generator.model.accelerator is driver.accelerator
 
     from_generator = generator.update()
-    one_shot = calculate_pz(tracking_df, model_details=model_details, acd=config, acd_only=True)
+    one_shot = calculate_pz(
+        tracking_df,
+        reference_co=zero_reference_co(tracking_df),
+        model_details=model_details,
+        acd=config,
+        acd_only=True,
+    )
 
     pd.testing.assert_frame_equal(from_generator, one_shot)
     pd.testing.assert_frame_equal(from_generator.attrs["summary"], one_shot.attrs["summary"])
@@ -79,7 +91,12 @@ def test_generator_repeated_update_is_deterministic(data_dir, acd_tracking_setup
     config = _config(bpm_upstream=bpm_up, bpm_downstream=bpm_dn)
 
     generator = calculate_pz(
-        tracking_df, model_details=model_details, acd=config, acd_only=True, generator=True
+        tracking_df,
+        reference_co=zero_reference_co(tracking_df),
+        model_details=model_details,
+        acd=config,
+        acd_only=True,
+        generator=True,
     )
     assert isinstance(generator, ACDipolePzGenerator)
     first = generator.update()

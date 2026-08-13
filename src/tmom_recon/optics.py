@@ -2,8 +2,10 @@
 
 Builds a single resolved twiss DataFrame from a model twiss and/or an omc3
 optics measurement directory. Each optics category — ``phase`` (mu1/mu2 and
-tunes), ``amplitude`` (beta and alpha) and ``dispersion`` — is sourced
-independently, defaulting to the measurement when one is available.
+tunes), ``beta``, ``alpha`` and ``dispersion`` — is sourced independently,
+defaulting to the measurement when one is available. Beta and alpha are
+separate categories so a measured beta can be paired with a model alpha, which
+is what beta from amplitude needs (see :data:`CATEGORIES`).
 
 Every resolved twiss carries a full set of uncertainty columns: measured
 errors where the measurement is used, and rough configurable uncertainties
@@ -36,18 +38,27 @@ if TYPE_CHECKING:  # pragma: no cover - typing helpers only
 
 LOGGER = logging.getLogger(__name__)
 
-OpticsCategory = Literal["phase", "amplitude", "dispersion"]
+OpticsCategory = Literal["phase", "beta", "alpha", "dispersion"]
 OpticsSource = Literal["model", "measurement"]
 
-CATEGORIES: tuple[OpticsCategory, ...] = ("phase", "amplitude", "dispersion")
+# Beta and alpha are separate categories because an omc3 measurement can supply
+# a good beta without a good alpha: beta from amplitude
+# (``beta_amplitude_x/y.tfs``) carries no alpha column at all, so sourcing them
+# together drags in the alpha from the beta-from-phase files, a different and
+# much noisier estimator. Listing ``alpha`` in ``model_optics`` keeps the model
+# alpha alongside the measured beta.
+CATEGORIES: tuple[OpticsCategory, ...] = ("phase", "beta", "alpha", "dispersion")
 
 PHASE_COLUMNS = ("mu1", "mu2")
-AMPLITUDE_COLUMNS = ("beta11", "beta22", "alfa11", "alfa22")
+BETA_COLUMNS = ("beta11", "beta22")
+ALPHA_COLUMNS = ("alfa11", "alfa22")
 DISPERSION_COLUMNS = ("dx", "dy", "dpx", "dpy")
+SECOND_ORDER_DISPERSION_COLUMNS = ("ddx", "ddpx", "ddy", "ddpy")
 
 CATEGORY_COLUMNS: dict[OpticsCategory, tuple[str, ...]] = {
     "phase": PHASE_COLUMNS,
-    "amplitude": AMPLITUDE_COLUMNS,
+    "beta": BETA_COLUMNS,
+    "alpha": ALPHA_COLUMNS,
     "dispersion": DISPERSION_COLUMNS,
 }
 
@@ -87,12 +98,19 @@ class ResolvedOptics:
         co: Twiss used for closed-orbit removal/restoration (the explicit
             closed-orbit twiss when available, else the model twiss, else
             ``tws``).
+        reference_co: **Measured** closed orbit at nominal RF, the momentum
+            reference for the pt estimate. Deliberately separate from ``co``:
+            ``co`` is a modelling convenience for removing and restoring the
+            orbit, while this is a physical measurement that no model can
+            substitute for (see
+            :func:`tmom_recon.physics.pt_calculation.estimate_pt_from_model`).
         sources: Resolved source per optics category.
         use_dispersion: Whether dispersion is available and enabled.
     """
 
     tws: pd.DataFrame
     co: pd.DataFrame
+    reference_co: pd.DataFrame | None
     sources: dict[OpticsCategory, OpticsSource]
     use_dispersion: bool
 
@@ -189,7 +207,7 @@ def _resolve_sources(
 ) -> tuple[dict[OpticsCategory, OpticsSource], bool]:
     """Decide the source for each category and whether dispersion stays on."""
     sources: dict[OpticsCategory, OpticsSource] = {}
-    for category in ("phase", "amplitude"):
+    for category in ("phase", "beta", "alpha"):
         if category in model_optics:
             sources[category] = "model"
         else:
@@ -222,11 +240,14 @@ def _resolve_sources(
     return sources, dispersion_on
 
 
-def _synthesise_amplitude_errors(tws: pd.DataFrame, errors: ModelOpticsErrors) -> None:
+def _synthesise_beta_errors(tws: pd.DataFrame, errors: ModelOpticsErrors) -> None:
     sqrt_betax = np.sqrt(tws["beta11"].to_numpy(dtype=float))
     sqrt_betay = np.sqrt(tws["beta22"].to_numpy(dtype=float))
     tws["sqrt_betax_err"] = errors.beta_rel * sqrt_betax / 2.0
     tws["sqrt_betay_err"] = errors.beta_rel * sqrt_betay / 2.0
+
+
+def _synthesise_alpha_errors(tws: pd.DataFrame, errors: ModelOpticsErrors) -> None:
     if errors.alpha_rel > 0.0:
         alfa_x = np.abs(tws["alfa11"].to_numpy(dtype=float))
         alfa_y = np.abs(tws["alfa22"].to_numpy(dtype=float))
@@ -239,16 +260,18 @@ def _synthesise_amplitude_errors(tws: pd.DataFrame, errors: ModelOpticsErrors) -
 
 def _convert_measured_beta_errors(tws: pd.DataFrame, errors: ModelOpticsErrors) -> None:
     """Convert raw measured beta errors to sqrt(beta) errors, with model fallback."""
-    for err_col, beta_col, alfa_col in (
-        ("sqrt_betax_err", "beta11", "alfax_err"),
-        ("sqrt_betay_err", "beta22", "alfay_err"),
-    ):
+    for err_col, beta_col in (("sqrt_betax_err", "beta11"), ("sqrt_betay_err", "beta22")):
         sqrt_beta = np.sqrt(tws[beta_col].to_numpy(dtype=float))
         if err_col in tws.columns:
             tws[err_col] = tws[err_col].to_numpy(dtype=float) / (2.0 * sqrt_beta)
         else:
             LOGGER.warning("Measured %s missing; using model uncertainty", err_col)
             tws[err_col] = errors.beta_rel * sqrt_beta / 2.0
+
+
+def _check_measured_alpha_errors(tws: pd.DataFrame, errors: ModelOpticsErrors) -> None:
+    """Keep the measured alpha errors, filling in the model value where absent."""
+    for alfa_col in ("alfax_err", "alfay_err"):
         if alfa_col not in tws.columns:
             LOGGER.warning("Measured %s missing; using model uncertainty", alfa_col)
             tws[alfa_col] = errors.alpha_abs
@@ -274,8 +297,9 @@ def _synthesise_dispersion_errors(tws: pd.DataFrame, errors: ModelOpticsErrors) 
 
 def resolve_optics(
     *,
-    model_tws: tfs.TfsDataFrame | None = None,
+    optics_tws: tfs.TfsDataFrame | None = None,
     closed_orbit_tws: tfs.TfsDataFrame | None = None,
+    reference_co: pd.DataFrame | None = None,
     measurement_dir: str | Path | None = None,
     model_optics: Collection[OpticsCategory] = (),
     use_dispersion: bool = True,
@@ -287,11 +311,16 @@ def resolve_optics(
     """Build the resolved twiss used by the momentum reconstruction pipeline.
 
     Args:
-        model_tws: Model twiss indexed by element name (lowercase optics
+        optics_tws: Model twiss indexed by element name (lowercase optics
             columns ``beta11/alfa11/mu1/...`` and tune headers ``q1``/``q2``).
         closed_orbit_tws: Model twiss carrying the closed-orbit reference to
             subtract and restore. This is deliberately separate from
-            ``model_tws`` so off-momentum optics do not become the closed orbit.
+            ``optics_tws`` so off-momentum optics do not become the closed orbit.
+        reference_co: Measured closed orbit at nominal RF (indexed by BPM name,
+            column ``x``), required by the reconstruction as the momentum
+            reference. A model closed orbit is not a substitute -- dipole errors
+            are exactly degenerate with the dispersive orbit at a single
+            momentum.
         measurement_dir: omc3 optics measurement directory.
         model_optics: Categories forced to come from the model. Categories not
             listed come from the measurement when available, model otherwise.
@@ -311,11 +340,11 @@ def resolve_optics(
         KeyError: If a required optics column is missing from its source.
     """
     has_measurement = measurement_dir is not None or measured is not None
-    if model_tws is None and not has_measurement:
-        raise ValueError("At least one of model_tws or measurement_dir must be provided")
+    if optics_tws is None and not has_measurement:
+        raise ValueError("At least one of optics_tws or measurement_dir must be provided")
     model_categories = _validate_categories(model_optics)
     errors = model_errors if model_errors is not None else ModelOpticsErrors()
-    co_tws = closed_orbit_tws if closed_orbit_tws is not None else model_tws
+    co_tws = closed_orbit_tws if closed_orbit_tws is not None else optics_tws
 
     measured_tws = None
     measurement_dispersion_found = False
@@ -328,7 +357,7 @@ def resolve_optics(
         )
 
     sources, dispersion_on = _resolve_sources(
-        model_tws=model_tws,
+        model_tws=optics_tws,
         has_measurement=has_measurement,
         model_optics=model_categories,
         use_dispersion=use_dispersion,
@@ -338,17 +367,17 @@ def resolve_optics(
 
     if measured_tws is not None:
         tws = measured_tws
-        if model_tws is not None:
-            shared = tws.index.intersection(model_tws.index)
+        if optics_tws is not None:
+            shared = tws.index.intersection(optics_tws.index)
             tws = tws.loc[shared].copy(deep=True)
     else:
-        tws = tfs.TfsDataFrame(model_tws.copy(deep=True))
+        tws = optics_tws.copy(deep=True)
         if bpm_names is not None:
             tws = tws[tws.index.isin(set(bpm_names))]
-        tws.headers = {"q1": _get_tune(model_tws, "q1"), "q2": _get_tune(model_tws, "q2")}
+        tws.headers = {"q1": _get_tune(optics_tws, "q1"), "q2": _get_tune(optics_tws, "q2")}
 
     # Overwrite model-sourced categories from the model twiss
-    model_view = model_tws.loc[tws.index] if model_tws is not None else None
+    model_view = optics_tws.loc[tws.index] if optics_tws is not None else None
     for category, columns in CATEGORY_COLUMNS.items():
         if category == "dispersion" and not dispersion_on:
             continue
@@ -360,15 +389,20 @@ def resolve_optics(
             tws[column] = model_view[column].to_numpy(dtype=float)
 
     # Tunes follow the phase source
-    if sources["phase"] == "model" and model_tws is not None:
-        tws.headers["q1"] = _get_tune(model_tws, "q1")
-        tws.headers["q2"] = _get_tune(model_tws, "q2")
+    if sources["phase"] == "model" and optics_tws is not None:
+        tws.headers["q1"] = _get_tune(optics_tws, "q1")
+        tws.headers["q2"] = _get_tune(optics_tws, "q2")
 
     # Uncertainty columns: measured where measured, rough model errors elsewhere
-    if sources["amplitude"] == "measurement":
+    if sources["beta"] == "measurement":
         _convert_measured_beta_errors(tws, errors)
     else:
-        _synthesise_amplitude_errors(tws, errors)
+        _synthesise_beta_errors(tws, errors)
+
+    if sources["alpha"] == "measurement":
+        _check_measured_alpha_errors(tws, errors)
+    else:
+        _synthesise_alpha_errors(tws, errors)
 
     if sources["phase"] == "model" or "mu1_var" not in tws.columns:
         _synthesise_phase_variances(tws, errors)
@@ -379,10 +413,18 @@ def resolve_optics(
         dispersion_on = False
     if dispersion_on:
         _synthesise_dispersion_errors(tws, errors)
+        # Second-order dispersion is never measured, so it always comes from the
+        # model when the twiss was run with chrom=True. Absent columns simply
+        # leave the reconstruction at first order.
+        if model_view is not None:
+            for column in SECOND_ORDER_DISPERSION_COLUMNS:
+                if column in model_view.columns:
+                    tws[column] = model_view[column].to_numpy(dtype=float)
 
     return ResolvedOptics(
         tws=tws,
         co=co_tws if co_tws is not None else tws,
+        reference_co=reference_co,
         sources=sources,
         use_dispersion=dispersion_on,
     )

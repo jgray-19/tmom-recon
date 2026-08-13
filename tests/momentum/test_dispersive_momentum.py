@@ -14,7 +14,13 @@ from tests.acd.acd_test_helpers import (
 from tmom_recon import ACDipoleConfig, inject_noise_xy
 from tmom_recon.svd import svd_clean_measurements  # noqa: E402
 
-from .momentum_test_utils import dispersive_calc, lhc_model_details, rmse, transverse_calc
+from .momentum_test_utils import (
+    dispersive_calc,
+    lhc_model_details,
+    reference_co_from_model,
+    rmse,
+    transverse_calc,
+)
 
 
 @pytest.mark.slow
@@ -30,11 +36,17 @@ def test_dispersive_momentum_on_momentum(seq_file, data_dir, acd_tracking_setup)
     tws = setup["tws"]
     truth = setup["truth"]
     model_details = lhc_model_details(seq_file, data_dir, tws)
+    # The nominal-RF reference comes from the model, which matches the simulated
+    # machine here. Neither shortcut works: the tracking turn-mean is driven data
+    # and carries the AC dipole's offset, while a zero reference misses the
+    # crossing optics' separation bumps.
+    reference_co = reference_co_from_model(model_details, tracking_df)
 
     # Transverse reconstruction (baseline)
     trans_result = transverse_calc(
         tracking_df.copy(deep=True),
         model_details,
+        reference_co=reference_co,
         info=True,
     ).rename(columns={"px": "px_trans", "py": "py_trans"})
 
@@ -42,6 +54,7 @@ def test_dispersive_momentum_on_momentum(seq_file, data_dir, acd_tracking_setup)
     disp_result = dispersive_calc(
         tracking_df.copy(deep=True),
         model_details,
+        reference_co=reference_co,
         info=True,
     ).rename(columns={"px": "px_disp", "py": "py_disp"})
 
@@ -93,6 +106,7 @@ def test_dispersive_momentum_on_momentum_with_ac_dipole_config(
     tws = setup["tws"]
     truth = setup["truth"]
     model_details = lhc_model_details(seq_file, data_dir, tws)
+    reference_co = reference_co_from_model(model_details, tracking_df)
     seq = data_dir / "sequences" / seq_file
     model = _get_driver(seq, pt=0.0)
     bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
@@ -104,12 +118,14 @@ def test_dispersive_momentum_on_momentum_with_ac_dipole_config(
     baseline = dispersive_calc(
         tracking_df.copy(deep=True),
         model_details,
+        reference_co=reference_co,
         info=False,
     ).rename(columns={"px": "px_base", "py": "py_base"})
 
     with_acd = dispersive_calc(
         tracking_df.copy(deep=True),
         model_details,
+        reference_co=reference_co,
         info=False,
         ac_dipole_config=ACDipoleConfig(
             ac_dipole_marker=AC_DIPOLE_ELEMENT,
@@ -178,6 +194,9 @@ def test_dispersive_momentum_off_momentum_with_ac_dipole_config(
     tws = setup["tws"]
     truth = setup["truth"]
     model_details = lhc_model_details(seq_file, data_dir, tws, delta_p=delta_p)
+    # The reference orbit is defined at nominal RF, so it comes from the
+    # on-momentum model even though the reconstruction runs off momentum.
+    reference_co = reference_co_from_model(lhc_model_details(seq_file, data_dir, tws), tracking_df)
     seq = data_dir / "sequences" / seq_file
     accelerator = LHC(beam=1, sequence_file=seq, kinetic_energy=6800)
     model = _get_driver(seq, pt=accelerator.dp2pt(delta_p))
@@ -190,12 +209,14 @@ def test_dispersive_momentum_off_momentum_with_ac_dipole_config(
     baseline = dispersive_calc(
         tracking_df.copy(deep=True),
         model_details,
+        reference_co=reference_co,
         info=False,
     ).rename(columns={"px": "px_base", "py": "py_base"})
 
     with_acd = dispersive_calc(
         tracking_df.copy(deep=True),
         model_details,
+        reference_co=reference_co,
         info=False,
         ac_dipole_config=ACDipoleConfig(
             ac_dipole_marker=AC_DIPOLE_ELEMENT,
@@ -266,10 +287,15 @@ def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, acd
     truth = setup["truth"]
     # Plain reconstruction: nominal (on-momentum) model, pt estimated.
     model_details = lhc_model_details(seq_file, data_dir, tws)
+    # Nominal-RF reference from the model. A zero reference would hand the
+    # crossing optics' mm-scale separation bumps to the pt estimate as a
+    # spurious momentum offset.
+    reference_co = reference_co_from_model(model_details, tracking_df)
 
     trans_result = transverse_calc(
         tracking_df.copy(deep=True),
         model_details,
+        reference_co=reference_co,
         info=True,
     ).rename(columns={"px": "px_trans", "py": "py_trans"})
 
@@ -277,6 +303,7 @@ def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, acd
     clean_result = dispersive_calc(
         tracking_df.copy(deep=True),
         model_details,
+        reference_co=reference_co,
         info=True,
     ).rename(columns={"px": "px_clean", "py": "py_clean"})
 
@@ -287,6 +314,7 @@ def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, acd
     noisy_result = dispersive_calc(
         noisy_df,
         model_details,
+        reference_co=reference_co,
         info=False,
     ).rename(columns={"px": "px_noisy", "py": "py_noisy"})
 
@@ -295,6 +323,7 @@ def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, acd
     svd_result = dispersive_calc(
         cleaned_df,
         model_details,
+        reference_co=reference_co,
         info=False,
     ).rename(columns={"px": "px_svd", "py": "py_svd"})
 

@@ -15,6 +15,10 @@ from tmom_recon.data.schema import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+#: Second-order dispersion columns, optional throughout: everything degrades to
+#: the first-order treatment when they are missing.
+SECOND_ORDER_DISPERSION_COLUMNS = ("ddx", "ddpx", "ddy", "ddpy")
 OUT_COLS = list(FILE_COLUMNS)
 
 if TYPE_CHECKING:  # pragma: no cover - typing helpers only
@@ -37,6 +41,13 @@ class LatticeMaps:
     dpx: Mapping[str, float] | None = None
     dy: Mapping[str, float] | None = None
     dpy: Mapping[str, float] | None = None
+    # Second-order dispersion, per unit pt**2 (MAD-NG `chrom=true` folds the
+    # Taylor 1/2 in, so the orbit is pt*dx + pt**2*ddx). Absent when the twiss
+    # was not run with chrom, or came from a measurement.
+    ddx: Mapping[str, float] | None = None
+    ddpx: Mapping[str, float] | None = None
+    ddy: Mapping[str, float] | None = None
+    ddpy: Mapping[str, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -165,6 +176,9 @@ def build_lattice_maps(
         params["dpx"] = tws["dpx"].to_dict()
         params["dy"] = tws["dy"].to_dict()
         params["dpy"] = tws["dpy"].to_dict()
+        for col in SECOND_ORDER_DISPERSION_COLUMNS:
+            if col in tws.columns:
+                params[col] = tws[col].to_dict()
     return LatticeMaps(**params)
 
 
@@ -185,6 +199,10 @@ def attach_lattice_columns(df: pd.DataFrame, maps: LatticeMaps) -> pd.DataFrame:
         out["dy"] = out["name"].map(maps.dy)
     if maps.dpy is not None:
         out["dpy"] = out["name"].map(maps.dpy)
+    for col in SECOND_ORDER_DISPERSION_COLUMNS:
+        mapping = getattr(maps, col)
+        if mapping is not None:
+            out[col] = out["name"].map(mapping)
     return out
 
 
@@ -386,9 +404,32 @@ def diagnostics(
             LOGGER.info("py_diff mean (avg rel): No significant py values")
 
 
+def _require_full_coverage(data: pd.DataFrame, co: pd.DataFrame, what: str) -> None:
+    """Fail loudly when *co* does not cover every BPM in *data*.
+
+    Mapping a missing BPM yields NaN, which silently propagates through the
+    whole reconstruction as a plausible-looking result. An explicit error is the
+    only safe behaviour.
+    """
+    # `pandas` is a typing-only import here, so use the Series method.
+    missing = set(data["name"].unique()) - set(co.index)
+    if missing:
+        raise ValueError(
+            f"{what} is missing {len(missing)} BPM(s) present in the data: "
+            f"{sorted(map(str, missing))[:10]}"
+        )
+
+
 def remove_closed_orbit(data: pd.DataFrame, co: pd.DataFrame) -> pd.DataFrame:
-    """Return tracking data with the closed orbit removed."""
-    LOGGER.info("Removing closed orbit from data using twiss table")
+    """Return tracking data with the closed-orbit *position* removed.
+
+    On the production path *co* is the **measured** nominal-RF orbit, not a model
+    twiss: an unknown dipole-error orbit is exactly degenerate with the
+    dispersive orbit, so no model can supply it. See
+    :func:`tmom_recon.physics.pt_calculation.estimate_pt_from_model`.
+    """
+    LOGGER.info("Removing closed orbit from data")
+    _require_full_coverage(data, co, "closed orbit")
     out = data.copy(deep=True)
     x_dict = co["x"].to_dict()
     y_dict = co["y"].to_dict()
@@ -399,19 +440,46 @@ def remove_closed_orbit(data: pd.DataFrame, co: pd.DataFrame) -> pd.DataFrame:
 
 
 def restore_closed_orbit_and_reference_momenta(
-    data: pd.DataFrame, co: pd.DataFrame
+    data: pd.DataFrame,
+    co: pd.DataFrame,
+    *,
+    momentum_co: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Return data with closed orbit and reference momenta restored."""
+    """Return data with the closed-orbit position and momenta restored.
+
+    Position and momentum come from deliberately different places. ``co`` carries
+    ``x``/``y`` and should be the *measured* nominal-RF orbit, the same frame
+    :func:`remove_closed_orbit` subtracted. ``momentum_co`` carries ``px``/``py``,
+    which BPMs cannot measure at all, so it can only come from a model twiss.
+
+    Passing them separately matters because the two disagree whenever the model
+    does not carry the machine's real errors: subtracting a measured orbit and
+    adding back a model one leaves the difference as an unmodelled residual.
+    When *momentum_co* is omitted, ``co`` supplies both, which is only correct if
+    ``co`` is itself a full twiss.
+    """
     LOGGER.info("Restoring closed orbit and reference momenta to data")
     out = data.copy(deep=True)
     co_dict = co.to_dict()
+    momentum_source = co if momentum_co is None else momentum_co
+    momentum_dict = co_dict if momentum_co is None else momentum_co.to_dict()
     out["x"] = out["x"] + out["name"].map(co_dict["x"])
     out["y"] = out["y"] + out["name"].map(co_dict["y"])
     # Reference momenta are absent from measurement-built twiss tables; the
-    # closed-orbit momentum is then taken as zero.
+    # closed-orbit momentum is then taken as zero. That is a real approximation,
+    # not a no-op -- on PSB ring 3 the true closed-orbit angle reaches ~1e-3 rad
+    # with realistic dipole errors -- so say so rather than failing silently.
+    missing_momenta = [col for col in ("px", "py") if col not in momentum_source.columns]
+    if missing_momenta:
+        LOGGER.warning(
+            "Closed-orbit momenta %s unavailable; treating the closed-orbit angle as "
+            "zero. Supply a model twiss carrying px/py (ideally one fitted to the "
+            "measured orbit) if the machine has appreciable orbit errors.",
+            missing_momenta,
+        )
     for col in ("px", "py"):
-        if col in co.columns:
-            out[col] = out[col] + out["name"].map(co_dict[col])
+        if col in momentum_source.columns:
+            out[col] = out[col] + out["name"].map(momentum_dict[col])
 
     if "var_px" in co.columns and "var_py" in co.columns:
         out["var_px"] = out["var_px"] + out["name"].map(co_dict["var_px"])

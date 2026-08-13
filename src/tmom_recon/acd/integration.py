@@ -10,11 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from tmom_recon.model import (
-    # TUNE_MATCH_TOLERANCE,
-    ModelDetails,
-    resolve_model_details,
-)
+from tmom_recon.model import ModelDetails, resolve_model_details
 from tmom_recon.physics.closed_orbit import parse_plane_spec
 
 from .madng_driver import ACDipoleMadDriver
@@ -55,9 +51,37 @@ class ACDipoleConfig:
     own positions with the model optics. Use this when the model twiss does not
     represent the machine closed orbit in that plane."""
 
+    dispersive_closed_orbit: bool = False
+    """Whether to reference the *dispersive* closed orbit instead of ``dp/p=0``.
+
+    ``False`` (the default) takes the closed orbit from the ``dp/p=0`` twiss and
+    models the dispersive orbit as ``pt * D``. That is first-order correct only:
+    the neglected ``pt**2 * D2`` term is a constant per-BPM offset that grows
+    quadratically with ``pt``, and magnet errors amplify it further (the error
+    orbit feeds down through the quadrupoles, so the error and dispersive orbits
+    do not superpose).
+
+    ``True`` instead references ``tracking_tws`` — the orbit MAD-NG solves at the
+    model's ``pt``, exact to all orders and including any magnet errors carried
+    by the model — and skips the ``pt * D`` correction. Prefer it whenever the
+    model represents the machine; it matters above ``|dp/p| ~ 1e-3``."""
+
+    use_reference_closed_orbit: bool = False
+    """Use ``calculate_pz(reference_co=...)`` as the ACD closed-orbit state.
+
+    This is for pipelines with an independently measured closed-orbit position
+    and model-derived angle, supplied together as ``x/px/y/py``. By default the
+    ACD reconstruction retains its historical behaviour and uses the generated
+    model twiss. This option is incompatible with ``dispersive_closed_orbit``.
+    """
+
     def __post_init__(self) -> None:
         # Fail on a bad plane spec at construction, not deep inside a MAD-NG run.
         parse_plane_spec(self.data_mean_closed_orbit_planes, field="data_mean_closed_orbit_planes")
+        if self.use_reference_closed_orbit and self.dispersive_closed_orbit:
+            raise ValueError(
+                "use_reference_closed_orbit and dispersive_closed_orbit are mutually exclusive"
+            )
 
 
 @dataclass(frozen=True)

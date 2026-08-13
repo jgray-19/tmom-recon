@@ -117,6 +117,17 @@ def reconstruct_momenta(
     Returns:
         DataFrame with the standard output columns and ``attrs["PT_EST"]``.
     """
+    # A measured nominal-RF closed orbit is required unconditionally, not only on
+    # the dispersion path: it is the momentum reference the whole reconstruction
+    # is expressed against, and there is no model that can stand in for it.
+    if optics.reference_co is None:
+        raise ValueError(
+            "ResolvedOptics.reference_co is required: pass a measured closed orbit "
+            "at nominal RF to resolve_optics(reference_co=...). Dipole errors are "
+            "exactly degenerate with the dispersive orbit at a single momentum, so "
+            "a model closed orbit cannot substitute for a measured one."
+        )
+
     features = validate_input(orig_data)
     data = orig_data.copy(deep=True)
     with contextlib.suppress(AttributeError, TypeError, ValueError):
@@ -127,19 +138,26 @@ def reconstruct_momenta(
     data = data[data["name"].isin(shared_bpm_names)]
     tws = tws.loc[tws.index.isin(shared_bpm_names)]
 
-    data = remove_closed_orbit(data, optics.co)
-    complete_data = data
-    if bpm_names is not None:
-        requested = set(bpm_names)
-        data = data[data["name"].isin(requested)]
-
+    # pt is estimated *before* the closed orbit is removed: the estimator
+    # references the raw orbit to the measured nominal-RF orbit itself, so
+    # subtracting optics.co first would double-subtract.
     if pt_override is not None:
         pt_est = float(pt_override)
         LOGGER.info("Using provided pt override: %s", pt_est)
     elif optics.use_dispersion:
-        pt_est = estimate_pt_from_model(complete_data, tws, info)
+        pt_est = estimate_pt_from_model(data, tws, reference_co=optics.reference_co, info=info)
     else:
         pt_est = 0.0
+
+    # Position comes from the *measured* reference orbit and momentum from the
+    # model twiss: BPMs measure position, never angle. Using optics.co for both
+    # would subtract a model orbit while pt was referenced to the measured one,
+    # leaving (reference_co - optics.co) as an unmodelled residual.
+    data = remove_closed_orbit(data, optics.reference_co)
+    complete_data = data
+    if bpm_names is not None:
+        requested = set(bpm_names)
+        data = data[data["name"].isin(requested)]
 
     data_p, data_n, bpm_index, _maps = prepare_neighbor_views(
         data,
@@ -170,7 +188,9 @@ def reconstruct_momenta(
 
     data_avg = weighted_average(data_p, data_n)
 
-    data_avg = restore_closed_orbit_and_reference_momenta(data_avg, optics.co)
+    data_avg = restore_closed_orbit_and_reference_momenta(
+        data_avg, optics.reference_co, momentum_co=optics.co
+    )
 
     data_avg.attrs["PT_EST"] = pt_est
 

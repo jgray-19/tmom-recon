@@ -25,8 +25,30 @@ def _require_twiss_columns(twiss: pd.DataFrame, columns: set[str]) -> None:
         raise KeyError(f"Twiss table is missing required columns: {sorted(missing)}")
 
 
-def _phase_advance(mu_to: float, mu_from: float) -> float:
-    return 2.0 * np.pi * (float(mu_to) - float(mu_from))
+def _phase_advance(mu_to: float, mu_from: float, tune: float | None) -> float:
+    """Forward phase advance in radians from ``mu_from`` to ``mu_to``.
+
+    Twiss ``mu`` increases monotonically along the sequence, so a target that
+    sits *before* the source gives a negative difference. Forward transport to
+    it goes the long way round, i.e. through the ring wrap, which adds one tune.
+    Without that the matrix describes backward transport and comes out with the
+    wrong sign -- for the PSB kicker the one BPM upstream of the kicker was
+    reconstructed 0.17 turns out of phase.
+
+    ``tune`` is the plane's tune (in units of 2 pi, as ``mu``). It is only
+    needed for a wrap; a line has none, so passing ``None`` and asking for an
+    upstream target is an error rather than a silent sign flip.
+    """
+    delta = float(mu_to) - float(mu_from)
+    if delta < 0.0:
+        if tune is None:
+            raise ValueError(
+                "Target is upstream of the source, so forward transport wraps "
+                "around the ring, but no tune was given to wrap with. Pass the "
+                "plane's tune for a ring; a line cannot transport backwards."
+            )
+        delta += float(tune)
+    return 2.0 * np.pi * delta
 
 
 def transport_matrix_from_twiss(
@@ -35,6 +57,7 @@ def transport_matrix_from_twiss(
     source: str,
     target: str,
     plane: str,
+    tune: float | None = None,
 ) -> PlaneTransportMatrix:
     r"""Build the uncoupled 2x2 transfer matrix between two lattice elements.
 
@@ -111,7 +134,9 @@ def transport_matrix_from_twiss(
     alpha_source = float(twiss.at[source, alpha_col])
     beta_target = float(twiss.at[target, beta_col])
     alpha_target = float(twiss.at[target, alpha_col])
-    delta_mu = _phase_advance(float(twiss.at[target, mu_col]), float(twiss.at[source, mu_col]))
+    delta_mu = _phase_advance(
+        float(twiss.at[target, mu_col]), float(twiss.at[source, mu_col]), tune
+    )
 
     sqrt_ratio = np.sqrt(beta_target / beta_source)
     sqrt_product = np.sqrt(beta_target * beta_source)
@@ -132,6 +157,7 @@ def transport_matrix_4d_from_twiss(
     *,
     source: str,
     target: str,
+    tunes: tuple[float, float] | None = None,
 ) -> np.ndarray:
     r"""Build the uncoupled block-diagonal 4x4 (x,px,y,py) transport matrix from Twiss.
 
@@ -158,12 +184,16 @@ def transport_matrix_4d_from_twiss(
             ``alfa22``, ``mu2`` (vertical).
         source: Index label of the source element (e.g. ``"kicker"``).
         target: Index label of the target element (e.g. a BPM name).
+        tunes: ``(qx, qy)`` used to wrap the phase advance when the target is
+            upstream of the source (see :func:`_phase_advance`). ``None`` for a
+            line, where an upstream target is an error.
 
     Returns:
         ``(4, 4)`` numpy array in coordinate order ``(x, px, y, py)``.
     """
-    mx = transport_matrix_from_twiss(twiss, source=source, target=target, plane="x")
-    my = transport_matrix_from_twiss(twiss, source=source, target=target, plane="y")
+    tune_x, tune_y = tunes if tunes is not None else (None, None)
+    mx = transport_matrix_from_twiss(twiss, source=source, target=target, plane="x", tune=tune_x)
+    my = transport_matrix_from_twiss(twiss, source=source, target=target, plane="y", tune=tune_y)
     mat = np.zeros((4, 4))
     mat[0, 0] = mx.r11
     mat[0, 1] = mx.r12
@@ -185,6 +215,7 @@ def solve_kick_from_positions(
     y_source: float,
     x_target: float,
     y_target: float,
+    tunes: tuple[float, float] | None = None,
 ) -> tuple[float, float]:
     r"""Solve the instantaneous kick momenta from source/target positions.
 
@@ -204,8 +235,13 @@ def solve_kick_from_positions(
     assumption that the particle is at the kicker center,
     ``x_source = y_source = 0``.
     """
-    matrix_x = transport_matrix_from_twiss(twiss, source=source, target=target, plane="x")
-    matrix_y = transport_matrix_from_twiss(twiss, source=source, target=target, plane="y")
+    tune_x, tune_y = tunes if tunes is not None else (None, None)
+    matrix_x = transport_matrix_from_twiss(
+        twiss, source=source, target=target, plane="x", tune=tune_x
+    )
+    matrix_y = transport_matrix_from_twiss(
+        twiss, source=source, target=target, plane="y", tune=tune_y
+    )
 
     if abs(matrix_x.r12) < 1e-14:
         raise ValueError(
