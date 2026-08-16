@@ -160,7 +160,9 @@ def calculate_pz(
     if reference is None and not acd_only:
         raise ValueError(
             "calculate_pz needs a `reference` MomentumReference: the reconstruction "
-            "is expressed as deviations from a measured closed orbit."
+            "is expressed as deviations from a reference closed orbit. For a "
+            "dynamic-part run, where no measured orbit exists, pass "
+            "MomentumReference.zero_reference(bpm_names) rather than fabricating one."
         )
     if generator and acd is not None and not acd_only:
         raise ValueError("generator=True with an ACDipoleConfig requires acd_only=True")
@@ -545,8 +547,10 @@ class PzGenerator:
         if magnet_strengths is not None:
             model = self._resolved_model.model
             model.apply_strengths(magnet_strengths)
-            self._closed_orbit_tws = model.run_twiss(observe=1, coupling=True, deltap=0.0)
-            self._optics_tws = model.run_twiss(observe=1, coupling=True, pt=model.pt)
+            self._closed_orbit_tws = model.run_twiss(
+                observe=1, coupling=True, chrom=True, deltap=0.0
+            )
+            self._optics_tws = model.run_twiss(observe=1, coupling=True, chrom=True, pt=model.pt)
         optics = resolve_optics(
             optics_tws=self._optics_tws,
             closed_orbit_tws=self._closed_orbit_tws,

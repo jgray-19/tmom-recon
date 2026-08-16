@@ -312,9 +312,10 @@ The exploratory scripts remain under `experimental/offmom/`:
 
 - `part_a_bend_fit.py`, `part_a2_dp_decomposition.py`, and
   `part_a3_quad_fit.py` reproduce the position-only response studies;
-- `part_b_crossover.py`, `part_b2_optics_error.py`, and
-  `part_b3_diagnose_plateau.py` reproduce the AC-dipole ladder and affine-offset
-  diagnosis;
+- `part_b2_optics_error.py` reproduces the AC-dipole ladder and affine-offset
+  diagnosis (`part_b_crossover.py` and `part_b3_diagnose_plateau.py` still
+  pass the removed `dispersive_closed_orbit` kwarg to `ACDipoleConfig` and are
+  stale);
 - `part_c_second_order_dispersion.py` establishes the MAD-NG chromatic-column
   convention;
 - `dpp_sweep_pz.py` compares first- and second-order `calculate_pz` behaviour;

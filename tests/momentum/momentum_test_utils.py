@@ -94,12 +94,10 @@ def momentum_reference_from_model(
         )
     orbit = by_upper.loc[wanted].copy()
     orbit.index = names
-    # The twiss was evaluated at ``model_details.pt``, so that is the momentum
-    # origin of this orbit -- it already carries the dispersive part at that pt.
-    # Declaring 0.0 instead would make the reconstruction add the same dispersive
-    # orbit a second time, which is invisible on-momentum and shows up only as a
-    # degraded off-momentum px.
-    return momentum_reference_from_twiss(orbit, pt=float(model_details.pt))
+    # closed_orbit_tws is always evaluated at deltap=0.0 (see
+    # resolve_model_details), i.e. the nominal-RF orbit, regardless of
+    # model_details.pt -- so the reference origin is 0.0, not model_details.pt.
+    return momentum_reference_from_twiss(orbit, pt=0.0)
 
 
 def transverse_calc(

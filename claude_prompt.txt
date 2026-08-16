@@ -1,3 +1,0 @@
-Look at your memory for a lot of information.
-
-THe task I have for you is, why the hell is the weighted svd so much better than the unweighted svd? The plain svd seems to do nothing!! What is wrong, please investigate, maybe even fix something, then you can rerun study 8
