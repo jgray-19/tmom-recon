@@ -31,7 +31,7 @@ import numpy as np
 import pytest
 
 from tests.psb_tracking import ACD_ELEMENT, DRIVEN_TUNES, build_psb_tracking_setup
-from tests.reference_co import zero_reference_co
+from tests.reference_co import zero_momentum_reference
 from tmom_recon import ACDipoleConfig, ModelDetails, calculate_pz
 
 from .acd_test_helpers import acd_state_marker_names, r_squared
@@ -96,7 +96,7 @@ def test_psb_acd_reconstruction_zero_twiss_data_mean_co(mode, data_dir) -> None:
 
     result = calculate_pz(
         bpm_df,
-        reference_co=zero_reference_co(bpm_df),
+        reference=zero_momentum_reference(bpm_df),
         model_details=ModelDetails(accelerator=model.accelerator, pt=model.pt),
         acd=ACDipoleConfig(
             ac_dipole_marker=ACD_ELEMENT,

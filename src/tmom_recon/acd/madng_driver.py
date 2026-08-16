@@ -113,7 +113,10 @@ class ACDipoleMadDriver(KnobMadInterface):
         if tune_knobs_file is not None:
             self.set_knobs(tune_knobs_file)
         if corrector_knobs_file is not None:
-            self.set_knobs(corrector_knobs_file)
+            # Correctors are handed over as a TFS table (hkick/vkick columns), which
+            # set_knobs cannot read -- it expects tab-delimited "name<TAB>value" and
+            # would silently apply nothing, leaving the model closed orbit uncorrected.
+            self.set_corrector_strengths(corrector_knobs_file)
         self.observe(self.accelerator.bpm_pattern)
         for element in _normalise_element_list(observed_elements):
             self.observe(element, unobserve_first=False)

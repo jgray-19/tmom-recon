@@ -32,6 +32,12 @@ from tmom_recon.acd.madng_driver import ACDipoleMadDriver  # noqa: E402
 DATA_DIR = Path(__file__).resolve().parents[2] / "tests" / "data"
 DELTAS = (1e-3, 3e-3, 8e-3, 1e-2)
 WITH_ERRORS = "--errors" in sys.argv
+COORDS = (
+    ("x", "dx", "ddx"),
+    ("px", "dpx", "ddpx"),
+    ("y", "dy", "ddy"),
+    ("py", "dpy", "ddpy"),
+)
 
 
 def main():
@@ -48,46 +54,58 @@ def main():
         print("applied the machine's bend + quad errors to the MAD-NG model")
 
     tw0 = model.run_twiss(observe=0, chrom=True)
-    cols = [c for c in ("dx", "dpx", "ddx", "ddpx", "dmu1", "wx", "phix") if c in tw0.columns]
-    print("chrom columns present:", cols)
+    # Print what chrom=true actually produced rather than intersecting with a
+    # guessed wishlist -- an earlier run of this script filtered against a list
+    # containing `phix` and concluded dmu2/ddy/ddpy were absent. They are not;
+    # MAD-NG just names the Montague phase `wxp`/`wyp`.
+    print("chrom columns present:", list(tw0.columns))
     bpms = [n for n in tw0.index if "BPM" in str(n).upper()]
     print(f"{len(bpms)} BPMs")
 
     beta = float(acc.beta) if hasattr(acc, "beta") else None
     print(f"beam beta = {beta}")
 
-    x0 = tw0.loc[bpms, "x"].to_numpy(float)
-    px0 = tw0.loc[bpms, "px"].to_numpy(float)
-    dx = tw0.loc[bpms, "dx"].to_numpy(float)
-    dpx = tw0.loc[bpms, "dpx"].to_numpy(float)
-    ddx = tw0.loc[bpms, "ddx"].to_numpy(float)
-    ddpx = tw0.loc[bpms, "ddpx"].to_numpy(float)
+    # (coordinate, first-order column, second-order column) for both planes. The
+    # vertical set exists too; on an uncoupled PSB with no vertical dispersion it
+    # is numerically zero, which is itself worth showing rather than assuming.
+    ref = {c: tw0.loc[bpms, c].to_numpy(float) for c, _, _ in COORDS}
+    d1 = {c: tw0.loc[bpms, f1].to_numpy(float) for c, f1, _ in COORDS}
+    d2 = {c: tw0.loc[bpms, f2].to_numpy(float) for c, _, f2 in COORDS}
+    for c, f1, f2 in COORDS:
+        print(f"  max|{f1}|={np.abs(d1[c]).max():.3e}  max|{f2}|={np.abs(d2[c]).max():.3e}")
 
-    print(f"\n{'delta':>8} {'pt':>10} | {'c1(x)':>9} {'c2(x)':>9} | {'c1(px)':>9} {'c2(px)':>9}")
+    header = " | ".join(f"{'c1(' + c + ')':>9} {'c2(' + c + ')':>9}" for c, _, _ in COORDS)
+    print(f"\n{'delta':>8} {'pt':>10} | {header}")
     exact = {}
     for d in DELTAS:
         pt = acc.dp2pt(d)
         tw = model.run_twiss(observe=0, pt=pt)
-        xe = tw.loc[bpms, "x"].to_numpy(float) - x0
-        pxe = tw.loc[bpms, "px"].to_numpy(float) - px0
-        exact[d] = (pt, xe + x0, pxe + px0)
-        cx = np.linalg.lstsq(np.column_stack([pt * dx, pt**2 * ddx]), xe, rcond=None)[0]
-        cp = np.linalg.lstsq(np.column_stack([pt * dpx, pt**2 * ddpx]), pxe, rcond=None)[0]
-        print(f"{d:8.1e} {pt:10.3e} | {cx[0]:9.5f} {cx[1]:9.5f} | {cp[0]:9.5f} {cp[1]:9.5f}")
+        exact[d] = (pt, {c: tw.loc[bpms, c].to_numpy(float) for c, _, _ in COORDS})
+        cells = []
+        for c, _, _ in COORDS:
+            dev = exact[d][1][c] - ref[c]
+            # A plane with no dispersion at all makes the design matrix singular;
+            # lstsq would return a meaningless 0. Report it as such.
+            if np.abs(d1[c]).max() == 0.0 and np.abs(d2[c]).max() == 0.0:
+                cells.append(f"{'--':>9} {'--':>9}")
+                continue
+            cc = np.linalg.lstsq(np.column_stack([pt * d1[c], pt**2 * d2[c]]), dev, rcond=None)[0]
+            cells.append(f"{cc[0]:9.5f} {cc[1]:9.5f}")
+        print(f"{d:8.1e} {pt:10.3e} | " + " | ".join(cells))
 
     print("\nresidual of each closed-orbit model vs the exact MAD-NG orbit (max|.| over BPMs)")
-    print(f"{'delta':>8} | {'x: 1st':>10} {'x: 2nd':>10} | {'px: 1st':>10} {'px: 2nd':>10}")
+    header = " | ".join(f"{c + ': 1st':>10} {c + ': 2nd':>10}" for c, _, _ in COORDS)
+    print(f"{'delta':>8} | {header}")
     for d in DELTAS:
-        pt, xe, pxe = exact[d]
-        first_x = x0 + pt * dx
-        second_x = x0 + pt * dx + pt**2 * ddx
-        first_p = px0 + pt * dpx
-        second_p = px0 + pt * dpx + pt**2 * ddpx
-        print(
-            f"{d:8.1e} | {np.abs(first_x - xe).max():10.3e} "
-            f"{np.abs(second_x - xe).max():10.3e} | "
-            f"{np.abs(first_p - pxe).max():10.3e} {np.abs(second_p - pxe).max():10.3e}"
-        )
+        pt, ex = exact[d]
+        cells = []
+        for c, _, _ in COORDS:
+            first = ref[c] + pt * d1[c]
+            second = first + pt**2 * d2[c]
+            cells.append(
+                f"{np.abs(first - ex[c]).max():10.3e} {np.abs(second - ex[c]).max():10.3e}"
+            )
+        print(f"{d:8.1e} | " + " | ".join(cells))
 
     # Chromatic optics: how much do beta/phase move over the pt range? This is the
     # source of the *linear-in-pt gain* error documented in the notes.
@@ -95,26 +113,26 @@ def main():
     for d in DELTAS:
         pt = acc.dp2pt(d)
         tw = model.run_twiss(observe=0, pt=pt, chrom=True)
-        for plane, bcol, mcol in (("x", "beta11", "mu1"), ("y", "beta22", "mu2")):
-            if bcol not in tw0.columns:
-                print("  missing", bcol, list(tw0.columns)[:25])
-                break
+        for plane, bcol, mcol, dcol in (
+            ("x", "beta11", "mu1", "dmu1"),
+            ("y", "beta22", "mu2", "dmu2"),
+        ):
             b0 = tw0.loc[bpms, bcol].to_numpy(float)
             b1 = tw.loc[bpms, bcol].to_numpy(float)
-            mu0 = tw0.loc[bpms, mcol].to_numpy(float)
-            mu1 = tw.loc[bpms, mcol].to_numpy(float)
+            mu_0 = tw0.loc[bpms, mcol].to_numpy(float)
+            mu_pt = tw.loc[bpms, mcol].to_numpy(float)
             print(
                 f"  delta={d:.1e} {plane}: max|dbet/bet|={np.abs(b1 / b0 - 1).max():.3e} "
-                f"max|dmu|={np.abs(mu1 - mu0).max():.3e}"
+                f"max|dmu|={np.abs(mu_pt - mu_0).max():.3e}"
             )
-        if "dmu1" in tw0.columns:
-            dmu1 = tw0.loc[bpms, "dmu1"].to_numpy(float)
-            mu0 = tw0.loc[bpms, "mu1"].to_numpy(float)
-            mu1 = tw.loc[bpms, "mu1"].to_numpy(float)
-            pred = pt * dmu1
+            # mu(pt) = mu(0) + pt * dmu, per unit pt (c1 -> 1, not 1/beta).
+            dmu = tw0.loc[bpms, dcol].to_numpy(float)
+            pred = pt * dmu
+            raw = np.abs(mu_pt - mu_0).max()
+            c1 = np.linalg.lstsq(pred[:, None], mu_pt - mu_0, rcond=None)[0][0]
             print(
-                f"    dmu1 prediction: c1={np.linalg.lstsq(pred[:, None], mu1 - mu0, rcond=None)[0][0]:.5f}"
-                f"  residual={np.abs(mu0 + pred - mu1).max():.3e} vs raw {np.abs(mu1 - mu0).max():.3e}"
+                f"    {dcol} prediction: c1={c1:.5f}"
+                f"  residual={np.abs(mu_0 + pred - mu_pt).max():.3e} vs raw {raw:.3e}"
             )
 
 

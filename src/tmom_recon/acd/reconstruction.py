@@ -22,6 +22,7 @@ from tmom_recon.optics import (
     BETA_COLUMNS,
     DISPERSION_COLUMNS,
     PHASE_COLUMNS,
+    SECOND_ORDER_DISPERSION_COLUMNS,
 )
 from tmom_recon.physics.closed_orbit import parse_plane_spec, warn_on_closed_orbit_mismatch
 
@@ -55,7 +56,11 @@ SUMMARY_ATTR_NAME = "summary"
 # Optics columns taken from a resolved twiss (see tmom_recon.optics.resolve_optics)
 # when one is supplied; error/variance columns are copied alongside.
 ACD_TWISS_OVERRIDE_COLUMNS = frozenset(
-    PHASE_COLUMNS + BETA_COLUMNS + ALPHA_COLUMNS + DISPERSION_COLUMNS
+    PHASE_COLUMNS
+    + BETA_COLUMNS
+    + ALPHA_COLUMNS
+    + DISPERSION_COLUMNS
+    + SECOND_ORDER_DISPERSION_COLUMNS
 )
 
 
@@ -77,14 +82,17 @@ def _log_harmonic_fit_quality(
     turns: np.ndarray,
     observed: np.ndarray,
     fitted: np.ndarray,
+    variances: np.ndarray | None = None,
 ) -> float:
-    """Log RMSE, MAE, NRMSE, and R² for a harmonic fit.
+    """Log RMSE, MAE, NRMSE, and weighted R² for a harmonic fit.
 
     Args:
         label: Coordinate label used in log messages (e.g. ``"dpx"``).
         turns: Turn numbers (used only for the count in the log message).
         observed: Raw observed kick values per turn.
         fitted: Fitted kick values per turn.
+        variances: Optional per-turn variances. When supplied, the primary R²
+            uses the same inverse-variance weights as the harmonic fit.
     """
     observed_arr = np.asarray(observed, dtype=float)
     fitted_arr = np.asarray(fitted, dtype=float)
@@ -101,19 +109,36 @@ def _log_harmonic_fit_quality(
 
     obs_centered = obs - np.mean(obs)
     sst = float(np.dot(obs_centered, obs_centered))
-    r_squared = float("nan") if sst <= 0.0 else 1.0 - float(np.dot(residual, residual)) / sst
+    unweighted_r_squared = (
+        float("nan") if sst <= 0.0 else 1.0 - float(np.dot(residual, residual)) / sst
+    )
+
+    r_squared = unweighted_r_squared
+    if variances is not None:
+        variance_arr = np.asarray(variances, dtype=float)[valid]
+        valid_weights = np.isfinite(variance_arr) & (variance_arr > 0.0)
+        if np.any(valid_weights):
+            obs_w = obs[valid_weights]
+            fit_w = fit[valid_weights]
+            weights = 1.0 / variance_arr[valid_weights]
+            mean_w = float(np.average(obs_w, weights=weights))
+            weighted_sst = float(np.sum(weights * (obs_w - mean_w) ** 2))
+            weighted_sse = float(np.sum(weights * (obs_w - fit_w) ** 2))
+            r_squared = float("nan") if weighted_sst <= 0.0 else 1.0 - weighted_sse / weighted_sst
 
     peak_to_peak = float(np.ptp(obs))
     nrmse = float("nan") if peak_to_peak <= 0.0 else rmse / peak_to_peak
 
     LOGGER.info(
-        "AC-dipole %s fit quality over %d turns: RMSE=%.3e rad, MAE=%.3e rad, NRMSE=%.3e, R^2=%.6f",
+        "AC-dipole %s fit quality over %d turns: RMSE=%.3e rad, MAE=%.3e rad, "
+        "NRMSE=%.3e, weighted R^2=%.6f, unweighted R^2=%.6f",
         label,
         int(np.count_nonzero(valid)),
         rmse,
         mae,
         nrmse,
         r_squared,
+        unweighted_r_squared,
     )
     return r_squared
 
@@ -414,13 +439,29 @@ def _fit_ac_dipole_from_frames(
     )
 
     r2s = {}
-    for label, tune, fit, raw in (
-        ("dpx", dpx_tune, cleaning.dpx_fit, dpx_raw),
-        ("dpy", dpy_tune, cleaning.dpy_fit, dpy_raw),
+    for label, tune, fit, raw, variance in (
+        (
+            "dpx",
+            dpx_tune,
+            cleaning.dpx_fit,
+            dpx_raw,
+            raw_upstream.var_px + raw_downstream.var_px,
+        ),
+        (
+            "dpy",
+            dpy_tune,
+            cleaning.dpy_fit,
+            dpy_raw,
+            raw_upstream.var_py + raw_downstream.var_py,
+        ),
     ):
         _log_harmonic_fit_parameters(label=label, reference_tune=tune, fit=fit)
         r2s[label] = _log_harmonic_fit_quality(
-            label=label, turns=turns, observed=raw, fitted=fit.fitted
+            label=label,
+            turns=turns,
+            observed=raw,
+            fitted=fit.fitted,
+            variances=variance,
         )
 
     return ACDipoleFitResult(
@@ -822,7 +863,6 @@ def reconstruct_from_prepared(
     dispersion_tws: pd.DataFrame | None = None,
     resolved_tws: pd.DataFrame | None = None,
     data_mean_closed_orbit_planes: str | tuple[str, ...] | None = None,
-    dispersive_closed_orbit: bool = False,
 ) -> tfs.TfsDataFrame:
     """Reconstruct AC-dipole kicks for a given model twiss from prepared inputs.
 
@@ -841,8 +881,8 @@ def reconstruct_from_prepared(
             uncertainty and variance columns (and tune headers) override the
             model values for BPM-pair selection and the initial ``px``/``py``
             estimate.
-        closed_orbit_tws: Twiss carrying the closed-orbit reference to subtract
-            before the betatron reconstruction and restore before tracking.
+        closed_orbit_tws: Twiss carrying the generated closed orbit at
+            ``model.pt``.
         dispersion_tws: Optional twiss carrying the dispersion columns to use for
             off-momentum BPM reconstruction. If omitted, ``closed_orbit_tws`` is
             used.
@@ -853,15 +893,6 @@ def reconstruct_from_prepared(
             reconstruction and restored afterwards, with its angle inferred from
             its own positions. Default takes the closed orbit from the twiss in
             both planes.
-        dispersive_closed_orbit: Whether ``closed_orbit_tws`` already carries the
-            *dispersive* closed orbit, i.e. the orbit MAD-NG solves at the
-            model's ``pt`` rather than the ``dp/p=0`` orbit. When ``True`` the
-            first-order ``pt * D`` dispersion correction is skipped in the
-            betatron stage, because subtracting the exact orbit already leaves
-            pure betatron motion; ``model.pt`` still drives MAD-NG transport.
-            When ``False`` (the default) the closed orbit is the on-momentum one
-            and the dispersive orbit is modelled as ``pt * D``, which is only
-            first-order correct and degrades as ``pt`` grows.
 
     Returns:
         A :class:`tfs.TfsDataFrame` with four long-form state row groups
@@ -878,13 +909,8 @@ def reconstruct_from_prepared(
     data = prepared.data.copy(deep=True)
     tws_bpm = _normalise_observed_twiss(tws).reindex(prepared.lattice_bpm_order)
 
-    # ``pt`` enters twice with different meanings. It always seeds MAD-NG
-    # transport (``model.pt``), but in the betatron stage it is only the
-    # coefficient of the *first-order* dispersive orbit ``pt * D``. When the
-    # closed-orbit reference already carries the exact dispersive orbit, that
-    # first-order model must not be applied on top of it, so the betatron stage
-    # sees ``pt = 0`` and works in pure betatron coordinates.
-    betatron_pt = 0.0 if dispersive_closed_orbit else model.pt
+    # The closed-orbit reference already contains the model momentum offset.
+    betatron_pt = 0.0
 
     co_bpm = _normalise_observed_twiss(closed_orbit_tws).reindex(prepared.lattice_bpm_order)
     disp_bpm = _normalise_observed_twiss(
@@ -945,7 +971,7 @@ def reconstruct_from_prepared(
                     headers[key] = resolved_headers[key]
 
     common = tws_bpm.index.intersection(disp_bpm.index)
-    for col in DISPERSION_COLUMNS:
+    for col in DISPERSION_COLUMNS + SECOND_ORDER_DISPERSION_COLUMNS:
         if col in tws_bpm.columns and col in disp_bpm.columns:
             tws_bpm.loc[common, col] = disp_bpm.loc[common, col].to_numpy(dtype=float)
 
@@ -1096,7 +1122,6 @@ def calculate_ac_dipole_momentum(
     dispersion_tws: pd.DataFrame | None = None,
     resolved_tws: pd.DataFrame | None = None,
     data_mean_closed_orbit_planes: str | tuple[str, ...] | None = None,
-    dispersive_closed_orbit: bool = False,
 ) -> tfs.TfsDataFrame:
     """Reconstruct AC-dipole kicks and constrained BPM momenta in one pass.
 
@@ -1128,14 +1153,11 @@ def calculate_ac_dipole_momentum(
             uncertainty and variance columns (and tune headers) override the
             model values for BPM-pair selection and the initial ``px``/``py``
             estimate.
-        closed_orbit_tws: Explicit closed-orbit reference.
+        closed_orbit_tws: Generated closed orbit at ``model.pt``.
         dispersion_tws: Optional explicit dispersion source.
         data_mean_closed_orbit_planes: Planes (``"x"``, ``"y"``, ``"xy"``,
             ``"yx"``, or ``None``) in which the closed orbit is taken from the
             per-BPM data mean instead of ``closed_orbit_tws``.
-        dispersive_closed_orbit: Whether ``closed_orbit_tws`` already carries the
-            dispersive (off-momentum) closed orbit, so the first-order ``pt * D``
-            correction is skipped. See :func:`reconstruct_from_prepared`.
 
     Returns:
         A :class:`tfs.TfsDataFrame` with four long-form state row groups:
@@ -1161,7 +1183,6 @@ def calculate_ac_dipole_momentum(
         dispersion_tws=dispersion_tws,
         resolved_tws=resolved_tws,
         data_mean_closed_orbit_planes=data_mean_closed_orbit_planes,
-        dispersive_closed_orbit=dispersive_closed_orbit,
     )
 
 

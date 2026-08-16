@@ -1,0 +1,419 @@
+\appendix
+\section{Transverse Momentum Reconstruction Formulae}
+\label{app:tmom_recon}
+
+This appendix summarizes the formulae implemented in the transverse momentum
+reconstruction code.
+
+\subsection{Common Definitions}
+
+For each BPM and one of its neighbors, define the phase advances
+\begin{equation}
+\phi_x = 2\pi \Delta_x,
+\qquad
+\phi_y = 2\pi \Delta_y,
+\end{equation}
+where $\Delta_x$ and $\Delta_y$ are the measured phase advances in turns.
+
+Let
+\begin{equation}
+\delta \equiv \frac{\Delta p}{p}.
+\end{equation}
+
+Define the normalized coordinates
+\begin{equation}
+\tilde x = \frac{x - \delta D_x}{\sqrt{\beta_x}},
+\qquad
+\tilde x_n = \frac{x_n - \delta D_{x,n}}{\sqrt{\beta_{x,n}}},
+\end{equation}
+\begin{equation}
+\tilde y = \frac{y - \delta D_y}{\sqrt{\beta_y}},
+\qquad
+\tilde y_n = \frac{y_n - \delta D_{y,n}}{\sqrt{\beta_{y,n}}}.
+\end{equation}
+
+\subsection{Previous-Neighbor Reconstruction}
+
+For the previous-neighbor branch, the code uses
+\begin{equation}
+s = -1,
+\qquad
+a = +1.
+\end{equation}
+
+\subsubsection{Nominal Momentum}
+
+The reconstructed transverse momenta are
+\begin{equation}
+p_x^{(\mathrm{prev})}
+=
+- \frac{\tilde x_n \sec\phi_x + \tilde x\left(\tan\phi_x + \alpha_x\right)}
+{\sqrt{\beta_x}}
++ D_x' \delta,
+\end{equation}
+\begin{equation}
+p_y^{(\mathrm{prev})}
+=
+- \frac{\tilde y_n \sec\phi_y + \tilde y\left(\tan\phi_y + \alpha_y\right)}
+{\sqrt{\beta_y}}
++ D_y' \delta.
+\end{equation}
+
+\subsubsection{Measurement Error Propagation}
+
+The measurement-only variance contributions are
+\begin{equation}
+\mathrm{var}_{\mathrm{meas}}\!\left(p_x^{(\mathrm{prev})}\right)
+=
+\sigma^2_{x_n}
+\left(
+\frac{\sec\phi_x}{\sqrt{\beta_x}\sqrt{\beta_{x,n}}}
+\right)^2
++
+\sigma^2_x
+\left(
+\frac{\tan\phi_x + \alpha_x}{\beta_x}
+\right)^2,
+\end{equation}
+\begin{equation}
+\mathrm{var}_{\mathrm{meas}}\!\left(p_y^{(\mathrm{prev})}\right)
+=
+\sigma^2_{y_n}
+\left(
+\frac{\sec\phi_y}{\sqrt{\beta_y}\sqrt{\beta_{y,n}}}
+\right)^2
++
+\sigma^2_y
+\left(
+\frac{\tan\phi_y + \alpha_y}{\beta_y}
+\right)^2.
+\end{equation}
+
+\subsubsection{Optics Error Propagation}
+
+Define
+\begin{equation}
+A_x^{(\mathrm{prev})} = \tan\phi_x + \alpha_x,
+\qquad
+A_y^{(\mathrm{prev})} = \tan\phi_y + \alpha_y.
+\end{equation}
+
+The code applies first-order uncertainty propagation,
+\begin{equation}
+\begin{split}
+\mathrm{var}_{\mathrm{opt}}\!\left(p_x^{(\mathrm{prev})}\right)
+=&
+\sum_i \sigma_i^2
+\left(
+\frac{\partial p_x^{(\mathrm{prev})}}{\partial q_i}
+\right)^2,
+\qquad q_i \in \left\{
+D_{x,n}, D_x, D_x', \alpha_x,\right.\\
+&\qquad\left.\sqrt{\beta_x}, \sqrt{\beta_{x,n}}, \Delta_x
+\right\},
+\end{split}
+\end{equation}
+\begin{equation}
+\begin{split}
+\mathrm{var}_{\mathrm{opt}}\!\left(p_y^{(\mathrm{prev})}\right)
+=&
+\sum_i \sigma_i^2
+\left(
+\frac{\partial p_y^{(\mathrm{prev})}}{\partial q_i}
+\right)^2,
+\qquad q_i \in \left\{
+D_{y,n}, D_y, D_y', \alpha_y,\right.\\
+&\qquad\left.\sqrt{\beta_y}, \sqrt{\beta_{y,n}}, \Delta_y
+\right\}.
+\end{split}
+\end{equation}
+
+The horizontal derivatives are
+\begin{equation}
+\frac{\partial p_x^{(\mathrm{prev})}}{\partial D_{x,n}}
+=
+\frac{\delta\,\sec\phi_x}{\sqrt{\beta_x}\sqrt{\beta_{x,n}}},
+\qquad
+\frac{\partial p_x^{(\mathrm{prev})}}{\partial D_x}
+=
+\frac{\delta\,A_x^{(\mathrm{prev})}}{\beta_x},
+\qquad
+\frac{\partial p_x^{(\mathrm{prev})}}{\partial D_x'}
+=
+\delta,
+\end{equation}
+\begin{equation}
+\frac{\partial p_x^{(\mathrm{prev})}}{\partial \alpha_x}
+=
+- \frac{\tilde x}{\sqrt{\beta_x}},
+\qquad
+\frac{\partial p_x^{(\mathrm{prev})}}{\partial \sqrt{\beta_x}}
+=
+\frac{\tilde x_n \sec\phi_x + 2\tilde x A_x^{(\mathrm{prev})}}{\beta_x},
+\end{equation}
+\begin{equation}
+\frac{\partial p_x^{(\mathrm{prev})}}{\partial \sqrt{\beta_{x,n}}}
+=
+\frac{\tilde x_n \sec\phi_x}{\sqrt{\beta_x}\sqrt{\beta_{x,n}}},
+\end{equation}
+\begin{equation}
+\frac{\partial p_x^{(\mathrm{prev})}}{\partial \phi_x}
+=
+- \frac{\tilde x_n \sec\phi_x\tan\phi_x + \tilde x \sec^2\phi_x}{\sqrt{\beta_x}}.
+\end{equation}
+
+Since the phase uncertainty is stored in turns,
+\begin{equation}
+\frac{\partial p_x^{(\mathrm{prev})}}{\partial \Delta_x}
+=
+2\pi \frac{\partial p_x^{(\mathrm{prev})}}{\partial \phi_x}.
+\end{equation}
+
+The vertical derivatives are
+\begin{equation}
+\frac{\partial p_y^{(\mathrm{prev})}}{\partial D_{y,n}}
+=
+\frac{\delta\,\sec\phi_y}{\sqrt{\beta_y}\sqrt{\beta_{y,n}}},
+\qquad
+\frac{\partial p_y^{(\mathrm{prev})}}{\partial D_y}
+=
+\frac{\delta\,A_y^{(\mathrm{prev})}}{\beta_y},
+\qquad
+\frac{\partial p_y^{(\mathrm{prev})}}{\partial D_y'}
+=
+\delta,
+\end{equation}
+\begin{equation}
+\frac{\partial p_y^{(\mathrm{prev})}}{\partial \alpha_y}
+=
+- \frac{\tilde y}{\sqrt{\beta_y}},
+\qquad
+\frac{\partial p_y^{(\mathrm{prev})}}{\partial \sqrt{\beta_y}}
+=
+\frac{\tilde y_n \sec\phi_y + 2\tilde y A_y^{(\mathrm{prev})}}{\beta_y},
+\end{equation}
+\begin{equation}
+\frac{\partial p_y^{(\mathrm{prev})}}{\partial \sqrt{\beta_{y,n}}}
+=
+\frac{\tilde y_n \sec\phi_y}{\sqrt{\beta_y}\sqrt{\beta_{y,n}}},
+\end{equation}
+\begin{equation}
+\frac{\partial p_y^{(\mathrm{prev})}}{\partial \phi_y}
+=
+- \frac{\tilde y_n \sec\phi_y\tan\phi_y + \tilde y \sec^2\phi_y}{\sqrt{\beta_y}},
+\end{equation}
+\begin{equation}
+\frac{\partial p_y^{(\mathrm{prev})}}{\partial \Delta_y}
+=
+2\pi \frac{\partial p_y^{(\mathrm{prev})}}{\partial \phi_y}.
+\end{equation}
+
+\subsection{Next-Neighbor Reconstruction}
+
+For the next-neighbor branch, the code uses
+\begin{equation}
+s = +1,
+\qquad
+a = -1.
+\end{equation}
+
+\subsubsection{Nominal Momentum}
+
+The reconstructed transverse momenta are
+\begin{equation}
+p_x^{(\mathrm{next})}
+=
+\frac{\tilde x_n \sec\phi_x + \tilde x\left(\tan\phi_x - \alpha_x\right)}
+{\sqrt{\beta_x}}
++ D_x' \delta,
+\end{equation}
+\begin{equation}
+p_y^{(\mathrm{next})}
+=
+\frac{\tilde y_n \sec\phi_y + \tilde y\left(\tan\phi_y - \alpha_y\right)}
+{\sqrt{\beta_y}}
++ D_y' \delta.
+\end{equation}
+
+\subsubsection{Measurement Error Propagation}
+
+The measurement-only variance contributions are
+\begin{equation}
+\mathrm{var}_{\mathrm{meas}}\!\left(p_x^{(\mathrm{next})}\right)
+=
+\sigma^2_{x_n}
+\left(
+\frac{\sec\phi_x}{\sqrt{\beta_x}\sqrt{\beta_{x,n}}}
+\right)^2
++
+\sigma^2_x
+\left(
+\frac{\tan\phi_x - \alpha_x}{\beta_x}
+\right)^2,
+\end{equation}
+\begin{equation}
+\mathrm{var}_{\mathrm{meas}}\!\left(p_y^{(\mathrm{next})}\right)
+=
+\sigma^2_{y_n}
+\left(
+\frac{\sec\phi_y}{\sqrt{\beta_y}\sqrt{\beta_{y,n}}}
+\right)^2
++
+\sigma^2_y
+\left(
+\frac{\tan\phi_y - \alpha_y}{\beta_y}
+\right)^2.
+\end{equation}
+
+\subsubsection{Optics Error Propagation}
+
+Define
+\begin{equation}
+A_x^{(\mathrm{next})} = \tan\phi_x - \alpha_x,
+\qquad
+A_y^{(\mathrm{next})} = \tan\phi_y - \alpha_y.
+\end{equation}
+
+The code applies first-order uncertainty propagation,
+\begin{equation}
+\begin{split}
+\mathrm{var}_{\mathrm{opt}}\!\left(p_x^{(\mathrm{next})}\right)
+=&
+\sum_i \sigma_i^2
+\left(
+\frac{\partial p_x^{(\mathrm{next})}}{\partial q_i}
+\right)^2,
+\qquad q_i \in \left\{
+D_{x,n}, D_x, D_x', \alpha_x,\right.\\
+&\qquad\left.\sqrt{\beta_x}, \sqrt{\beta_{x,n}}, \Delta_x
+\right\},
+\end{split}
+\end{equation}
+\begin{equation}
+\begin{split}
+\mathrm{var}_{\mathrm{opt}}\!\left(p_y^{(\mathrm{next})}\right)
+=&
+\sum_i \sigma_i^2
+\left(
+\frac{\partial p_y^{(\mathrm{next})}}{\partial q_i}
+\right)^2,
+\qquad q_i \in \left\{
+D_{y,n}, D_y, D_y', \alpha_y,\right.\\
+&\qquad\left.\sqrt{\beta_y}, \sqrt{\beta_{y,n}}, \Delta_y
+\right\}.
+\end{split}
+\end{equation}
+
+The horizontal derivatives are
+\begin{equation}
+\frac{\partial p_x^{(\mathrm{next})}}{\partial D_{x,n}}
+=
+- \frac{\delta\,\sec\phi_x}{\sqrt{\beta_x}\sqrt{\beta_{x,n}}},
+\qquad
+\frac{\partial p_x^{(\mathrm{next})}}{\partial D_x}
+=
+- \frac{\delta\,A_x^{(\mathrm{next})}}{\beta_x},
+\qquad
+\frac{\partial p_x^{(\mathrm{next})}}{\partial D_x'}
+=
+\delta,
+\end{equation}
+\begin{equation}
+\frac{\partial p_x^{(\mathrm{next})}}{\partial \alpha_x}
+=
+- \frac{\tilde x}{\sqrt{\beta_x}},
+\qquad
+\frac{\partial p_x^{(\mathrm{next})}}{\partial \sqrt{\beta_x}}
+=
+- \frac{\tilde x_n \sec\phi_x + 2\tilde x A_x^{(\mathrm{next})}}{\beta_x},
+\end{equation}
+\begin{equation}
+\frac{\partial p_x^{(\mathrm{next})}}{\partial \sqrt{\beta_{x,n}}}
+=
+- \frac{\tilde x_n \sec\phi_x}{\sqrt{\beta_x}\sqrt{\beta_{x,n}}},
+\end{equation}
+\begin{equation}
+\frac{\partial p_x^{(\mathrm{next})}}{\partial \phi_x}
+=
+\frac{\tilde x_n \sec\phi_x\tan\phi_x + \tilde x \sec^2\phi_x}{\sqrt{\beta_x}}.
+\end{equation}
+
+Since the phase uncertainty is stored in turns,
+\begin{equation}
+\frac{\partial p_x^{(\mathrm{next})}}{\partial \Delta_x}
+=
+2\pi \frac{\partial p_x^{(\mathrm{next})}}{\partial \phi_x}.
+\end{equation}
+
+The vertical derivatives are
+\begin{equation}
+\frac{\partial p_y^{(\mathrm{next})}}{\partial D_{y,n}}
+=
+- \frac{\delta\,\sec\phi_y}{\sqrt{\beta_y}\sqrt{\beta_{y,n}}},
+\qquad
+\frac{\partial p_y^{(\mathrm{next})}}{\partial D_y}
+=
+- \frac{\delta\,A_y^{(\mathrm{next})}}{\beta_y},
+\qquad
+\frac{\partial p_y^{(\mathrm{next})}}{\partial D_y'}
+=
+\delta,
+\end{equation}
+\begin{equation}
+\frac{\partial p_y^{(\mathrm{next})}}{\partial \alpha_y}
+=
+- \frac{\tilde y}{\sqrt{\beta_y}},
+\qquad
+\frac{\partial p_y^{(\mathrm{next})}}{\partial \sqrt{\beta_y}}
+=
+- \frac{\tilde y_n \sec\phi_y + 2\tilde y A_y^{(\mathrm{next})}}{\beta_y},
+\end{equation}
+\begin{equation}
+\frac{\partial p_y^{(\mathrm{next})}}{\partial \sqrt{\beta_{y,n}}}
+=
+- \frac{\tilde y_n \sec\phi_y}{\sqrt{\beta_y}\sqrt{\beta_{y,n}}},
+\end{equation}
+\begin{equation}
+\frac{\partial p_y^{(\mathrm{next})}}{\partial \phi_y}
+=
+\frac{\tilde y_n \sec\phi_y\tan\phi_y + \tilde y \sec^2\phi_y}{\sqrt{\beta_y}},
+\end{equation}
+\begin{equation}
+\frac{\partial p_y^{(\mathrm{next})}}{\partial \Delta_y}
+=
+2\pi \frac{\partial p_y^{(\mathrm{next})}}{\partial \phi_y}.
+\end{equation}
+
+\subsection{Total Variance}
+
+The total variances reported for the reconstructed momenta are
+\begin{equation}
+\mathrm{var}(p_x)
+=
+\mathrm{var}_{\mathrm{meas}}(p_x)
++
+\mathrm{var}_{\mathrm{opt}}(p_x),
+\qquad
+\mathrm{var}(p_y)
+=
+\mathrm{var}_{\mathrm{meas}}(p_y)
++
+\mathrm{var}_{\mathrm{opt}}(p_y).
+\end{equation}
+
+\subsection{Combination of Previous- and Next-Neighbor Estimates}
+
+The previous- and next-neighbor momentum estimates are combined by
+inverse-variance weighting:
+\begin{equation}
+\hat p
+=
+\frac{p_a/\sigma_a^2 + p_b/\sigma_b^2}
+{1/\sigma_a^2 + 1/\sigma_b^2},
+\end{equation}
+with combined variance
+\begin{equation}
+\mathrm{var}(\hat p)
+=
+\frac{1}{1/\sigma_a^2 + 1/\sigma_b^2}.
+\end{equation}

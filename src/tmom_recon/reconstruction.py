@@ -36,6 +36,7 @@ from tmom_recon.optics import (
     resolve_optics,
 )
 from tmom_recon.physics.transverse import reconstruct_momenta
+from tmom_recon.reference import MomentumReference
 
 if TYPE_CHECKING:  # pragma: no cover - typing helpers only
     from collections.abc import Collection, Mapping
@@ -48,29 +49,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing helpers only
     from tmom_recon.acd.reconstruction import PreparedACDInputs
 
 
-def _acd_closed_orbit_reference(
-    resolved_acd: ResolvedACDipoleConfig,
-    reference_co: pd.DataFrame,
-    *,
-    tracking_tws: pd.DataFrame | None = None,
-    closed_orbit_tws: pd.DataFrame | None = None,
-) -> pd.DataFrame:
-    """Select the explicit closed-orbit state used by ACD reconstruction."""
-    config = resolved_acd.config
-    if config.dispersive_closed_orbit:
-        return tracking_tws if tracking_tws is not None else resolved_acd.tracking_tws
-    if config.use_reference_closed_orbit:
-        required = {"x", "px", "y", "py"}
-        missing = required.difference(reference_co.columns)
-        if missing:
-            raise ValueError(
-                "ACD reference closed orbit requires columns "
-                f"{sorted(required)}; missing {sorted(missing)}"
-            )
-        return reference_co
-    return closed_orbit_tws if closed_orbit_tws is not None else resolved_acd.closed_orbit_tws
-
-
 LOGGER = logging.getLogger(__name__)
 
 __all__ = [
@@ -78,6 +56,7 @@ __all__ = [
     "ACDipolePzGenerator",
     "ModelDetails",
     "ModelOpticsErrors",
+    "MomentumReference",
     "PzGenerator",
     "calculate_pz",
 ]
@@ -87,13 +66,13 @@ def calculate_pz(
     data: pd.DataFrame,
     model_details: ModelDetails,
     *,
-    reference_co: pd.DataFrame,
+    reference: MomentumReference | None = None,
     measurement_dir: str | Path | None = None,
     model_optics: Collection[OpticsCategory] = (),
     use_dispersion: bool = True,
     model_errors: ModelOpticsErrors | None = None,
     reverse_meas_tws: bool = False,
-    pt_override: float | None = None,
+    measurement_pt: float | None = None,
     info: bool = True,
     acd: ACDipoleConfig | None = None,
     acd_only: bool = False,
@@ -101,6 +80,18 @@ def calculate_pz(
     barrier_s: float | None = None,
 ) -> pd.DataFrame | PzGenerator | ACDipolePzGenerator:
     """Reconstruct transverse momenta at every BPM from turn-by-turn data.
+
+    Two conventions this entry point is strict about, because both have been got
+    wrong in practice:
+
+    * **Momentum is relative.** Everything is expressed as deviations from
+      *reference*; ``measurement_pt`` is the absolute pt of the measurement and
+      the offset is taken here. See :mod:`tmom_recon.reference`.
+    * **Phase.** Any phase in the returned/consumed intermediate frames named
+      ``delta`` is the deviation of a neighbour advance from a quarter turn
+      (:math:`\\phi_{\\mathrm{code}} = \\phi_x - \\pi/2`, in turns), *not* the
+      phase advance and *not* the twiss ``mu1``/``mu2``. See
+      :mod:`tmom_recon.physics.bpm_phases`.
 
     The model optics are always generated from *model_details*. The user never
     provides a twiss to this entry point. When *measurement_dir* is supplied,
@@ -112,12 +103,17 @@ def calculate_pz(
             position variances ``var_x, var_y``.
         model_details: Accelerator, tunes, momentum and optional strengths used
             to generate the MAD-NG model optics.
-        reference_co: **Measured** closed orbit at nominal RF, indexed by BPM name
-            with an ``x`` column. Required: it is the momentum reference the
-            reconstruction is expressed against. A model closed orbit is not a
-            substitute -- the bend response spans the whole horizontal BPM space,
-            so an unknown dipole-error orbit is exactly degenerate with the
-            dispersive orbit and a mismatched model biases pt by tens of percent.
+        reference: The momentum origin: a **measured** closed orbit plus the
+            absolute ``pt`` it was taken at
+            (:class:`~tmom_recon.reference.MomentumReference`). Required for the
+            all-BPM reconstruction; not needed (and not used) when
+            ``acd_only=True``, which never reaches the estimator that consumes
+            it. A model closed orbit is not a substitute -- the bend response
+            spans the whole horizontal BPM space, so an unknown dipole-error
+            orbit is exactly degenerate with the dispersive orbit and a
+            mismatched model biases pt by tens of percent. Supply its ``px``/
+            ``py`` where a fit can provide them: the closed-orbit *angle*, not
+            the momentum estimate, is this input's dominant job.
         measurement_dir: omc3 optics measurement directory.
         model_optics: Optics categories forced to come from the model.
         use_dispersion: If ``False``, run a pure transverse reconstruction
@@ -125,7 +121,11 @@ def calculate_pz(
         model_errors: Rough uncertainties for model-sourced optics.
         reverse_meas_tws: Reverse BPM ordering in the measured phase chain
             (Beam 2 / reverse-direction data).
-        pt_override: Use this MAD-NG pt instead of estimating it.
+        measurement_pt: The **absolute** MAD-NG ``pt`` the data was taken at,
+            when known independently. It is converted internally to the offset
+            from ``reference.pt``, which is the only form the dispersive
+            expansion accepts; never pass an offset here. Omit it to estimate the
+            offset from the orbit.
         info: Whether to log diagnostics.
         acd: AC-dipole configuration. When given, the BPMs bracketing the AC
             dipole are refined with the ACD kick reconstruction.
@@ -157,6 +157,11 @@ def calculate_pz(
     """
     if acd_only and acd is None:
         raise ValueError("acd_only requires an ACDipoleConfig via acd=")
+    if reference is None and not acd_only:
+        raise ValueError(
+            "calculate_pz needs a `reference` MomentumReference: the reconstruction "
+            "is expressed as deviations from a measured closed orbit."
+        )
     if generator and acd is not None and not acd_only:
         raise ValueError("generator=True with an ACDipoleConfig requires acd_only=True")
     if barrier_s is None and acd is not None:
@@ -178,7 +183,7 @@ def calculate_pz(
         return ACDipolePzGenerator._build(
             data=data,
             resolved_acd=resolved_acd,
-            reference_co=reference_co,
+            reference=reference,
             measurement_dir=measurement_dir,
             model_optics=tuple(model_optics),
             use_dispersion=use_dispersion,
@@ -191,13 +196,13 @@ def calculate_pz(
         return PzGenerator._build(
             data=data,
             resolved_model=resolved_model,
-            reference_co=reference_co,
+            reference=reference,
             measurement_dir=measurement_dir,
             model_optics=tuple(model_optics),
             use_dispersion=use_dispersion,
             model_errors=model_errors,
             reverse_meas_tws=reverse_meas_tws,
-            pt_override=pt_override,
+            measurement_pt=measurement_pt,
             info=info,
             barrier_s=barrier_s,
             bpm_names=bpm_names,
@@ -206,7 +211,7 @@ def calculate_pz(
     optics = resolve_optics(
         optics_tws=optics_tws,
         closed_orbit_tws=closed_orbit_tws,
-        reference_co=reference_co,
+        reference=reference,
         measurement_dir=measurement_dir,
         model_optics=model_optics,
         use_dispersion=use_dispersion,
@@ -231,14 +236,10 @@ def calculate_pz(
             bpm_upstream=resolved_acd.config.bpm_upstream,
             bpm_downstream=resolved_acd.config.bpm_downstream,
             smooth_lambda=resolved_acd.config.smooth_lambda,
-            closed_orbit_tws=_acd_closed_orbit_reference(
-                resolved_acd,
-                reference_co,
-            ),
-            dispersion_tws=resolved_acd.tracking_tws,
+            closed_orbit_tws=resolved_acd.tracking_tws,
+            dispersion_tws=resolved_acd.closed_orbit_tws,
             resolved_tws=optics.tws,
             data_mean_closed_orbit_planes=acd.data_mean_closed_orbit_planes,
-            dispersive_closed_orbit=acd.dispersive_closed_orbit,
         )
 
     if acd_only:
@@ -248,7 +249,7 @@ def calculate_pz(
     result = reconstruct_momenta(
         data,
         optics,
-        pt_override=pt_override,
+        measurement_pt=measurement_pt,
         info=info,
         barrier_s=barrier_s,
     )
@@ -278,7 +279,7 @@ class ACDipolePzGenerator:
         *,
         prepared: PreparedACDInputs,
         resolved_acd: ResolvedACDipoleConfig,
-        reference_co: pd.DataFrame,
+        reference: MomentumReference | None,
         measured: LoadedMeasurement | None,
         model_optics: Collection[OpticsCategory],
         use_dispersion: bool,
@@ -291,7 +292,7 @@ class ACDipolePzGenerator:
         self._optics_tws = resolved_acd.optics_tws
         self._tracking_tws = resolved_acd.tracking_tws
         self._closed_orbit_tws = resolved_acd.closed_orbit_tws
-        self._reference_co = reference_co
+        self._reference = reference
         self._measured = measured
         self._model_optics = tuple(model_optics)
         self._use_dispersion = use_dispersion
@@ -306,7 +307,7 @@ class ACDipolePzGenerator:
         *,
         data: pd.DataFrame,
         resolved_acd: ResolvedACDipoleConfig,
-        reference_co: pd.DataFrame,
+        reference: MomentumReference | None,
         measurement_dir: str | Path | None,
         model_optics: Collection[OpticsCategory],
         use_dispersion: bool,
@@ -344,7 +345,7 @@ class ACDipolePzGenerator:
         return cls(
             prepared=prepared,
             resolved_acd=resolved_acd,
-            reference_co=reference_co,
+            reference=reference,
             measured=measured,
             model_optics=model_optics,
             use_dispersion=use_dispersion,
@@ -362,7 +363,7 @@ class ACDipolePzGenerator:
         self,
         *,
         magnet_strengths: Mapping[str, float] | None = None,
-        pt: float | None = None,
+        measurement_pt: float | None = None,
     ) -> tfs.TfsDataFrame:
         """Recompute the ACD reconstruction from the generated model inputs.
 
@@ -373,7 +374,7 @@ class ACDipolePzGenerator:
                 from the mutated model (see
                 :meth:`ACDipoleMadDriver.apply_strengths`). Tunes are *not*
                 re-matched, so the strength change is observed directly.
-            pt: New MAD-NG ``pt`` for the tracked beam. When given, the driver's
+            measurement_pt: New **absolute** MAD-NG ``pt`` for the tracked beam. When given, the driver's
                 energy coordinate is updated before reconstructing, so the
                 marker-state transport and BPM momenta re-track at this energy.
                 The reconstruction reads ``self.model.pt`` live, so no rebuild is
@@ -383,21 +384,41 @@ class ACDipolePzGenerator:
             The small 4-point ACD ``TfsDataFrame`` (summary in
             ``attrs["summary"]``). Also stored in :attr:`latest`.
         """
-        if pt is not None:
-            self.model.pt = float(pt)
+        pt_changed = measurement_pt is not None
+        if pt_changed:
+            updated_pt = float(measurement_pt)
+            self.model.pt = updated_pt
+            self._resolved_acd.optics_model.pt = updated_pt
         if magnet_strengths is not None:
             # Transport (undriven) and optics (driven) are separate models; both
             # must see the new strengths.
             self.model.apply_strengths(magnet_strengths)
             optics_model = self._resolved_acd.optics_model
             optics_model.apply_strengths(magnet_strengths)
-            self._closed_orbit_tws = self.model.run_twiss(observe=1, coupling=True, deltap=0.0)
-            self._tracking_tws = self.model.run_twiss(observe=1, coupling=True, pt=self.model.pt)
-            self._optics_tws = optics_model.run_twiss(observe=1, coupling=True, pt=self.model.pt)
+        if magnet_strengths is not None or pt_changed:
+            optics_model = self._resolved_acd.optics_model
+            self._closed_orbit_tws = self.model.run_twiss(
+                observe=1,
+                coupling=True,
+                chrom=True,
+                deltap=0.0,
+            )
+            self._tracking_tws = self.model.run_twiss(
+                observe=1,
+                coupling=True,
+                chrom=True,
+                pt=self.model.pt,
+            )
+            self._optics_tws = optics_model.run_twiss(
+                observe=1,
+                coupling=True,
+                chrom=True,
+                pt=self.model.pt,
+            )
         optics = resolve_optics(
             optics_tws=self._optics_tws,
             closed_orbit_tws=self._closed_orbit_tws,
-            reference_co=self._reference_co,
+            reference=self._reference,
             measured=self._measured,
             model_optics=self._model_optics,
             use_dispersion=self._use_dispersion,
@@ -409,15 +430,9 @@ class ACDipolePzGenerator:
             self._prepared,
             self._optics_tws,
             resolved_tws=optics.tws,
-            closed_orbit_tws=_acd_closed_orbit_reference(
-                self._resolved_acd,
-                self._reference_co,
-                tracking_tws=self._tracking_tws,
-                closed_orbit_tws=self._closed_orbit_tws,
-            ),
-            dispersion_tws=self._tracking_tws,
+            closed_orbit_tws=self._tracking_tws,
+            dispersion_tws=self._closed_orbit_tws,
             data_mean_closed_orbit_planes=self._resolved_acd.config.data_mean_closed_orbit_planes,
-            dispersive_closed_orbit=self._resolved_acd.config.dispersive_closed_orbit,
         )
         return self.latest
 
@@ -436,13 +451,13 @@ class PzGenerator:
         *,
         data: pd.DataFrame,
         resolved_model: ResolvedModel,
-        reference_co: pd.DataFrame,
+        reference: MomentumReference | None,
         measured: LoadedMeasurement | None,
         model_optics: Collection[OpticsCategory],
         use_dispersion: bool,
         model_errors: ModelOpticsErrors | None,
         reverse_meas_tws: bool,
-        pt_override: float | None,
+        measurement_pt: float | None,
         info: bool,
         barrier_s: float | None,
         bpm_names: Collection[str],
@@ -451,13 +466,13 @@ class PzGenerator:
         self._resolved_model = resolved_model
         self._optics_tws = self._resolved_model.optics_tws
         self._closed_orbit_tws = self._resolved_model.closed_orbit_tws
-        self._reference_co = reference_co
+        self._reference = reference
         self._measured = measured
         self._model_optics = tuple(model_optics)
         self._use_dispersion = use_dispersion
         self._model_errors = model_errors
         self._reverse_meas_tws = reverse_meas_tws
-        self._pt_override = pt_override
+        self._measurement_pt = measurement_pt
         self._info = info
         self._barrier_s = barrier_s
         self._bpm_names = list(bpm_names)
@@ -469,13 +484,13 @@ class PzGenerator:
         *,
         data: pd.DataFrame,
         resolved_model: ResolvedModel,
-        reference_co: pd.DataFrame,
+        reference: MomentumReference | None,
         measurement_dir: str | Path | None,
         model_optics: Collection[OpticsCategory],
         use_dispersion: bool,
         model_errors: ModelOpticsErrors | None,
         reverse_meas_tws: bool,
-        pt_override: float | None,
+        measurement_pt: float | None,
         info: bool,
         barrier_s: float | None,
         bpm_names: Collection[str],
@@ -492,13 +507,13 @@ class PzGenerator:
         return cls(
             data=data,
             resolved_model=resolved_model,
-            reference_co=reference_co,
+            reference=reference,
             measured=measured,
             model_optics=model_optics,
             use_dispersion=use_dispersion,
             model_errors=model_errors,
             reverse_meas_tws=reverse_meas_tws,
-            pt_override=pt_override,
+            measurement_pt=measurement_pt,
             info=info,
             barrier_s=barrier_s,
             bpm_names=bpm_names,
@@ -514,19 +529,19 @@ class PzGenerator:
         *,
         magnet_strengths: Mapping[str, float] | None = None,
         bpm_names: Collection[str] | None = None,
-        pt: float | None = None,
+        measurement_pt: float | None = None,
     ) -> pd.DataFrame:
         """Recompute momentum for an optional BPM subset.
 
         When *magnet_strengths* is given they are applied to the persisted driver
         and the model optics are regenerated (a new closed orbit and new optics),
-        without re-matching the tunes. When *pt* is given it overrides the
-        build-time ``pt_override`` for this call (and all subsequent calls), so
-        the reconstruction tracks a new beam energy without rebuilding the
-        generator. When ``None`` the build-time ``pt_override`` is kept.
+        without re-matching the tunes. *measurement_pt* is the **absolute** pt of
+        the measurement (the offset from ``reference.pt`` is taken internally);
+        it overrides the build-time value for this call and all subsequent ones.
+        When ``None`` the build-time value is kept.
         """
-        if pt is not None:
-            self._pt_override = float(pt)
+        if measurement_pt is not None:
+            self._measurement_pt = float(measurement_pt)
         if magnet_strengths is not None:
             model = self._resolved_model.model
             model.apply_strengths(magnet_strengths)
@@ -535,7 +550,7 @@ class PzGenerator:
         optics = resolve_optics(
             optics_tws=self._optics_tws,
             closed_orbit_tws=self._closed_orbit_tws,
-            reference_co=self._reference_co,
+            reference=self._reference,
             measured=self._measured,
             model_optics=self._model_optics,
             use_dispersion=self._use_dispersion,
@@ -546,7 +561,7 @@ class PzGenerator:
         self.latest = reconstruct_momenta(
             self._data,
             optics,
-            pt_override=self._pt_override,
+            measurement_pt=self._measurement_pt,
             info=self._info,
             barrier_s=self._barrier_s,
             bpm_names=bpm_names,

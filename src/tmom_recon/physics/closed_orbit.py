@@ -56,15 +56,18 @@ def warn_on_closed_orbit_mismatch(
         diff = (twiss_co[plane] - data_co[plane]).astype(float).dropna().abs()
         if diff.empty or diff.max() <= CLOSED_ORBIT_WARN_TOLERANCE:
             continue
+        worst = diff.idxmax()
         logger.warning(
             "Model closed orbit disagrees with the data closed orbit in plane %s by more "
-            "than %.1f mm: worst BPM %s at %.2f mm (rms %.2f mm). Consider "
-            "data_mean_closed_orbit_planes=%r.",
+            "than %.1f mm: worst BPM %s at %.2f mm (rms %.2f mm; twiss=%.2f mm "
+            "data=%.2f mm). Consider data_mean_closed_orbit_planes=%r.",
             plane,
             1e3 * CLOSED_ORBIT_WARN_TOLERANCE,
-            diff.idxmax(),
+            worst,
             1e3 * diff.max(),
             1e3 * float(np.sqrt(np.mean(diff**2))),
+            1e3 * float(twiss_co.loc[worst, plane]),
+            1e3 * float(data_co.loc[worst, plane]),
             plane,
         )
 

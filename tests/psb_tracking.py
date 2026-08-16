@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from pymadng_utils.accelerators import PSB
-from xtrack_tools.acd import run_ac_dipole_tracking_with_particles
+from xtrack_tools.acd import run_ac_dipole_tracking
 from xtrack_tools.env import create_xsuite_environment
 from xtrack_tools.errors import (
     apply_relative_bend_field_errors,
@@ -39,6 +39,11 @@ BPM_PATTERN = rf"(?i)br{RING}\.bpm.*"
 DRIVEN_TUNES = (0.16, 0.24)
 RAMP_TURNS = 1000
 FLATTOP_TURNS = 1000
+# Equivalent to the excitation formula insert_ac_dipole used before
+# horizontal_excitation/vertical_excitation became explicit parameters:
+# volt = 2*0.042*pbeam*abs(qxd_qx)/sqrt(180*betxac) (x) and .../sqrt(177*betyac) (y).
+HORIZONTAL_EXCITATION = 2 * 0.042 / 180.0**0.5
+VERTICAL_EXCITATION = 2 * 0.042 / 177.0**0.5
 
 # The 16 powered PSB main bending dipoles are each modelled as two half-bends
 # named ``br.bhzN1`` / ``br.bhzN2`` in xsuite (upper-cased in MAD-NG). These are
@@ -215,24 +220,19 @@ def build_psb_tracking_setup(
     # matched off momentum, while the closed-orbit reference is on momentum only
     # (never including the dispersive orbit).
     off_momentum_tws = line.twiss(method="4d", delta0=delta_p)
-    particle_coords = {
-        "x": [float(off_momentum_tws.x[0])],
-        "px": [float(off_momentum_tws.px[0])],
-        "y": [float(off_momentum_tws.y[0])],
-        "py": [float(off_momentum_tws.py[0])],
-        "delta": [delta_p],
-    }
-    monitored_line = run_ac_dipole_tracking_with_particles(
+    monitored_line = run_ac_dipole_tracking(
         line=line,
         acd_marker=ACD_ELEMENT,
         sequence_name=SEQ_NAME,
         tws=off_momentum_tws,
+        deltap=delta_p,
         ramp_turns=ramp_turns,
         flattop_turns=flattop_turns,
         driven_tunes=list(driven_tunes),
         bpm_pattern=BPM_PATTERN,
-        particle_coords=particle_coords,
         state_markers=state_markers,
+        horizontal_excitation=HORIZONTAL_EXCITATION,
+        vertical_excitation=VERTICAL_EXCITATION,
     )
     tracking_df = process_tracking_data(
         monitored_line, ramp_turns=ramp_turns, flattop_turns=flattop_turns

@@ -299,7 +299,7 @@ def _prepare_prev_reconstruction(
         rows[PREV.dx] = rows[PREV.bpm_x].map(maps.dx)
         rows[PREV.dy] = rows[PREV.bpm_y].map(maps.dy)
     rows = _merge_prev_neighbor_data(rows, data, bpm_index)
-    return momenta_from_prev(rows, pt_est)
+    return momenta_from_prev(rows, pt_est, include_optics_errors=True)
 
 
 def _prepare_next_reconstruction(
@@ -341,7 +341,7 @@ def _prepare_next_reconstruction(
         rows[NEXT.dx] = rows[NEXT.bpm_x].map(maps.dx)
         rows[NEXT.dy] = rows[NEXT.bpm_y].map(maps.dy)
     rows = _merge_next_neighbor_data(rows, data, bpm_index)
-    return momenta_from_next(rows, pt_est)
+    return momenta_from_next(rows, pt_est, include_optics_errors=True)
 
 
 def prepare_direct_bpm_reconstruction(

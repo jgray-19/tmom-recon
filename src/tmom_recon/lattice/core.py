@@ -450,7 +450,9 @@ def restore_closed_orbit_and_reference_momenta(
     Position and momentum come from deliberately different places. ``co`` carries
     ``x``/``y`` and should be the *measured* nominal-RF orbit, the same frame
     :func:`remove_closed_orbit` subtracted. ``momentum_co`` carries ``px``/``py``,
-    which BPMs cannot measure at all, so it can only come from a model twiss.
+    which BPMs cannot measure at all, so it comes from a twiss: preferably one
+    fitted to the measured orbit (which tracks the machine's real errors), else
+    a plain model twiss.
 
     Passing them separately matters because the two disagree whenever the model
     does not carry the machine's real errors: subtracting a measured orbit and

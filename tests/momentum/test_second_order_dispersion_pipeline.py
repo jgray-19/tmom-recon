@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tests.reference_co import zero_reference_co
+from tests.reference_co import zero_momentum_reference
 from tmom_recon import ModelDetails, calculate_pz, reconstruction
 from tmom_recon.model import resolve_model_details
 
@@ -54,7 +54,7 @@ def _reconstruct(tracking_df: pd.DataFrame, model, *, second_order: bool) -> pd.
             # pt=0: the model is built on momentum, so the reconstruction has to
             # recover the beam's momentum from the orbit rather than be told it.
             ModelDetails(accelerator=model.accelerator, pt=0.0),
-            reference_co=zero_reference_co(tracking_df),
+            reference=zero_momentum_reference(tracking_df),
             use_dispersion=True,
             info=False,
         )

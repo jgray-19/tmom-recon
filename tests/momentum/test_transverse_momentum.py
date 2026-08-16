@@ -10,7 +10,7 @@ import pytest
 import tfs
 from pymadng_utils.accelerators import LHC
 from pymadng_utils.mad.accelerator_mad_interface import AcceleratorMadInterface
-from xtrack_tools.acd import run_ac_dipole_tracking_with_particles
+from xtrack_tools.acd import run_ac_dipole_tracking
 from xtrack_tools.env import create_xsuite_environment, initialise_env
 from xtrack_tools.monitors import process_tracking_data
 
@@ -32,6 +32,11 @@ if TYPE_CHECKING:
 
 NAT_TUNES = [0.28, 0.31]
 DRV_TUNES = [0.27, 0.322]
+# Equivalent to the excitation formula insert_ac_dipole used before
+# horizontal_excitation/vertical_excitation became explicit parameters:
+# volt = 2*0.042*pbeam*abs(qxd_qx)/sqrt(180*betxac) (x) and .../sqrt(177*betyac) (y).
+HORIZONTAL_EXCITATION = 2 * 0.042 / 180.0**0.5
+VERTICAL_EXCITATION = 2 * 0.042 / 177.0**0.5
 
 
 def _rmse(actual: np.ndarray, predicted: np.ndarray) -> float:
@@ -113,24 +118,19 @@ def _setup_xsuite_simulation(
 
     # Use generalized tracking function
     track_delta_p = track_delta_p if track_delta_p is not None else delta_p
-    particle_coords = {
-        "x": [0],
-        "px": [0],
-        "y": [0],
-        "py": [0],
-        "delta": [track_delta_p],
-    }
 
-    monitored_line = run_ac_dipole_tracking_with_particles(
+    monitored_line = run_ac_dipole_tracking(
         line=baseline_line,
         acd_marker=AC_DIPOLE_ELEMENT,
         sequence_name="lhcb1",
         tws=xsuite_tws,
+        deltap=track_delta_p,
         ramp_turns=ramp_turns,
         flattop_turns=flattop_turns,
         driven_tunes=[0.27, 0.322],
         bpm_pattern=r"(?i)bpm.*",
-        particle_coords=particle_coords,
+        horizontal_excitation=HORIZONTAL_EXCITATION,
+        vertical_excitation=VERTICAL_EXCITATION,
     )
 
     tracking_df = process_tracking_data(
@@ -206,25 +206,18 @@ local a = seq:replace({{
     ramp_turns = 1000
     flattop_turns = 100
 
-    # Use generalized tracking function
-    particle_coords = {
-        "x": [0],
-        "px": [0],
-        "y": [0],
-        "py": [0],
-        "delta": [0.0],
-    }
-
-    monitored_line = run_ac_dipole_tracking_with_particles(
+    monitored_line = run_ac_dipole_tracking(
         line=baseline_line,
         acd_marker=AC_DIPOLE_ELEMENT,
         sequence_name="lhcb1",
         tws=tws,
+        deltap=0.0,
         ramp_turns=ramp_turns,
         flattop_turns=flattop_turns,
         driven_tunes=[qxd, qyd],
         bpm_pattern=r"(?i)bpm.*",
-        particle_coords=particle_coords,
+        horizontal_excitation=HORIZONTAL_EXCITATION,
+        vertical_excitation=VERTICAL_EXCITATION,
     )
 
     tracking_df = process_tracking_data(

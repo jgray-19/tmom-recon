@@ -108,6 +108,13 @@ def _compute_nominal_momenta(
        \qquad
        \phi_y = 2 \pi \Delta_y
 
+    where :math:`\Delta` is the ``delta`` column of
+    :mod:`tmom_recon.physics.bpm_phases`: the selected neighbour's advance
+    *minus a quarter turn*, in turns. So :math:`\phi` here is
+    :math:`\phi_{\mathrm{code}} = \phi_x - \pi/2`, **not** the phase advance and
+    **not** the twiss ``mu1``/``mu2``. That origin is what makes ``sec``/``tan``
+    the right functions below instead of ``csc``/``cot``.
+
     with normalized coordinates
 
     .. math::
@@ -152,7 +159,8 @@ def _compute_nominal_momenta(
         names: Neighbor column names.
         neighbor_suffix: Suffix for neighbor columns ('p' or 'n').
         is_prev: Whether this is previous neighbor calculation.
-        pt_est: Estimated MAD-NG pt.
+        pt_est: Momentum offset from the reference orbit (see
+            :mod:`tmom_recon.reference`) -- never an absolute pt.
 
     Returns:
         Tuple of (px, py) arrays.

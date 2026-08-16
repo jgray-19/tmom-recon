@@ -11,10 +11,12 @@ response matrix affordable.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
 import numpy as np
+from pymadng_utils.accelerators import PSB
 from xtrack_tools.env import create_xsuite_environment
 from xtrack_tools.errors import apply_relative_bend_field_errors
 
@@ -23,13 +25,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tests.psb_tracking import (  # noqa: E402
     KINETIC_ENERGY_GEV,
     MAIN_BEND_PREFIX,
+    RING,
     SEQ_FILE,
     SEQ_NAME,
     _apply_relative_quad_gradient_errors,
 )
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "tests" / "data"
-BPM_PREFIX = "br3.bpm"
+BPM_RE = re.compile(PSB.BPM_PATTERN_TEMPLATE.format(ring=RING).replace("%.", r"\."), re.IGNORECASE)
 
 
 def build_line(
@@ -54,7 +57,15 @@ def build_line(
 
 
 def bpm_names(line) -> list[str]:
-    return [n for n in line.element_names if str(n).lower().startswith(BPM_PREFIX)]
+    """BPMs the real machine reads, matching what MAD-NG observes.
+
+    `PSB.bpm_pattern` is a *Lua* pattern (`^BR3%.BPM.*3$`); the only magic that
+    differs from `re` here is `%.` for a literal dot. Reusing it keeps the xsuite
+    side of this study on exactly the BPM set the MAD-NG side observes -- notably
+    it drops `BR3.BPMT3L1`, which anchoring on the trailing ring digit excludes
+    and which does not exist in the machine anyway. 16 BPMs, not 17.
+    """
+    return [n for n in line.element_names if BPM_RE.match(str(n))]
 
 
 def bend_names(line) -> list[str]:

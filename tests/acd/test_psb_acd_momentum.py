@@ -13,10 +13,9 @@ Booster ring 3, end to end:
    and that the reconstructed momenta agree with the truth at the BPMs and at the
    ``<acd>_before`` / ``<acd>_after`` markers.
 
-The test is parametrised over the momentum offset ``delta_p``. The off-momentum
-case runs with ``dispersive_closed_orbit=True`` against the orbit MAD-NG solves
-at ``pt``; the first-order ``pt * D`` orbit model is not accurate enough at
-``delta_p = 1e-2``.
+The test is parametrised over the momentum offset ``delta_p`` and uses the orbit
+MAD-NG solves at ``pt``; the first-order ``pt * D`` orbit model is not accurate
+enough at ``delta_p = 1e-2``.
 """
 
 from __future__ import annotations
@@ -71,7 +70,6 @@ def test_psb_ac_dipole_momentum_reconstruction(psb_acd_setup, noise_std: float) 
         dpy_tune=DRIVEN_TUNES[1],
         closed_orbit_tws=closed_orbit_tws,
         dispersion_tws=tws,
-        dispersive_closed_orbit=True,
     )
 
     assert_acd_momenta_match_truth(

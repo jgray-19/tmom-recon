@@ -1,3 +1,14 @@
+r"""Build a twiss-shaped frame from an omc3 optics measurement directory.
+
+Phase convention: every phase in this module -- the ``MUX``/``MUY`` columns, the
+``Q1``/``Q2`` headers and the accumulated :class:`PhaseData` -- is a **cumulative
+betatron phase in turns**, the same quantity as the model twiss ``mu1``/``mu2``.
+It is *not* the ``delta`` of :mod:`tmom_recon.physics.bpm_phases`, which is the
+deviation of a selected neighbour advance from a quarter turn
+(:math:`\phi_{\mathrm{code}} = \phi_x - \pi/2`). The conversion between them
+happens only in the neighbour finders.
+"""
+
 import logging
 from pathlib import Path
 
