@@ -1,0 +1,19 @@
+# Show both patch and project coverage in the pull-request comment.
+comment:
+  layout: "diff, flags, files"
+  behavior: default
+  require_changes: false
+  require_base: false
+  require_head: true
+  hide_project_coverage: false
+
+# Publish a blocking project coverage status for pull requests.  `auto` compares
+# the pull request with its base commit; a one-percentage-point threshold gives
+# small changes some tolerance while keeping the status blocking.
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%
+        base: auto
