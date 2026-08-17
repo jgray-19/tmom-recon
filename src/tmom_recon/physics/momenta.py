@@ -100,7 +100,7 @@ def _compute_nominal_momenta(
 ) -> tuple[np.ndarray, np.ndarray]:
     r"""Compute nominal (error-free) momentum values.
 
-    The implementation evaluates
+    Uses
 
     .. math::
 
@@ -132,9 +132,8 @@ def _compute_nominal_momenta(
     where :math:`p_t` is the MAD-NG longitudinal energy coordinate. MAD-NG
     dispersion columns are derivatives with respect to ``pt``, not ``dp/p``.
 
-    For the previous-neighbor branch the code uses :math:`s = -1` and
-    :math:`a = +1`; for the next-neighbor branch it uses :math:`s = +1`
-    and :math:`a = -1`. The reconstructed momenta are
+    The branch signs are :math:`(s, a)=(-1,+1)` for the previous neighbor and
+    :math:`(+1,-1)` for the next neighbor. The reconstructed momenta are
 
     .. math::
 
@@ -150,9 +149,8 @@ def _compute_nominal_momenta(
        {\sqrt{\beta_y}}
        + D_y' p_t + D_y^{(2)\prime} p_t^2.
 
-    The second-order terms :math:`D^{(2)}` come from a ``chrom=true`` twiss
-    (``ddx``/``ddpx``/``ddy``/``ddpy``, which already carry the Taylor
-    :math:`1/2`) and are taken as zero when those columns are absent.
+    Second-order terms come from ``chrom=true`` Twiss columns and are zero when
+    those columns are absent.
 
     Args:
         data: DataFrame with position and optics columns.

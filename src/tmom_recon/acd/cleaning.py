@@ -584,8 +584,7 @@ def _solve_smoothed_pre_momentum_with_known_kick(
     where ``w`` are inverse variances and D2 is the second-difference
     operator. Post-kick values are then ``p_t + k_t``.
 
-    The variance estimate uses the banded-SPD Cholesky fast path (system
-    matrix is pentadiagonal); ``pinv`` is the fallback for singular cases.
+    Uses a banded Cholesky solve with ``pinv`` as the singular-case fallback.
 
     Args:
         turns: Reference turn array.
