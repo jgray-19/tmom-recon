@@ -95,13 +95,18 @@ def seq_psb3(data_dir: Path) -> Path:
 
 
 @pytest.fixture(scope="session")
-def xsuite_json_path(data_dir: Path) -> Callable[[str], Path]:
+def xsuite_json_path(
+    data_dir: Path, tmp_path_factory: pytest.TempPathFactory, worker_id: str
+) -> Callable[[str], Path]:
     """Get the xsuite JSON path for a given sequence file.
 
     Returns a callable that takes a sequence file name (e.g., "lhcb1.seq")
     and returns the path to its pre-generated JSON file in data/sequences.
     """
-    sequences_dir = data_dir / "sequences"
+    # xtrack_tools writes this file directly and does not coordinate parallel
+    # writers.  Keep generated caches outside the shared checkout so xdist
+    # workers cannot read one another's partially-written JSON.
+    sequences_dir = tmp_path_factory.mktemp(f"xsuite-cache-{worker_id}")
 
     def _get_json_path(seq_file: str) -> Path:
         # Extract base name without extension and create JSON path
