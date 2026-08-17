@@ -633,40 +633,12 @@ def known_noise_svd_clean_measurements(
     )
 
 
-# Trajectory-matrix (SSA) cleaning
-# ---------------------------------
-# The functions above decompose a turn-by-BPM matrix, i.e. they rebuild each
-# turn from modes shared *across BPMs*. That is the wrong axis for turn-by-turn
-# data that a model will later be fitted against, and the failure is not subtle.
-# Gavish-Donoho picks rank 2 for driven data, so all BPM readings at one turn
-# collapse onto two numbers -- exactly the number of free parameters in a
-# transverse initial condition. A tracked state then reproduces the whole ring
-# at its own turn identically: on PSB the residual falls to ~7 um against an
-# instrument whose own single-reading noise is ~86 um, while the first turn
-# outside that reach jumps back to ~57 um. The acquisition is one continuous
-# stream and nothing happens to the beam at a turn boundary, so that step is an
-# artefact of the cleaning axis alone.
-#
-# Cleaning along the continuous turn axis, one BPM at a time, removes it. Each
-# BPM keeps its own independent reading, so a two-parameter fit can absorb only
-# two of the ring's degrees of freedom instead of all of them. Measured on PSB
-# (16 BPMs, 8000 turns), residual same-turn vs next-turn:
-#
-#     raw, no cleaning                     86.1 -> 103.0 um   (step 1.20x)
-#     turn-by-BPM SVD, rank 2 (was used)    6.9 ->  57.1 um   (step 8.24x)
-#     turn-by-BPM SVD, rank 12 (harpy)     82.2 -> 101.1 um   (step 1.23x)
-#     per-BPM SSA, window 200, rank 4      26.2 ->  27.1 um   (step 1.04x)
-#
-# Only the last both denoises and leaves the stream continuous.
+# Trajectory-matrix (SSA) cleaning. Unlike the matrix cleaners above, this
+# operates independently on each BPM's continuous turn-by-turn stream.
 
 
 def _trajectory_matrix(series: np.ndarray, window: int) -> np.ndarray:
-    """Return the ``window x (n - window + 1)`` Hankel view of one stream.
-
-    Built with stride tricks rather than fancy indexing: the index array alone
-    would be as large as the matrix, and this is called once per BPM per plane.
-    The view is read-only because neighbouring columns share memory.
-    """
+    """Return a read-only Hankel view with the requested window length."""
     n_columns = series.shape[0] - window + 1
     return np.lib.stride_tricks.as_strided(
         series,
@@ -703,22 +675,15 @@ def ssa_clean_measurements(
     rank: int = 4,
     max_nan_gap: int = 5,
 ) -> pd.DataFrame:
-    """Clean each BPM's turn-by-turn stream as continuous data.
+    """Clean each BPM's turn-by-turn stream with trajectory-matrix SVD.
 
-    Every BPM is cleaned independently, along turns, by truncating the SVD of
-    its own trajectory (Hankel) matrix. Use this -- not the turn-by-BPM
-    cleaners above -- for any frame a model will be fitted against; see the
-    block comment preceding this section for the measured reason.
+    Each BPM is cleaned independently along the turn axis.
 
     Args:
         meas_df: Long-format table with ``turn``, ``name``, ``x`` and ``y``.
         bpm_list: Optional BPM ordering. Defaults to the order in ``meas_df``.
-        window: Embedding length in turns. Must comfortably exceed the
-            betatron period so one oscillation is resolved; 200 turns is
-            ~30 periods at the PSB driven tune.
-        rank: Trajectory modes to keep per BPM. Two modes describe a single
-            pure line (its sine and cosine); four leaves room for the drive
-            plus its modulation sidebands.
+        window: Embedding length in turns.
+        rank: Number of trajectory modes to keep per BPM.
         max_nan_gap: Largest contiguous missing span to interpolate before
             decomposition. Longer gaps stay missing.
 

@@ -4,9 +4,8 @@ tmom_recon.acd
 Overview
 --------
 
-The AC-dipole workflow reconstructs a driven transverse kick at a chosen
-marker from BPM data on both sides of the element.  The implementation follows
-the thin-kick picture:
+Reconstructs a driven transverse kick at a marker from BPM data on both sides
+of the element:
 
 - for a given turn, the marker position ``x``/``y`` is shared before and after
   the kick,
@@ -14,16 +13,13 @@ the thin-kick picture:
 - the fitted marker-side state can be transported back to the adjacent BPMs to
   obtain cleaned local momenta.
 
-In practical terms the workflow is:
+Workflow:
 
 1. select one upstream and one downstream BPM around the marker,
 2. reconstruct local BPM states from the turn-by-turn orbit data,
 3. track those states to the marker with MAD-NG,
 4. fit harmonic ``dpx`` and ``dpy`` waveforms at the marker, and
 5. transport cleaned pre-/post-kick states back to the selected BPMs.
-
-For a more detailed design note, see ``ACD_RECONSTRUCTION_PROCESS.md`` in the
-repository root.
 
 Quick Start
 -----------
@@ -72,9 +68,8 @@ The direct ACD result includes:
 - cleaned BPM-side momenta such as ``px_bpm_upstream_cleaned`` and
   ``py_bpm_downstream_cleaned``.
 
-The cleaned marker states are built so that same-turn marker ``x`` and ``y``
-match on both sides of the kick, while the fitted ``dpx``/``dpy`` describe the
-momentum jump across the marker.
+Same-turn marker ``x`` and ``y`` match on both sides of the kick; fitted
+``dpx``/``dpy`` describe the momentum jump.
 
 Public API
 ----------
