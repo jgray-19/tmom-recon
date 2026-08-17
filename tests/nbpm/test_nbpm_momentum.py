@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from tests.momentum.momentum_test_utils import lhc_model_details, rmse
-from tests.reference_co import zero_reference_co
+from tests.reference_co import zero_momentum_reference
 from tmom_recon import (
     calculate_pz,
     calculate_transverse_pz_nbpm,
@@ -70,7 +70,7 @@ def test_nbpm_improves_noisy_local_window_over_two_bpm_baseline(data_dir, tracki
     baseline = calculate_pz(
         noisy_df.copy(deep=True),
         lhc_model_details("lhcb1.seq", data_dir, tws),
-        reference_co=zero_reference_co(noisy_df),
+        reference=zero_momentum_reference(noisy_df),
         info=False,
     ).rename(columns={"px": "px_base", "py": "py_base"})  # ty:ignore[possibly-missing-attribute]
 

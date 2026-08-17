@@ -1,3 +1,24 @@
+r"""BPM-pair selection and phase-advance bookkeeping.
+
+Phase conventions in this module -- both of them, because they are different
+quantities and conflating them has caused real confusion:
+
+* **Cumulative phase / phase advance** (``mu``, ``tune``, the entries of the
+  phase-advance matrices) is measured in **turns**, matching the twiss ``mu1``/
+  ``mu2`` columns. One turn is :math:`2\pi` radians of betatron phase.
+* **The ``delta`` column returned by the neighbour finders** is *not* a phase
+  advance. It is the **deviation of the selected advance from a quarter turn**,
+  ``delta = advance - 0.25`` (turns). Downstream code multiplies it by
+  :math:`2\pi` and uses it directly as the estimator's phase, i.e.
+  :math:`\phi_{\mathrm{code}} = \phi_x - \pi/2`.
+
+The shifted origin is deliberate: it turns :math:`\csc\phi_x` into
+:math:`\sec\phi_{\mathrm{code}}` and :math:`\cot\phi_x` into
+:math:`-\tan\phi_{\mathrm{code}}`, so the code's phase is *small* exactly when
+the true advance is near the optimal quarter turn and far from the
+:math:`\sin\phi_x \to 0` singularity.
+"""
+
 import logging
 
 import numpy as np
@@ -140,7 +161,9 @@ def _find_bpm_phase(
     Args:
         phase_matrix: DataFrame of BPM-to-BPM phase advances,
         with BPM names as index and columns.
-        target: Target phase advance (turns), e.g., 0.25 for π/2, 0.5 for π
+        target: Target phase advance (turns), e.g., 0.25 for π/2, 0.5 for π.
+            ``delta`` in the result is measured *from this target*, not from
+            zero; with the π/2 target that is the module's φ_code convention.
         forward: If True, search forward; if False, search backward
         name: Column name for the matched BPM in output DataFrame
         mu_var: Optional phase variance for each BPM (rotations²)
@@ -228,7 +251,8 @@ def prev_bpm_to_pi_2(
     Returns:
         DataFrame with columns:
             - prev_bpm: Name of matched previous BPM
-            - delta: Phase error (turns)
+            - delta: Advance *minus a quarter turn* (turns) — the φ_code of the
+              module docstring, not the phase advance itself
             - delta_err: Phase error uncertainty (turns), if variance provided
     """
     return _find_bpm_phase(
@@ -258,7 +282,8 @@ def next_bpm_to_pi_2(
     Returns:
         DataFrame with columns:
             - next_bpm: Name of matched next BPM
-            - delta: Phase error (turns)
+            - delta: Advance *minus a quarter turn* (turns) — the φ_code of the
+              module docstring, not the phase advance itself
             - delta_err: Phase error uncertainty (turns), if variance provided
     """
     return _find_bpm_phase(

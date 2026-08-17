@@ -17,12 +17,14 @@ from .reconstruction import (
     PzGenerator,
     calculate_pz,
 )
+from .reference import MomentumReference
 
 __all__ = [
     "ACDipoleConfig",
     "ACDipolePzGenerator",
     "ModelDetails",
     "ModelOpticsErrors",
+    "MomentumReference",
     "PzGenerator",
     "ResolvedOptics",
     "build_twiss_from_measurements",

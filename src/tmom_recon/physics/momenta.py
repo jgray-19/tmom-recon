@@ -100,13 +100,20 @@ def _compute_nominal_momenta(
 ) -> tuple[np.ndarray, np.ndarray]:
     r"""Compute nominal (error-free) momentum values.
 
-    The implementation evaluates
+    Uses
 
     .. math::
 
        \phi_x = 2 \pi \Delta_x,
        \qquad
        \phi_y = 2 \pi \Delta_y
+
+    where :math:`\Delta` is the ``delta`` column of
+    :mod:`tmom_recon.physics.bpm_phases`: the selected neighbour's advance
+    *minus a quarter turn*, in turns. So :math:`\phi` here is
+    :math:`\phi_{\mathrm{code}} = \phi_x - \pi/2`, **not** the phase advance and
+    **not** the twiss ``mu1``/``mu2``. That origin is what makes ``sec``/``tan``
+    the right functions below instead of ``csc``/``cot``.
 
     with normalized coordinates
 
@@ -125,9 +132,8 @@ def _compute_nominal_momenta(
     where :math:`p_t` is the MAD-NG longitudinal energy coordinate. MAD-NG
     dispersion columns are derivatives with respect to ``pt``, not ``dp/p``.
 
-    For the previous-neighbor branch the code uses :math:`s = -1` and
-    :math:`a = +1`; for the next-neighbor branch it uses :math:`s = +1`
-    and :math:`a = -1`. The reconstructed momenta are
+    The branch signs are :math:`(s, a)=(-1,+1)` for the previous neighbor and
+    :math:`(+1,-1)` for the next neighbor. The reconstructed momenta are
 
     .. math::
 
@@ -143,16 +149,16 @@ def _compute_nominal_momenta(
        {\sqrt{\beta_y}}
        + D_y' p_t + D_y^{(2)\prime} p_t^2.
 
-    The second-order terms :math:`D^{(2)}` come from a ``chrom=true`` twiss
-    (``ddx``/``ddpx``/``ddy``/``ddpy``, which already carry the Taylor
-    :math:`1/2`) and are taken as zero when those columns are absent.
+    Second-order terms come from ``chrom=true`` Twiss columns and are zero when
+    those columns are absent.
 
     Args:
         data: DataFrame with position and optics columns.
         names: Neighbor column names.
         neighbor_suffix: Suffix for neighbor columns ('p' or 'n').
         is_prev: Whether this is previous neighbor calculation.
-        pt_est: Estimated MAD-NG pt.
+        pt_est: Momentum offset from the reference orbit (see
+            :mod:`tmom_recon.reference`) -- never an absolute pt.
 
     Returns:
         Tuple of (px, py) arrays.

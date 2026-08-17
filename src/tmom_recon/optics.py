@@ -7,6 +7,19 @@ defaulting to the measurement when one is available. Beta and alpha are
 separate categories so a measured beta can be paired with a model alpha, which
 is what beta from amplitude needs (see :data:`CATEGORIES`).
 
+Dispersion, by contrast, is deliberately a *single* category covering ``dx``,
+``dy``, ``dpx`` and ``dpy``: no combination of measured positions yields ``D'``,
+so splitting the pair can only produce a measured ``D`` against a model ``D'``,
+which the off-momentum study measured to be worse than a consistent modelled
+pair. A partial set therefore raises rather than silently mixing sources.
+
+Where a lattice has been fitted to the measured closed orbit, prefer that fitted
+model's dispersion (``model_optics=("dispersion", ...)`` against a twiss of the
+fitted machine) over the measured dispersion: a fit to the closed orbit alone
+already recovers ``Dx`` to ~1.4% of the nominal error and ``Dx'`` equally well
+(0.0141 vs 0.0140), and adding ``dx``/``dy`` to the fit target reaches ~0.0058 on
+both — one model supplying both halves of the pair consistently.
+
 Every resolved twiss carries a full set of uncertainty columns: measured
 errors where the measurement is used, and rough configurable uncertainties
 (:class:`ModelOpticsErrors`) where the model is used, so error propagation
@@ -30,6 +43,7 @@ from tmom_recon.data.columns import (
     MEASUREMENT_RENAME_MAPPING,
 )
 from tmom_recon.measurements.twiss_from_measurement import build_twiss_from_measurements
+from tmom_recon.reference import MomentumReference
 
 if TYPE_CHECKING:  # pragma: no cover - typing helpers only
     from collections.abc import Collection
@@ -98,10 +112,10 @@ class ResolvedOptics:
         co: Twiss used for closed-orbit removal/restoration (the explicit
             closed-orbit twiss when available, else the model twiss, else
             ``tws``).
-        reference_co: **Measured** closed orbit at nominal RF, the momentum
-            reference for the pt estimate. Deliberately separate from ``co``:
-            ``co`` is a modelling convenience for removing and restoring the
-            orbit, while this is a physical measurement that no model can
+        reference: The momentum origin: a **measured** closed orbit together
+            with the absolute ``pt`` it was taken at. Deliberately separate from
+            ``co``: ``co`` is a modelling convenience for removing and restoring
+            the orbit, while this is a physical measurement that no model can
             substitute for (see
             :func:`tmom_recon.physics.pt_calculation.estimate_pt_from_model`).
         sources: Resolved source per optics category.
@@ -110,7 +124,7 @@ class ResolvedOptics:
 
     tws: pd.DataFrame
     co: pd.DataFrame
-    reference_co: pd.DataFrame | None
+    reference: MomentumReference | None
     sources: dict[OpticsCategory, OpticsSource]
     use_dispersion: bool
 
@@ -299,7 +313,7 @@ def resolve_optics(
     *,
     optics_tws: tfs.TfsDataFrame | None = None,
     closed_orbit_tws: tfs.TfsDataFrame | None = None,
-    reference_co: pd.DataFrame | None = None,
+    reference: MomentumReference | None = None,
     measurement_dir: str | Path | None = None,
     model_optics: Collection[OpticsCategory] = (),
     use_dispersion: bool = True,
@@ -316,11 +330,11 @@ def resolve_optics(
         closed_orbit_tws: Model twiss carrying the closed-orbit reference to
             subtract and restore. This is deliberately separate from
             ``optics_tws`` so off-momentum optics do not become the closed orbit.
-        reference_co: Measured closed orbit at nominal RF (indexed by BPM name,
-            column ``x``), required by the reconstruction as the momentum
-            reference. A model closed orbit is not a substitute -- dipole errors
-            are exactly degenerate with the dispersive orbit at a single
-            momentum.
+        reference: The momentum origin -- a measured closed orbit and the
+            absolute ``pt`` it sits at (:class:`~tmom_recon.reference.MomentumReference`).
+            Required by the all-BPM reconstruction. A model closed orbit is not a
+            substitute -- dipole errors are exactly degenerate with the dispersive
+            orbit at a single momentum.
         measurement_dir: omc3 optics measurement directory.
         model_optics: Categories forced to come from the model. Categories not
             listed come from the measurement when available, model otherwise.
@@ -407,10 +421,24 @@ def resolve_optics(
     if sources["phase"] == "model" or "mu1_var" not in tws.columns:
         _synthesise_phase_variances(tws, errors)
 
-    if dispersion_on and any(col not in tws.columns for col in DISPERSION_COLUMNS):
+    # Dispersion is one category on purpose: ``D`` and ``D'`` must come from the
+    # same source. No combination of measured *positions* yields ``D'``, so a
+    # measured ``D`` against a model ``D'`` is a mismatched pair, and the study
+    # measured a mismatched pair to be worse than a consistent modelled one
+    # (report, sec:diffdisp). A partial set is therefore an error, not something
+    # to paper over by falling back to first order or to no dispersion at all.
+    if dispersion_on:
         missing = [col for col in DISPERSION_COLUMNS if col not in tws.columns]
-        LOGGER.warning("Dispersion columns %s unavailable; disabling dispersion", missing)
-        dispersion_on = False
+        if missing and len(missing) < len(DISPERSION_COLUMNS):
+            raise KeyError(
+                f"Dispersion source {sources['dispersion']!r} supplies only part of "
+                f"{list(DISPERSION_COLUMNS)} (missing {missing}). D and D' must come "
+                "from the same source; a measured D paired with a model D' is worse "
+                "than a consistent model pair."
+            )
+        if missing:
+            LOGGER.warning("No dispersion columns available; disabling dispersion")
+            dispersion_on = False
     if dispersion_on:
         _synthesise_dispersion_errors(tws, errors)
         # Second-order dispersion is never measured, so it always comes from the
@@ -424,7 +452,7 @@ def resolve_optics(
     return ResolvedOptics(
         tws=tws,
         co=co_tws if co_tws is not None else tws,
-        reference_co=reference_co,
+        reference=reference,
         sources=sources,
         use_dispersion=dispersion_on,
     )

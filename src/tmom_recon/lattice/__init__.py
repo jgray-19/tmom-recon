@@ -2,4 +2,6 @@
 
 from __future__ import annotations
 
-__all__ = ["core", "neighbors"]
+from tmom_recon.lattice.bpms import find_common_bpms
+
+__all__ = ["core", "neighbors", "find_common_bpms"]

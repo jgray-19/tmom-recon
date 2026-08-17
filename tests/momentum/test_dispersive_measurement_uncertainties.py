@@ -11,7 +11,7 @@ pytest.importorskip("xtrack_tools")
 import pandas as pd
 from pymadng_utils.madx import convert_tfs_to_madx
 
-from tests.reference_co import zero_reference_co
+from tests.reference_co import zero_momentum_reference
 from tmom_recon import calculate_pz, inject_noise_xy
 from tmom_recon.svd import svd_clean_measurements
 
@@ -88,7 +88,7 @@ def test_dispersive_measurement_with_uncertainties(
     result = calculate_pz(
         calc_df,
         lhc_model_details("lhcb1.seq", data_dir, ng_tws),
-        reference_co=zero_reference_co(calc_df),
+        reference=zero_momentum_reference(calc_df),
         measurement_dir=str(temp_dir),
         reverse_meas_tws=False,  # Always working with B4
         info=False,

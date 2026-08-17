@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from tmom_recon.model import ModelDetails, resolve_model_details
-from tmom_recon.physics.closed_orbit import parse_plane_spec
 
 from .madng_driver import ACDipoleMadDriver
 from .reconstruction import SUMMARY_ATTR_NAME
@@ -30,7 +29,10 @@ __all__ = [
 
 @dataclass(frozen=True)
 class ACDipoleConfig:
-    """Driven AC-dipole settings layered on generated model details."""
+    """Driven AC-dipole settings layered on generated model details.
+
+    ACD reconstruction always uses the generated orbit at the model ``pt``.
+    """
 
     ac_dipole_marker: str
     driven_tunes: tuple[float, float]
@@ -38,50 +40,6 @@ class ACDipoleConfig:
     bpm_downstream: str | None = None
     smooth_lambda: float = 1.0
     barrier_s: float | None = None
-    data_mean_closed_orbit_planes: str | None = None
-    """Planes in which to take the closed orbit from the measured data rather
-    than from the model twiss.
-
-    ``None`` (the default) or ``""`` takes the closed orbit directly from the
-    ``dp/p=0`` model twiss in both planes. Pass ``"x"``, ``"y"``, ``"xy"`` or
-    ``"yx"`` (case-insensitive, any order) to instead use the per-BPM turn-mean
-    of the data in those planes — valid because an AC-dipole driven oscillation
-    has ~zero mean over the flat-top turns. That orbit is removed before the
-    betatron reconstruction and restored afterwards, its angle inferred from its
-    own positions with the model optics. Use this when the model twiss does not
-    represent the machine closed orbit in that plane."""
-
-    dispersive_closed_orbit: bool = False
-    """Whether to reference the *dispersive* closed orbit instead of ``dp/p=0``.
-
-    ``False`` (the default) takes the closed orbit from the ``dp/p=0`` twiss and
-    models the dispersive orbit as ``pt * D``. That is first-order correct only:
-    the neglected ``pt**2 * D2`` term is a constant per-BPM offset that grows
-    quadratically with ``pt``, and magnet errors amplify it further (the error
-    orbit feeds down through the quadrupoles, so the error and dispersive orbits
-    do not superpose).
-
-    ``True`` instead references ``tracking_tws`` — the orbit MAD-NG solves at the
-    model's ``pt``, exact to all orders and including any magnet errors carried
-    by the model — and skips the ``pt * D`` correction. Prefer it whenever the
-    model represents the machine; it matters above ``|dp/p| ~ 1e-3``."""
-
-    use_reference_closed_orbit: bool = False
-    """Use ``calculate_pz(reference_co=...)`` as the ACD closed-orbit state.
-
-    This is for pipelines with an independently measured closed-orbit position
-    and model-derived angle, supplied together as ``x/px/y/py``. By default the
-    ACD reconstruction retains its historical behaviour and uses the generated
-    model twiss. This option is incompatible with ``dispersive_closed_orbit``.
-    """
-
-    def __post_init__(self) -> None:
-        # Fail on a bad plane spec at construction, not deep inside a MAD-NG run.
-        parse_plane_spec(self.data_mean_closed_orbit_planes, field="data_mean_closed_orbit_planes")
-        if self.use_reference_closed_orbit and self.dispersive_closed_orbit:
-            raise ValueError(
-                "use_reference_closed_orbit and dispersive_closed_orbit are mutually exclusive"
-            )
 
 
 @dataclass(frozen=True)
@@ -125,19 +83,29 @@ def resolve_ac_dipole_config(
         observed_elements=config.ac_dipole_marker,
         magnet_strengths=model_details.magnet_strengths,
         install_ac_dipole_markers=True,
-        tune_knobs_file=model_details.tune_knobs_file,
-        corrector_knobs_file=model_details.corrector_knobs_file,
+        tune_knobs=model_details.tune_knobs,
+        corrector_knobs=model_details.corrector_knobs,
     )
     tracking_model.twiss_elements = tracking_model.run_twiss(observe=0)
-    closed_orbit_tws = tracking_model.run_twiss(observe=1, coupling=True, deltap=0.0)
-    tracking_tws = tracking_model.run_twiss(observe=1, coupling=True, pt=tracking_model.pt)
+    closed_orbit_tws = tracking_model.run_twiss(
+        observe=1,
+        coupling=True,
+        chrom=True,
+        deltap=0.0,
+    )
+    tracking_tws = tracking_model.run_twiss(
+        observe=1,
+        coupling=True,
+        chrom=True,
+        pt=tracking_model.pt,
+    )
 
     optics = resolve_model_details(
         model_details,
         observed_elements=config.ac_dipole_marker,
         install_ac_dipole_markers=True,
     )
-    natural = optics.model.run_twiss(observe=0, coupling=True, pt=optics.model.pt)
+    natural = optics.model.run_twiss(observe=0, coupling=True, chrom=True, pt=optics.model.pt)
     # install_ac_dipole takes an explicit deltap (its own API, not a twiss
     # closed-orbit search), so the pt -> dp/p conversion is still required here.
     optics.model.install_ac_dipole(
@@ -145,7 +113,12 @@ def resolve_ac_dipole_config(
         drv_tunes=(float(config.driven_tunes[0]), float(config.driven_tunes[1])),
         deltap=optics.model.accelerator.pt2dp(optics.model.pt),
     )
-    optics_tws = optics.model.run_twiss(observe=1, coupling=True, pt=optics.model.pt)
+    optics_tws = optics.model.run_twiss(
+        observe=1,
+        coupling=True,
+        chrom=True,
+        pt=optics.model.pt,
+    )
     return ResolvedACDipoleConfig(
         config=config,
         model=tracking_model,

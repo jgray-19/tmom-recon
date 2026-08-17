@@ -90,6 +90,8 @@ def test_ac_dipole_momentum_reconstruction(
         closed_orbit_tws=tws,
         bpm_upstream=bpm_upstream,
         bpm_downstream=bpm_downstream,
+        # `tws` is the xsuite twiss at delta0=delta_p, so it carries the
+        # dispersive closed orbit used by the reconstruction.
     )
 
     raw_markers = result.attrs["raw_marker_states"]
