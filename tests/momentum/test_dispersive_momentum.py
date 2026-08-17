@@ -47,6 +47,8 @@ def test_dispersive_momentum_on_momentum(seq_file, data_dir, acd_tracking_setup)
         tracking_df.copy(deep=True),
         model_details,
         reference=reference,
+        use_dispersion=False,
+        measurement_pt=0.0,
         info=True,
     ).rename(columns={"px": "px_trans", "py": "py_trans"})
 
@@ -298,6 +300,8 @@ def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, acd
         tracking_df.copy(deep=True),
         model_details,
         reference=reference,
+        use_dispersion=False,
+        measurement_pt=0.0,
         info=True,
     ).rename(columns={"px": "px_trans", "py": "py_trans"})
 
@@ -362,18 +366,14 @@ def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, acd
     py_rmse_cleaned = rmse(merged["py_true"].to_numpy(), merged["py_svd"].to_numpy())
 
     # Clean off-momentum behaviour should still beat the transverse baseline.
-    assert py_rmse_trans < 3e-7, f"Transverse py RMSE {py_rmse_trans:.2e} > 2e-7"
-    assert py_rmse_nonoise < 3e-7, f"Dispersive py RMSE {py_rmse_nonoise:.2e} > 2e-7"
+    assert py_rmse_trans < 2e-7, f"Transverse py RMSE {py_rmse_trans:.2e} > 2e-7"
+    assert py_rmse_nonoise < 2e-7, f"Dispersive py RMSE {py_rmse_nonoise:.2e} > 2e-7"
     assert px_rmse_nonoise <= px_rmse_trans / 11, (
         f"Dispersive px RMSE {px_rmse_nonoise:.2e} should be <= transverse {px_rmse_trans:.2e}"
     )
     tol = 6e-6 if "crossing" not in seq_file else 7.2e-6
-    assert px_rmse_nonoise < 5e-7, f"Dispersive px RMSE {px_rmse_nonoise:.2e} > 5e-7"
+    assert px_rmse_nonoise < 2.5e-7, f"Dispersive px RMSE {px_rmse_nonoise:.2e} > 2.5e-7"
     assert px_rmse_trans < tol, f"Transverse px RMSE {px_rmse_trans:.2e} > {tol:.2e}"
-
-    # Check clean reconstruction quality
-    assert px_rmse_nonoise < 5e-7, f"No noise px RMSE {px_rmse_nonoise:.2e} should be < 3.5e-7"
-    assert py_rmse_nonoise < 3e-7, f"No noise py RMSE {py_rmse_nonoise:.2e} should be < 3e-7"
 
     # Check noisy is worse than clean
     assert px_rmse_noisy > px_rmse_nonoise, (
@@ -392,5 +392,5 @@ def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, acd
     )
 
     # Check SVD cleaned has acceptable absolute tolerance
-    assert px_rmse_cleaned < 5e-7, f"SVD px RMSE {px_rmse_cleaned:.2e} should be < 5e-7"
-    assert py_rmse_cleaned < 4e-7, f"SVD py RMSE {py_rmse_cleaned:.2e} should be < 4e-7"
+    assert px_rmse_cleaned < 4e-7, f"SVD px RMSE {px_rmse_cleaned:.2e} should be < 4e-7"
+    assert py_rmse_cleaned < 3.5e-7, f"SVD py RMSE {py_rmse_cleaned:.2e} should be < 3.5e-7"

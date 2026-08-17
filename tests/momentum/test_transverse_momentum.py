@@ -32,9 +32,7 @@ if TYPE_CHECKING:
 
 NAT_TUNES = [0.28, 0.31]
 DRV_TUNES = [0.27, 0.322]
-# Equivalent to the excitation formula insert_ac_dipole used before
-# horizontal_excitation/vertical_excitation became explicit parameters:
-# volt = 2*0.042*pbeam*abs(qxd_qx)/sqrt(180*betxac) (x) and .../sqrt(177*betyac) (y).
+# Excitation amplitudes for the horizontal and vertical AC-dipole planes.
 HORIZONTAL_EXCITATION = 2 * 0.042 / 180.0**0.5
 VERTICAL_EXCITATION = 2 * 0.042 / 177.0**0.5
 
@@ -151,7 +149,7 @@ def _setup_xsuite_simulation(
         accelerator=accelerator,
         pt=accelerator.dp2pt(track_delta_p),
         magnet_strengths=magnet_strengths or None,
-        corrector_knobs_file=corrector_file,
+        corrector_knobs=corrector_file,
     )
 
     return tracking_df, truth, model_details, xsuite_tws
@@ -321,27 +319,26 @@ def test_calculate_pz_with_corrections_and_perturbations(
     - orbit_correction_off_momentum: Verify reconstruction with corrected orbits
     - magnet_perturbations_on_momentum: Verify robustness to random magnet errors
     """
-    # DO NOT EVER INCREASE THESE TOLERANCES, IF THE TESTS START FAILING, FIX THE UNDERLYING ISSUE
     tolerance_values = {
         (2e-4, False): {
-            "px_nonoise_max": 1.6e-6,
-            "py_nonoise_max": 4e-7,
+            "px_nonoise_max": 1.8e-7,
+            "py_nonoise_max": 1.8e-7,
             "px_noisy_min": 2e-6,
-            "px_noisy_max": 3.2e-6,
+            "px_noisy_max": 2.5e-6,
             "py_noisy_min": 2e-6,
-            "py_noisy_max": 3e-6,
-            "px_cleaned_max": 1.8e-6,
-            "py_cleaned_max": 7e-7,
+            "py_noisy_max": 2.5e-6,
+            "px_cleaned_max": 5.8e-7,
+            "py_cleaned_max": 5.6e-7,
         },
         (0.0, True): {
-            "px_nonoise_max": 2e-6,
-            "py_nonoise_max": 2.5e-7,
+            "px_nonoise_max": 1.8e-7,
+            "py_nonoise_max": 1.8e-7,
             "px_noisy_min": 2e-6,
-            "px_noisy_max": 3.2e-6,
+            "px_noisy_max": 2.5e-6,
             "py_noisy_min": 2e-6,
-            "py_noisy_max": 3e-6,
-            "px_cleaned_max": 1.8e-6,
-            "py_cleaned_max": 7e-7,
+            "py_noisy_max": 2.5e-6,
+            "px_cleaned_max": 5.8e-7,
+            "py_cleaned_max": 5.6e-7,
         },
     }
     json_path = xsuite_json_path("lhcb1.seq")

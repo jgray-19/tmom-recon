@@ -125,6 +125,7 @@ def test_psb_acd_reconstruction_with_dipole_closed_orbit(
             pt=model.pt,
             magnet_strengths=magnet_strengths,
         ),
+        use_dispersion=True,
         acd=ACDipoleConfig(
             ac_dipole_marker=ACD_ELEMENT,
             driven_tunes=ACD_DRIVEN_TUNES,

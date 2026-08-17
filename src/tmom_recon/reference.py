@@ -29,8 +29,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import pandas as pd
+
 if TYPE_CHECKING:  # pragma: no cover - typing helpers only
-    import pandas as pd
+    from collections.abc import Iterable
 
 __all__ = ["MomentumReference"]
 
@@ -52,15 +54,43 @@ class MomentumReference:
             reference was fitted or measured off-momentum -- e.g.
             ``aba_optimiser.momentum_reference.MomentumReference.reference_pt``
             in the sibling repository.
+        measured: Whether *closed_orbit* is a real measurement of the machine.
+            ``False`` marks the pinned zero of a dynamic-part analysis (see
+            :meth:`zero_reference`), which is a legitimate origin but not a
+            measurement, and which the momentum estimator therefore refuses.
     """
 
     closed_orbit: pd.DataFrame
     pt: float = 0.0
+    measured: bool = True
 
     def __post_init__(self) -> None:
         if "x" not in getattr(self.closed_orbit, "columns", ()):
             raise ValueError('MomentumReference.closed_orbit needs an "x" column.')
         object.__setattr__(self, "pt", float(self.pt))
+        object.__setattr__(self, "measured", bool(self.measured))
+
+    @classmethod
+    def zero_reference(cls, bpm_names: Iterable[str]) -> MomentumReference:
+        """The pinned zero origin of a dynamic-part reconstruction.
+
+        A dynamic-part analysis needs no reference: the reconstruction operator is
+        linear and the closed orbit is constant in turn, so every static
+        contribution cancels when the turn mean is removed. It still needs *an*
+        origin, though, and it must be a definite one. The two neighbour estimates
+        are combined with inverse-variance weights whose optics contribution
+        depends on the orbit-subtracted positions, so the answer is only
+        approximately invariant to the reference: varying nothing else moved
+        ``var_py`` by a factor 17.9 and the dynamic ``py`` by 11% of its own size.
+
+        Stating the zero explicitly is therefore not ceremony. It is what stops two
+        runs in the same nominal frame from disagreeing, and it removes the older
+        alternative of fabricating a plausible-looking orbit to satisfy a mandatory
+        argument.
+        """
+        names = pd.Index([str(name) for name in bpm_names], name="name").unique()
+        orbit = pd.DataFrame({"x": 0.0, "y": 0.0, "px": 0.0, "py": 0.0}, index=names)
+        return cls(closed_orbit=orbit, pt=0.0, measured=False)
 
     def offset_from(self, measurement_pt: float) -> float:
         """The momentum offset of a measurement at absolute *measurement_pt*.

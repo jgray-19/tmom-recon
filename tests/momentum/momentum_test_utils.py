@@ -106,9 +106,10 @@ def transverse_calc(
     reference: MomentumReference,
     *,
     ac_dipole_config=None,
+    use_dispersion: bool = True,
     **kwargs,
 ) -> pd.DataFrame:
-    """Model-only reconstruction without dispersion (old transverse behaviour).
+    """Model-only reconstruction, with dispersion enabled by default.
 
     *reference* is positional and required on purpose. It used to default to a
     zero orbit, which silently produced wrong answers twice: the crossing optics
@@ -119,7 +120,7 @@ def transverse_calc(
         df,
         model_details,
         reference=reference,
-        use_dispersion=False,
+        use_dispersion=use_dispersion,
         acd=ac_dipole_config,
         **kwargs,
     )

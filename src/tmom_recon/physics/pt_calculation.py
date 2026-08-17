@@ -96,13 +96,15 @@ def estimate_pt_from_model(
         ValueError: If *reference* is missing or does not cover the BPMs selected
             for the estimate.
     """
-    if reference is None:
+    if reference is None or not reference.measured:
         raise ValueError(
             "estimate_pt_from_model requires a `reference` MomentumReference built "
-            "from a measured closed orbit. A model closed orbit is not a valid "
-            "substitute: dipole errors are exactly degenerate with the dispersive "
-            "orbit at a single momentum, so a mismatched model biases pt by tens "
-            "of percent."
+            "from a measured closed orbit. Neither a model closed orbit nor the "
+            "pinned zero of a dynamic-part run is a valid substitute: dipole errors "
+            "are exactly degenerate with the dispersive orbit at a single momentum, "
+            "so a mismatched origin biases pt by tens of percent. This is the one "
+            "place the measured orbit is load-bearing, which is why the requirement "
+            "lives here rather than at an entry point that may never reach it."
         )
     reference_co = reference.closed_orbit
     data_bpms = set(data["name"].unique())

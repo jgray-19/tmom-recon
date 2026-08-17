@@ -1,75 +1,8 @@
 import logging
 
-import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
-
-#: Warn when the model and data closed orbits differ by more than this, in metres.
-CLOSED_ORBIT_WARN_TOLERANCE = 1e-3
-
-
-def parse_plane_spec(
-    spec: str | tuple[str, ...] | None, *, field: str = "planes"
-) -> tuple[str, ...]:
-    """Normalise a plane specification such as ``"xy"``/``"yx"``/``"x"`` to ``("x", "y")`` order.
-
-    Args:
-        spec: Plane string (case-insensitive, any order), an already-parsed
-            tuple, or ``None``/``""`` for no planes.
-        field: Name used in error messages.
-
-    Returns:
-        Canonically ordered tuple drawn from ``("x", "y")``.
-
-    Raises:
-        ValueError: If *spec* contains a character other than ``x``/``y``, or a
-            duplicate plane.
-    """
-    if spec is None:
-        return ()
-    chars = [c for c in ("".join(spec)).strip().lower() if not c.isspace()]
-    unknown = sorted(set(chars) - {"x", "y"})
-    if unknown:
-        raise ValueError(f"{field}: unknown plane(s) {unknown}; expected only 'x' and 'y'.")
-    if len(set(chars)) != len(chars):
-        raise ValueError(f"{field}: duplicate plane in {spec!r}.")
-    return tuple(plane for plane in ("x", "y") if plane in chars)
-
-
-def warn_on_closed_orbit_mismatch(
-    twiss_co: pd.DataFrame,
-    data_co: pd.DataFrame,
-    *,
-    planes: tuple[str, ...] = ("x", "y"),
-) -> None:
-    """Warn when the twiss closed orbit is far from the data closed orbit.
-
-    Args:
-        twiss_co: Model closed orbit, columns ``x``/``y`` indexed by BPM.
-        data_co: Data-mean closed orbit, same index.
-        planes: Planes to check.
-    """
-    for plane in planes:
-        if plane not in twiss_co.columns or plane not in data_co.columns:
-            continue
-        diff = (twiss_co[plane] - data_co[plane]).astype(float).dropna().abs()
-        if diff.empty or diff.max() <= CLOSED_ORBIT_WARN_TOLERANCE:
-            continue
-        worst = diff.idxmax()
-        logger.warning(
-            "Model closed orbit disagrees with the data closed orbit in plane %s by more "
-            "than %.1f mm: worst BPM %s at %.2f mm (rms %.2f mm; twiss=%.2f mm "
-            "data=%.2f mm). Consider data_mean_closed_orbit_planes=%r.",
-            plane,
-            1e3 * CLOSED_ORBIT_WARN_TOLERANCE,
-            worst,
-            1e3 * diff.max(),
-            1e3 * float(np.sqrt(np.mean(diff**2))),
-            1e3 * float(twiss_co.loc[worst, plane]),
-            1e3 * float(data_co.loc[worst, plane]),
-            plane,
-        )
 
 
 def estimate_closed_orbit(

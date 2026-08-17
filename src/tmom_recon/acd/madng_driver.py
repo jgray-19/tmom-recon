@@ -79,8 +79,9 @@ class ACDipoleMadDriver(KnobMadInterface):
             replace the thick AC-dipole element with a thin copy. Required for
             AC-dipole state transport; leave ``False`` for a plain model that only
             needs optics and closed orbit.
-        tune_knobs_file: Knob file applied for tune corrections.
-        corrector_knobs_file: Knob file applied for corrector settings.
+        tune_knobs: Tune-correction knobs, as name/value pairs or a knobs file.
+        corrector_knobs: Corrector settings, as name/value pairs, a knobs file,
+            or a TFS corrector table.
         debug: If ``True``, enables MAD-NG debug output.
         mad_logfile: If given, redirect MAD-NG stdout and stderr to this path.
         discard_mad_output: If ``True`` and *mad_logfile* is ``None``, suppress
@@ -95,8 +96,8 @@ class ACDipoleMadDriver(KnobMadInterface):
         observed_elements: str | list[str] | None = None,
         magnet_strengths: Mapping[str, float] | None = None,
         install_ac_dipole_markers: bool = True,
-        tune_knobs_file: Path | None = None,
-        corrector_knobs_file: Path | None = None,
+        tune_knobs: Mapping[str, float] | Path | None = None,
+        corrector_knobs: Mapping[str, float] | Path | None = None,
         debug: bool = False,
         mad_logfile: Path | None = None,
         discard_mad_output: bool = False,
@@ -110,13 +111,14 @@ class ACDipoleMadDriver(KnobMadInterface):
         )
         self._mad_logfile = str(mad_logfile) if mad_logfile is not None else None
         self.pt = float(pt)
-        if tune_knobs_file is not None:
-            self.set_knobs(tune_knobs_file)
-        if corrector_knobs_file is not None:
-            # Correctors are handed over as a TFS table (hkick/vkick columns), which
-            # set_knobs cannot read -- it expects tab-delimited "name<TAB>value" and
-            # would silently apply nothing, leaving the model closed orbit uncorrected.
-            self.set_corrector_strengths(corrector_knobs_file)
+        if tune_knobs is not None:
+            self.set_knobs(tune_knobs)
+        if corrector_knobs is not None:
+            # Correctors may be a TFS table (hkick/vkick columns) rather than
+            # knobs, which set_knobs cannot read -- it expects "name<TAB>value"
+            # pairs and would silently apply nothing, leaving the model closed
+            # orbit uncorrected. set_corrector_strengths handles both shapes.
+            self.set_corrector_strengths(corrector_knobs)
         self.observe(self.accelerator.bpm_pattern)
         for element in _normalise_element_list(observed_elements):
             self.observe(element, unobserve_first=False)

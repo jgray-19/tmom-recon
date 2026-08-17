@@ -24,7 +24,6 @@ from tmom_recon.optics import (
     PHASE_COLUMNS,
     SECOND_ORDER_DISPERSION_COLUMNS,
 )
-from tmom_recon.physics.closed_orbit import parse_plane_spec, warn_on_closed_orbit_mismatch
 
 from .bpm_reconstruction import (
     _normalise_supplied_tune,
@@ -778,83 +777,6 @@ def _check_bpm_state_consistency(
     return records
 
 
-def _data_mean_closed_orbit(
-    data: pd.DataFrame, order: list[str], disp_bpm: pd.DataFrame, pt_est: float
-) -> pd.DataFrame:
-    """Return the per-BPM turn-mean position of *data*, indexed by *order*.
-
-    The mean of an AC-dipole driven oscillation over the flat-top turns is the
-    closed-orbit position at that BPM, so this is a data-only estimate of the
-    closed orbit. The dispersive orbit ``pt * d`` is removed so the result is the
-    same quantity as the ``dp/p=0`` twiss closed orbit.
-    """
-    means = data.groupby("name", observed=True)[["x", "y"]].mean()
-    means.index = means.index.astype(str).str.upper()
-    means = means.reindex(order)
-    for plane, dispersion in (("x", "dx"), ("y", "dy")):
-        if dispersion in disp_bpm.columns:
-            means[plane] -= pt_est * disp_bpm[dispersion].to_numpy(dtype=float)
-    return means
-
-
-def _closed_orbit_momenta(
-    co_bpm: pd.DataFrame,
-    tws_bpm: pd.DataFrame,
-    *,
-    planes: tuple[str, ...],
-    window: ACDipoleBPMWindow,
-    bpm_index: dict[str, int],
-    use_immediate_neighbors: bool,
-) -> pd.DataFrame:
-    """Fill ``px``/``py`` in *co_bpm* from its own positions.
-
-    The per-BPM mean orbit is a static orbit sampled at every BPM, so the same
-    neighbour-pair machinery used for the turn-by-turn momenta recovers its
-    angle. The orbit is fed in as two identical "turns" so that neighbour
-    look-ups which wrap around the ring still find a partner row.
-
-    The angle is inferred with the *model* optics, so this is first-order
-    correct: good when the orbit is a perturbation of the model. Only the
-    momenta of *planes* are touched; a plane taking its closed orbit from the
-    twiss keeps the twiss angle.
-    """
-    frames = []
-    for turn in (0, 1):
-        frame = co_bpm[["x", "y"]].reset_index()
-        frame.columns = ["name", "x", "y"]
-        frame["turn"] = turn
-        frame["var_x"] = 0.0
-        frame["var_y"] = 0.0
-        frames.append(frame)
-    co_data = pd.concat(frames, ignore_index=True).dropna(subset=["x", "y"])
-
-    upstream, downstream = prepare_direct_bpm_reconstruction(
-        co_data,
-        tws_bpm,
-        window=window,
-        bpm_index=bpm_index,
-        pt_est=0.0,
-        use_immediate_neighbors=use_immediate_neighbors,
-    )
-    momenta = tuple({"x": "px", "y": "py"}[plane] for plane in planes)
-    co_bpm = co_bpm.copy()
-    for momentum in momenta:
-        co_bpm[momentum] = 0.0
-    for name, frame in {**downstream, **upstream}.items():
-        if name not in co_bpm.index or frame.empty:
-            continue
-        for momentum in momenta:
-            if momentum not in frame.columns:
-                continue
-            # A neighbour look-up that wraps the ring shifts the partner turn by
-            # +/-1, leaving one of the two synthetic turns without a partner and
-            # hence NaN; take whichever row did resolve.
-            values = frame[momentum].dropna()
-            if not values.empty:
-                co_bpm.loc[name, momentum] = float(values.iat[0])
-    return co_bpm
-
-
 def reconstruct_from_prepared(
     prepared: PreparedACDInputs,
     tws: pd.DataFrame,
@@ -862,7 +784,6 @@ def reconstruct_from_prepared(
     closed_orbit_tws: pd.DataFrame,
     dispersion_tws: pd.DataFrame | None = None,
     resolved_tws: pd.DataFrame | None = None,
-    data_mean_closed_orbit_planes: str | tuple[str, ...] | None = None,
 ) -> tfs.TfsDataFrame:
     """Reconstruct AC-dipole kicks for a given model twiss from prepared inputs.
 
@@ -886,13 +807,6 @@ def reconstruct_from_prepared(
         dispersion_tws: Optional twiss carrying the dispersion columns to use for
             off-momentum BPM reconstruction. If omitted, ``closed_orbit_tws`` is
             used.
-        data_mean_closed_orbit_planes: Planes — ``"x"``, ``"y"``, ``"xy"``,
-            ``"yx"``, or ``None``/``""`` — in which the closed orbit is taken
-            from the per-BPM turn-mean of the data instead of
-            ``closed_orbit_tws``. It is removed before the betatron
-            reconstruction and restored afterwards, with its angle inferred from
-            its own positions. Default takes the closed orbit from the twiss in
-            both planes.
 
     Returns:
         A :class:`tfs.TfsDataFrame` with four long-form state row groups
@@ -916,40 +830,6 @@ def reconstruct_from_prepared(
     disp_bpm = _normalise_observed_twiss(
         dispersion_tws if dispersion_tws is not None else closed_orbit_tws
     ).reindex(prepared.lattice_bpm_order)
-
-    # By default the closed orbit comes straight from ``closed_orbit_tws``. Per
-    # plane the user may instead take it from the data: the mean of an AC-dipole
-    # driven oscillation over the flat-top turns is the closed-orbit position, so
-    # the per-BPM turn-mean is a data-only estimate, used when the model twiss
-    # does not represent the machine orbit. ``data`` still carries the closed
-    # orbit at this point.
-    override_planes = parse_plane_spec(
-        data_mean_closed_orbit_planes, field="data_mean_closed_orbit_planes"
-    )
-    mean_co = _data_mean_closed_orbit(data, prepared.lattice_bpm_order, disp_bpm, betatron_pt)
-    warn_on_closed_orbit_mismatch(
-        co_bpm,
-        mean_co,
-        planes=tuple(p for p in ("x", "y") if p not in override_planes),
-    )
-    if override_planes:
-        for plane in override_planes:
-            co_bpm[plane] = mean_co[plane].to_numpy(dtype=float)
-        # The data mean gives positions only; recover the matching angles from
-        # those positions so the reference restored before tracking is a
-        # consistent state rather than a position with a zero angle.
-        co_bpm = _closed_orbit_momenta(
-            co_bpm,
-            tws_bpm,
-            planes=override_planes,
-            window=window,
-            bpm_index={name: idx for idx, name in enumerate(prepared.lattice_bpm_order)},
-            use_immediate_neighbors=prepared.use_immediate_neighbors,
-        )
-        LOGGER.info(
-            "Using per-BPM data mean as closed-orbit reference for plane(s) %s",
-            ", ".join(override_planes),
-        )
 
     data = remove_closed_orbit(data, co_bpm)
 
@@ -1121,7 +1001,6 @@ def calculate_ac_dipole_momentum(
     closed_orbit_tws: pd.DataFrame,
     dispersion_tws: pd.DataFrame | None = None,
     resolved_tws: pd.DataFrame | None = None,
-    data_mean_closed_orbit_planes: str | tuple[str, ...] | None = None,
 ) -> tfs.TfsDataFrame:
     """Reconstruct AC-dipole kicks and constrained BPM momenta in one pass.
 
@@ -1155,9 +1034,6 @@ def calculate_ac_dipole_momentum(
             estimate.
         closed_orbit_tws: Generated closed orbit at ``model.pt``.
         dispersion_tws: Optional explicit dispersion source.
-        data_mean_closed_orbit_planes: Planes (``"x"``, ``"y"``, ``"xy"``,
-            ``"yx"``, or ``None``) in which the closed orbit is taken from the
-            per-BPM data mean instead of ``closed_orbit_tws``.
 
     Returns:
         A :class:`tfs.TfsDataFrame` with four long-form state row groups:
@@ -1182,7 +1058,6 @@ def calculate_ac_dipole_momentum(
         closed_orbit_tws=closed_orbit_tws,
         dispersion_tws=dispersion_tws,
         resolved_tws=resolved_tws,
-        data_mean_closed_orbit_planes=data_mean_closed_orbit_planes,
     )
 
 

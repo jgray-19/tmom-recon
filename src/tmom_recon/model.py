@@ -45,15 +45,17 @@ class ModelDetails:
             project does this) cut that error ~20x in simulation. The coupling
             is deliberately plain data -- a mapping of strengths -- so this
             package never imports the fitting code.
-        tune_knobs_file: Optional knob file applied for tune corrections.
-        corrector_knobs_file: Optional knob file applied for corrector settings.
+        tune_knobs: Optional tune-correction knobs, as name/value pairs or as a
+            knobs file to read.
+        corrector_knobs: Optional orbit-corrector settings, as name/value pairs,
+            a knobs file, or a TFS corrector table.
     """
 
     accelerator: Accelerator
     pt: float = 0.0
     magnet_strengths: Mapping[str, float] | None = None
-    tune_knobs_file: Path | None = None
-    corrector_knobs_file: Path | None = None
+    tune_knobs: Mapping[str, float] | Path | None = None
+    corrector_knobs: Mapping[str, float] | Path | None = None
 
 
 @dataclass(frozen=True)
@@ -83,8 +85,8 @@ def resolve_model_details(
         observed_elements=observed_elements,
         magnet_strengths=details.magnet_strengths,
         install_ac_dipole_markers=install_ac_dipole_markers,
-        tune_knobs_file=details.tune_knobs_file,
-        corrector_knobs_file=details.corrector_knobs_file,
+        tune_knobs=details.tune_knobs,
+        corrector_knobs=details.corrector_knobs,
     )
     # `chrom=True` adds the second-order dispersion columns ddx/ddpx/ddy/ddpy,
     # which the pt estimate and the dispersive momentum term both use. They are
