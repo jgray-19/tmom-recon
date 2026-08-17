@@ -30,11 +30,7 @@ LHC_ARC_PATTERN = r"BPM.*\.0*(1[5-9]|[2-9]\d|[1-9]\d{2,})[RL]"
 def _solve_pt_quadratic(numerator: float, s_dx2: float, s_ddx_dx: float) -> float:
     """Solve ``numerator = pt*s_dx2 + pt**2*s_ddx_dx`` for pt.
 
-    ``pt`` and ``pt**2`` are one unknown, not two, so a single orbit determines
-    the second-order solution -- no momentum scan is needed. Of the two roots,
-    the physical one is adjacent to the first-order solution ``numerator/s_dx2``
-    (the quadratic term is a ~0.2% correction at dp/p = 8e-3, so the roots are
-    nowhere near each other).
+    Select the root nearest the first-order solution.
     """
     linear = numerator / s_dx2
     if s_ddx_dx == 0.0:
@@ -62,26 +58,9 @@ def estimate_pt_from_model(
     """
     Estimate MAD-NG pt from the closed orbit, using first- and second-order dispersion.
 
-    The orbit is projected onto the model dispersion,
-    ``pt = sum(x_co*dx) / sum(dx**2)``, extended to second order by solving
-    ``sum(x_co*dx) = pt*sum(dx**2) + pt**2*sum(ddx*dx)`` whenever the twiss
-    carries ``ddx``. On PSB ring 3 that removes a relative bias of 2.3e-4 to
-    2.3e-3 (growing with dp/p), leaving 3e-7 to 2e-5 -- a 97-670x reduction.
-    Note this is a *bias*: unlike BPM noise it does not average down with turns.
-
-    ``reference`` is mandatory and must carry a **measured** closed orbit. It
-    cannot be replaced by a model closed orbit: the bend response
-    matrix spans the entire horizontal BPM space (rank 16 of 16 on PSB ring 3),
-    so an unknown dipole-error orbit is exactly degenerate with the dispersive
-    orbit and a model that does not carry the machine's real errors biases pt by
-    ~43% at dp/p = 1e-3. Subtracting a measured orbit cancels the error orbit
-    identically, whatever it is, without needing to know the bend errors at all.
-
-    The returned value is the momentum **offset from the reference orbit**, which
-    is exactly what the reconstruction expands the dispersion in. A reference at
-    ``MomentumReference.pt != 0`` additionally leaves a flat gain error of
-    ~``2*pt_r*ddx/dx`` (4.6e-5 at dp/p_ref = 1e-4) on the offset itself, because
-    the model dispersion is evaluated on momentum; prefer a nominal-RF blank.
+    Projects the measured closed orbit onto the model dispersion. If ``ddx`` is
+    available, solves the corresponding second-order quadratic. ``reference``
+    must contain the measured closed orbit used to define the momentum offset.
 
     Args:
         data: Tracking data with BPM readings. Must contain columns: ["name", "x"].

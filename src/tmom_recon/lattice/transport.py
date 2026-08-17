@@ -10,7 +10,7 @@ import pandas as pd
 class PlaneTransportMatrix:
     """Uncoupled 2x2 transport matrix for one transverse plane.
 
-    The coordinates are ordered as ``(z, pz)`` with ``z`` equal to ``x`` or ``y``.
+    Coordinates are ordered as ``(z, pz)``, with ``z`` equal to ``x`` or ``y``.
     """
 
     r11: float
@@ -28,16 +28,8 @@ def _require_twiss_columns(twiss: pd.DataFrame, columns: set[str]) -> None:
 def _phase_advance(mu_to: float, mu_from: float, tune: float | None) -> float:
     """Forward phase advance in radians from ``mu_from`` to ``mu_to``.
 
-    Twiss ``mu`` increases monotonically along the sequence, so a target that
-    sits *before* the source gives a negative difference. Forward transport to
-    it goes the long way round, i.e. through the ring wrap, which adds one tune.
-    Without that the matrix describes backward transport and comes out with the
-    wrong sign -- for the PSB kicker the one BPM upstream of the kicker was
-    reconstructed 0.17 turns out of phase.
-
-    ``tune`` is the plane's tune (in units of 2 pi, as ``mu``). It is only
-    needed for a wrap; a line has none, so passing ``None`` and asking for an
-    upstream target is an error rather than a silent sign flip.
+    If the target precedes the source, ``tune`` supplies the ring wrap. It is
+    required for rings and omitted for beam lines.
     """
     delta = float(mu_to) - float(mu_from)
     if delta < 0.0:
@@ -174,9 +166,7 @@ def transport_matrix_4d_from_twiss(
 
     using coordinate ordering ``(x, p_x, y, p_y)``.
 
-    This is the Twiss-based approximation used when no MAD-NG sequence is
-    available.  It ignores transverse coupling (the off-diagonal 2x2 blocks are
-    zero), which is adequate for LHC-like machines with small linear coupling.
+    This Twiss-based approximation has zero transverse-coupling blocks.
 
     Args:
         twiss: Twiss table indexed by element name; must contain columns
@@ -219,7 +209,7 @@ def solve_kick_from_positions(
 ) -> tuple[float, float]:
     r"""Solve the instantaneous kick momenta from source/target positions.
 
-    In each plane we solve the first row of the transport equation
+    In each plane, solve the first row of the transport equation
 
     .. math::
 
@@ -231,9 +221,7 @@ def solve_kick_from_positions(
 
        p_{z,0} = \frac{z_1 - R_{11} z_0}{R_{12}}.
 
-    The kicker reconstruction uses this with the closed-orbit-subtracted
-    assumption that the particle is at the kicker center,
-    ``x_source = y_source = 0``.
+    With closed-orbit-subtracted data, ``x_source = y_source = 0``.
     """
     tune_x, tune_y = tunes if tunes is not None else (None, None)
     matrix_x = transport_matrix_from_twiss(
@@ -266,10 +254,9 @@ def solve_kick_4d_least_squares(
 ) -> tuple[float, float]:
     r"""Reconstruct kick momenta from multiple BPMs via 4D least-squares.
 
-    For each BPM the full 4x4 transport matrix (including any transverse
-    coupling) maps the kicker state ``[x_k, px_k, y_k, py_k]`` to the BPM
-    state.  Setting ``x_k = y_k = 0`` (closed-orbit subtracted) leaves two
-    equations per BPM:
+    Each 4x4 matrix maps ``[x_k, px_k, y_k, py_k]`` to a BPM state. With
+    ``x_k = y_k = 0``, stacking the two position equations for each BPM gives
+    an overdetermined system for ``(px_k, py_k)``:
 
     .. math::
 
@@ -278,10 +265,6 @@ def solve_kick_4d_least_squares(
     .. math::
 
        y_i = M^{(i)}_{22} \, p_{x,k} + M^{(i)}_{23} \, p_{y,k},
-
-    (0-based indices, columns 1 and 3 correspond to :math:`p_x` and
-    :math:`p_y` at the source.)  Stacking all BPMs gives an overdetermined
-    linear system solved via least squares.
 
     Args:
         matrices: Dict mapping BPM name → (4, 4) numpy transport matrix.
