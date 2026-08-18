@@ -84,9 +84,10 @@ OFF_MOMENTUM_DELTA_P = 8.0e-3
 def test_psb_acd_reconstruction_with_dipole_closed_orbit(
     delta_p,
     data_dir,
+    psb_model_dir,
 ) -> None:
     setup = build_psb_tracking_setup(
-        data_dir,
+        psb_model_dir,
         delta_p=delta_p,
         driven_tunes=ACD_DRIVEN_TUNES,
         bend_error_rms=BEND_ERROR_RMS,

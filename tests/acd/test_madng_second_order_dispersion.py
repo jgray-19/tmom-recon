@@ -31,8 +31,8 @@ DELTA = 3.0e-3
 
 
 @pytest.mark.slow
-def test_madng_second_order_dispersion_is_per_pt_with_half_folded_in(data_dir) -> None:
-    seq = data_dir / "sequences" / SEQ_FILE
+def test_madng_second_order_dispersion_is_per_pt_with_half_folded_in(psb_model_dir) -> None:
+    seq = psb_model_dir / SEQ_FILE
     accelerator = PSB(sequence_file=seq, ring=RING, kinetic_energy=KINETIC_ENERGY_GEV)
     model = ACDipoleMadDriver(accelerator=accelerator, pt=0.0, observed_elements=f"BR{RING}.DES3L1")
 

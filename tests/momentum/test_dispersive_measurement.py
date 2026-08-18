@@ -39,7 +39,7 @@ def test_dispersive_measurement_recovers_pt(
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("delta_p", [0.0, 1e-3])
+@pytest.mark.parametrize("delta_p", [0.0, 1e-3], ids=["on_momentum", "off_momentum"])
 def test_offmomentum_psb(tmp_path, delta_p, psb_tracking_setup):
     """Dispersive-measurement reconstruction for a PSB ring-3 AC-dipole excitation.
 

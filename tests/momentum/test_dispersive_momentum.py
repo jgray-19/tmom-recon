@@ -182,7 +182,7 @@ def test_dispersive_momentum_on_momentum_with_ac_dipole_config(
 
 @pytest.mark.slow
 @pytest.mark.parametrize("seq_file", ["lhcb1.seq", "b1_120cm_crossing.seq"])
-@pytest.mark.parametrize("delta_p", [-5e-4, 4e-4])
+@pytest.mark.parametrize("delta_p", [-5e-4, 4e-4], ids=["negative_off_momentum", "off_momentum"])
 def test_dispersive_momentum_off_momentum_with_ac_dipole_config(
     seq_file,
     delta_p,
@@ -266,7 +266,7 @@ def test_dispersive_momentum_off_momentum_with_ac_dipole_config(
 
 @pytest.mark.slow
 @pytest.mark.parametrize("seq_file", ["lhcb1.seq", "b1_120cm_crossing.seq"])
-@pytest.mark.parametrize("delta_p", [-5e-4, 4e-4])
+@pytest.mark.parametrize("delta_p", [-5e-4, 4e-4], ids=["negative_off_momentum", "off_momentum"])
 def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, acd_tracking_setup):
     """Validate off-momentum dispersive momentum reconstruction for clean, noisy, and SVD-cleaned data.
 

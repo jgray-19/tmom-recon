@@ -58,9 +58,9 @@ ROUNDTRIP_TOL = 1e-12
 CHAINED_TOL = 1e-11
 
 
-def _setup(data_dir, *, with_orbit: bool):
+def _setup(psb_model_dir, *, with_orbit: bool):
     return build_psb_tracking_setup(
-        data_dir,
+        psb_model_dir,
         delta_p=0.0,
         driven_tunes=ACD_DRIVEN_TUNES,
         bend_error_rms=BEND_ERROR_RMS if with_orbit else 0.0,
@@ -109,7 +109,7 @@ def _worst(diffs: dict[str, float]) -> tuple[str, float]:
 
 @pytest.mark.slow
 @pytest.mark.parametrize("with_orbit", [False, True], ids=["flat_orbit", "distorted_orbit"])
-def test_transport_round_trip_closes_on_every_ring_leg(with_orbit, data_dir) -> None:
+def test_transport_round_trip_closes_on_every_ring_leg(with_orbit, psb_model_dir) -> None:
     """``BPM_i -> BPM_i+1 -> BPM_i`` returns the original state, all the way round.
 
     Covers every leg of the ring including the one containing the AC dipole, so
@@ -118,7 +118,7 @@ def test_transport_round_trip_closes_on_every_ring_leg(with_orbit, data_dir) -> 
     ``t == 0`` on input, so the longitudinal coordinate cannot be fed back and is
     not part of the round trip.
     """
-    setup = _setup(data_dir, with_orbit=with_orbit)
+    setup = _setup(psb_model_dir, with_orbit=with_orbit)
     model = setup["model"]
     bpms = _ring_bpms(setup)
     worst_overall = ("", 0.0, "")
@@ -151,7 +151,7 @@ def test_transport_round_trip_closes_on_every_ring_leg(with_orbit, data_dir) -> 
 
 @pytest.mark.slow
 @pytest.mark.parametrize("with_orbit", [False, True], ids=["flat_orbit", "distorted_orbit"])
-def test_full_ring_chained_transport_closes(with_orbit, data_dir) -> None:
+def test_full_ring_chained_transport_closes(with_orbit, psb_model_dir) -> None:
     """Forward around the whole ring BPM by BPM, then all the way back, is the identity.
 
     The per-leg check above would pass even if every leg carried the same small
@@ -160,7 +160,7 @@ def test_full_ring_chained_transport_closes(with_orbit, data_dir) -> None:
     and the assertion is purely that MAD-NG's backward transport undoes its own
     forward transport over the entire lattice.
     """
-    setup = _setup(data_dir, with_orbit=with_orbit)
+    setup = _setup(psb_model_dir, with_orbit=with_orbit)
     model = setup["model"]
     bpms = _ring_bpms(setup)
     original = _states_at(setup["tracking_df"], bpms[0].upper())
@@ -222,7 +222,7 @@ def _transfer_matrix(
 
 @pytest.mark.slow
 @pytest.mark.parametrize("with_orbit", [False, True], ids=["flat_orbit", "distorted_orbit"])
-def test_backward_transport_jacobian_inverts_the_forward_one(with_orbit, data_dir) -> None:
+def test_backward_transport_jacobian_inverts_the_forward_one(with_orbit, psb_model_dir) -> None:
     """The *derivative* of the backward map is the inverse of the forward derivative.
 
     Closing the round trip on a state is necessary but not sufficient: an
@@ -243,7 +243,7 @@ def test_backward_transport_jacobian_inverts_the_forward_one(with_orbit, data_di
     with a 5.5 mm closed orbit it produces a spurious ~6e-5 residual — an artefact
     of the probe, not of the backward map.
     """
-    setup = _setup(data_dir, with_orbit=with_orbit)
+    setup = _setup(psb_model_dir, with_orbit=with_orbit)
     model = setup["model"]
     bpms = _ring_bpms(setup)
     identity = np.eye(4)

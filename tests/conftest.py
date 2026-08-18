@@ -17,7 +17,7 @@ import pytest
 from xtrack_tools.acd import run_acd_track
 
 from tests.momentum.momentum_test_utils import get_truth, xsuite_to_ngtws
-from tests.psb_tracking import build_psb_tracking_setup
+from tests.psb_tracking import build_psb_tracking_setup, create_psb_model_dir
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -89,9 +89,15 @@ def seq_b1(data_dir: Path, tmp_path_factory: pytest.TempPathFactory, worker_id: 
 
 
 @pytest.fixture(scope="session")
-def seq_psb3(data_dir: Path) -> Path:
-    """Path to the example sequence file for PSB ring 3 used by several tests."""
-    return data_dir / "sequences" / "psb3_saved.seq"
+def psb_model_dir(data_dir: Path) -> Path:
+    """Create a temporary PSB ring-3 model and its MAD-X saved sequence."""
+    return create_psb_model_dir((data_dir / "acc-models-psb").resolve())
+
+
+@pytest.fixture(scope="session")
+def seq_psb3(psb_model_dir: Path) -> Path:
+    """Path to the generated PSB ring-3 sequence."""
+    return psb_model_dir / "psb3_saved.seq"
 
 
 @pytest.fixture(scope="session")
@@ -262,7 +268,7 @@ def tracking_setup(tracking_artifacts):
 
 
 @pytest.fixture(scope="module")
-def psb_tracking_setup(data_dir: Path):
+def psb_tracking_setup(psb_model_dir: Path):
     """PSB ring-3 AC-dipole tracking setup, keyed by ``delta_p``, built once per module.
 
     Returns a factory ``_get(delta_p)`` yielding a fresh copy of the bundle built by
@@ -279,7 +285,7 @@ def psb_tracking_setup(data_dir: Path):
     def _load(delta_p: float):
         if delta_p in _cache:
             return _cache[delta_p]
-        bundle = build_psb_tracking_setup(data_dir, delta_p)
+        bundle = build_psb_tracking_setup(psb_model_dir, delta_p)
         _cache[delta_p] = bundle
         return bundle
 

@@ -75,6 +75,7 @@ def test_quarter_wave_waist_vertical(simple_twiss: pd.DataFrame) -> None:
         (2.5, 0.5, 1.8, -0.3, 0.13),
         (10.0, 1.2, 4.0, 0.8, 0.37),
     ],
+    ids=["quarter_wave", "random_1", "random_2"],
 )
 def test_symplecticity(
     beta0: float, alpha0: float, beta1: float, alpha1: float, delta_mu_frac: float

@@ -411,7 +411,7 @@ def test_sextupole_feed_down_couples_static_orbit_into_dynamic_part(data_dir) ->
                 .to_numpy(dtype=float)
             )
             for bpm in bpms
-        }
+        }  # ty:ignore[invalid-return-type]
 
     def relative_change(k2l: float) -> float:
         flat = dynamic_at_bpms(k2l=k2l, bend_rms=0.0)

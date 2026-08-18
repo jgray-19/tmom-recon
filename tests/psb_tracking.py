@@ -10,10 +10,15 @@ tests share a single, cacheable implementation.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+import tempfile
+from functools import cache
+from pathlib import Path
+from typing import Any
 
 import numpy as np
+from omc3.model_creator import create_instance_and_model
 from pymadng_utils.accelerators import PSB
+from pymadng_utils.madx.make_sequence import make_madx_sequence
 from xtrack_tools.acd import run_ac_dipole_tracking
 from xtrack_tools.env import create_xsuite_environment
 from xtrack_tools.errors import (
@@ -25,16 +30,13 @@ from xtrack_tools.monitors import process_tracking_data
 from tests.momentum.momentum_test_utils import get_truth
 from tmom_recon.acd.madng_driver import ACDipoleMadDriver
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
 LOGGER = logging.getLogger(__name__)
 
 RING = 3
 SEQ_FILE = "psb3_saved.seq"
 SEQ_NAME = f"psb{RING}"
 KINETIC_ENERGY_GEV = 0.160
-ACD_ELEMENT = f"BR{RING}.DES3L1"
+ACD_ELEMENT = "HACMAP"
 BPM_PATTERN = rf"(?i)br{RING}\.bpm.*"
 DRIVEN_TUNES = (0.16, 0.24)
 RAMP_TURNS = 1000
@@ -55,6 +57,33 @@ QUAD_PREFIX = "br.q"
 # Chromaticity sextupoles, thin multipoles carrying their strength in ``knl[2]``.
 # All zero in the saved sequence, matching the no-multipole PSB campaign.
 SEXTUPOLE_PREFIX = "br3.xno"
+
+
+@cache
+def create_psb_model_dir(acc_models_dir: Path) -> Path:
+    """Create and cache a temporary PSB ring-3 model directory."""
+    model_dir = Path(tempfile.mkdtemp(prefix="tmom-recon-psb-model-"))
+    create_instance_and_model(
+        outputdir=model_dir,
+        accel="psbooster",
+        type="nominal",
+        nat_tunes=[0.17, 0.225],
+        drv_tunes=[0.162, 0.232],
+        driven_excitation="acd",
+        dpp=0.0,
+        fetch="path",
+        path=acc_models_dir,
+        scenario="lhc_indiv",
+        year="2026",
+        cycle_point="1_flat_bottom",
+        str_file="psb_fb_lhcindiv.str",
+        ring=3,
+        list_choices=False,
+        show_help=False,
+        logfile=None,
+    )
+    make_madx_sequence(model_dir)
+    return model_dir
 
 
 def _power_sextupoles(line, k2l: float) -> int:
@@ -134,7 +163,7 @@ def _apply_bend_errors_to_model(model: ACDipoleMadDriver, new_k0: dict[str, floa
 
 
 def build_psb_tracking_setup(
-    data_dir: Path,
+    model_dir: Path,
     delta_p: float,
     *,
     driven_tunes: tuple[float, float] = DRIVEN_TUNES,
@@ -187,8 +216,10 @@ def build_psb_tracking_setup(
     against each other rather than against the model.
     """
     delta_p = float(delta_p)
-    seq = data_dir / "sequences" / SEQ_FILE
-    json_path = data_dir / "sequences" / f"{seq.stem}.json"
+    if not (model_dir / SEQ_FILE).is_file():
+        model_dir = create_psb_model_dir(model_dir / "acc-models-psb")
+    seq = model_dir / SEQ_FILE
+    json_path = model_dir / f"{seq.stem}.json"
 
     env = create_xsuite_environment(
         sequence_file=seq,
