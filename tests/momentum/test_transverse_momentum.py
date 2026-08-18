@@ -10,7 +10,7 @@ import pytest
 import tfs
 from pymadng_utils.accelerators import LHC
 from pymadng_utils.mad.accelerator_mad_interface import AcceleratorMadInterface
-from xtrack_tools.acd import run_ac_dipole_tracking_with_particles
+from xtrack_tools.acd import run_ac_dipole_tracking
 from xtrack_tools.env import create_xsuite_environment, initialise_env
 from xtrack_tools.monitors import process_tracking_data
 
@@ -32,6 +32,9 @@ if TYPE_CHECKING:
 
 NAT_TUNES = [0.28, 0.31]
 DRV_TUNES = [0.27, 0.322]
+# Excitation amplitudes for the horizontal and vertical AC-dipole planes.
+HORIZONTAL_EXCITATION = 2 * 0.042 / 180.0**0.5
+VERTICAL_EXCITATION = 2 * 0.042 / 177.0**0.5
 
 
 def _rmse(actual: np.ndarray, predicted: np.ndarray) -> float:
@@ -113,24 +116,19 @@ def _setup_xsuite_simulation(
 
     # Use generalized tracking function
     track_delta_p = track_delta_p if track_delta_p is not None else delta_p
-    particle_coords = {
-        "x": [0],
-        "px": [0],
-        "y": [0],
-        "py": [0],
-        "delta": [track_delta_p],
-    }
 
-    monitored_line = run_ac_dipole_tracking_with_particles(
+    monitored_line = run_ac_dipole_tracking(
         line=baseline_line,
         acd_marker=AC_DIPOLE_ELEMENT,
         sequence_name="lhcb1",
         tws=xsuite_tws,
+        deltap=track_delta_p,
         ramp_turns=ramp_turns,
         flattop_turns=flattop_turns,
         driven_tunes=[0.27, 0.322],
         bpm_pattern=r"(?i)bpm.*",
-        particle_coords=particle_coords,
+        horizontal_excitation=HORIZONTAL_EXCITATION,
+        vertical_excitation=VERTICAL_EXCITATION,
     )
 
     tracking_df = process_tracking_data(
@@ -151,7 +149,7 @@ def _setup_xsuite_simulation(
         accelerator=accelerator,
         pt=accelerator.dp2pt(track_delta_p),
         magnet_strengths=magnet_strengths or None,
-        corrector_knobs_file=corrector_file,
+        corrector_knobs=corrector_file,
     )
 
     return tracking_df, truth, model_details, xsuite_tws
@@ -206,25 +204,18 @@ local a = seq:replace({{
     ramp_turns = 1000
     flattop_turns = 100
 
-    # Use generalized tracking function
-    particle_coords = {
-        "x": [0],
-        "px": [0],
-        "y": [0],
-        "py": [0],
-        "delta": [0.0],
-    }
-
-    monitored_line = run_ac_dipole_tracking_with_particles(
+    monitored_line = run_ac_dipole_tracking(
         line=baseline_line,
         acd_marker=AC_DIPOLE_ELEMENT,
         sequence_name="lhcb1",
         tws=tws,
+        deltap=0.0,
         ramp_turns=ramp_turns,
         flattop_turns=flattop_turns,
         driven_tunes=[qxd, qyd],
         bpm_pattern=r"(?i)bpm.*",
-        particle_coords=particle_coords,
+        horizontal_excitation=HORIZONTAL_EXCITATION,
+        vertical_excitation=VERTICAL_EXCITATION,
     )
 
     tracking_df = process_tracking_data(
@@ -328,27 +319,26 @@ def test_calculate_pz_with_corrections_and_perturbations(
     - orbit_correction_off_momentum: Verify reconstruction with corrected orbits
     - magnet_perturbations_on_momentum: Verify robustness to random magnet errors
     """
-    # DO NOT EVER INCREASE THESE TOLERANCES, IF THE TESTS START FAILING, FIX THE UNDERLYING ISSUE
     tolerance_values = {
         (2e-4, False): {
-            "px_nonoise_max": 1.6e-6,
-            "py_nonoise_max": 4e-7,
+            "px_nonoise_max": 1.8e-7,
+            "py_nonoise_max": 1.8e-7,
             "px_noisy_min": 2e-6,
-            "px_noisy_max": 3.2e-6,
+            "px_noisy_max": 2.5e-6,
             "py_noisy_min": 2e-6,
-            "py_noisy_max": 3e-6,
-            "px_cleaned_max": 1.8e-6,
-            "py_cleaned_max": 7e-7,
+            "py_noisy_max": 2.5e-6,
+            "px_cleaned_max": 5.8e-7,
+            "py_cleaned_max": 5.6e-7,
         },
         (0.0, True): {
-            "px_nonoise_max": 2e-6,
-            "py_nonoise_max": 2.5e-7,
+            "px_nonoise_max": 1.8e-7,
+            "py_nonoise_max": 1.8e-7,
             "px_noisy_min": 2e-6,
-            "px_noisy_max": 3.2e-6,
+            "px_noisy_max": 2.5e-6,
             "py_noisy_min": 2e-6,
-            "py_noisy_max": 3e-6,
-            "px_cleaned_max": 1.8e-6,
-            "py_cleaned_max": 7e-7,
+            "py_noisy_max": 2.5e-6,
+            "px_cleaned_max": 5.8e-7,
+            "py_cleaned_max": 5.6e-7,
         },
     }
     json_path = xsuite_json_path("lhcb1.seq")

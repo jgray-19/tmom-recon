@@ -18,8 +18,8 @@ from omc3.scripts.fake_measurement_from_model import generate as generate_fake_m
 from pymadng_utils.accelerators import LHC
 from pymadng_utils.madx import convert_tfs_to_madx
 
-from tests.reference_co import reference_co_from_twiss
-from tmom_recon import ModelDetails, calculate_pz, inject_noise_xy
+from tests.reference_co import momentum_reference_from_twiss
+from tmom_recon import ModelDetails, MomentumReference, calculate_pz, inject_noise_xy
 from tmom_recon.model import resolve_model_details
 from tmom_recon.svd import svd_clean_measurements
 
@@ -54,7 +54,9 @@ def lhc_model_details(seq_file: str, data_dir, tws, *, delta_p: float = 0.0) -> 
     return model_details_for(accelerator, pt=accelerator.dp2pt(delta_p))
 
 
-def reference_co_from_model(model_details: ModelDetails, df: pd.DataFrame) -> pd.DataFrame:
+def momentum_reference_from_model(
+    model_details: ModelDetails, df: pd.DataFrame
+) -> MomentumReference:
     """The nominal-RF reference closed orbit, taken from the model's own twiss.
 
     Deliberately *not* the turn mean of the tracking data. That data is driven,
@@ -90,31 +92,35 @@ def reference_co_from_model(model_details: ModelDetails, df: pd.DataFrame) -> pd
             f"Model twiss is missing {len(missing)} name(s) present in the data: "
             f"{sorted(map(str, missing))[:10]}"
         )
-    reference = reference_co_from_twiss(by_upper.loc[wanted])
-    reference.index = names
-    return reference
+    orbit = by_upper.loc[wanted].copy()
+    orbit.index = names
+    # closed_orbit_tws is always evaluated at deltap=0.0 (see
+    # resolve_model_details), i.e. the nominal-RF orbit, regardless of
+    # model_details.pt -- so the reference origin is 0.0, not model_details.pt.
+    return momentum_reference_from_twiss(orbit, pt=0.0)
 
 
 def transverse_calc(
     df: pd.DataFrame,
     model_details: ModelDetails,
-    reference_co: pd.DataFrame,
+    reference: MomentumReference,
     *,
     ac_dipole_config=None,
+    use_dispersion: bool = True,
     **kwargs,
 ) -> pd.DataFrame:
-    """Model-only reconstruction without dispersion (old transverse behaviour).
+    """Model-only reconstruction, with dispersion enabled by default.
 
-    *reference_co* is positional and required on purpose. It used to default to a
+    *reference* is positional and required on purpose. It used to default to a
     zero orbit, which silently produced wrong answers twice: the crossing optics
     run mm-scale separation bumps that the pt estimate then reads as momentum.
-    Build it with :func:`reference_co_from_model`.
+    Build it with :func:`momentum_reference_from_model`.
     """
     result = calculate_pz(
         df,
         model_details,
-        reference_co=reference_co,
-        use_dispersion=False,
+        reference=reference,
+        use_dispersion=use_dispersion,
         acd=ac_dipole_config,
         **kwargs,
     )
@@ -125,22 +131,22 @@ def transverse_calc(
 def dispersive_calc(
     df: pd.DataFrame,
     model_details: ModelDetails,
-    reference_co: pd.DataFrame,
+    reference: MomentumReference,
     *,
     ac_dipole_config=None,
     **kwargs,
 ) -> pd.DataFrame:
     """Model-only reconstruction with dispersion (old dispersive behaviour).
 
-    *reference_co* is positional and required on purpose. It used to default to a
+    *reference* is positional and required on purpose. It used to default to a
     zero orbit, which silently produced wrong answers twice: the crossing optics
     run mm-scale separation bumps that the pt estimate then reads as momentum.
-    Build it with :func:`reference_co_from_model`.
+    Build it with :func:`momentum_reference_from_model`.
     """
     result = calculate_pz(
         df,
         model_details,
-        reference_co=reference_co,
+        reference=reference,
         use_dispersion=True,
         acd=ac_dipole_config,
         **kwargs,
@@ -254,12 +260,12 @@ def verify_pz_reconstruction(
     # The nominal-RF reference must come from the model, not a hardcoded zero:
     # these setups perturb magnets and run orbit correction, and the model
     # carries both, so the machine's closed orbit is non-zero by construction.
-    reference_co = reference_co_from_model(model_details, tracking_df)
+    reference = momentum_reference_from_model(model_details, tracking_df)
 
     no_noise_result = calculate_pz_func(
         tracking_df.copy(deep=True),
         model_details,
-        reference_co=reference_co,
+        reference=reference,
         info=True,
     ).rename(columns={"px": "px_calc", "py": "py_calc"})
 
@@ -269,7 +275,7 @@ def verify_pz_reconstruction(
     noisy_result = calculate_pz_func(
         noisy_df,
         model_details,
-        reference_co=reference_co,
+        reference=reference,
         info=True,
     ).rename(columns={"px": "px_calc", "py": "py_calc"})
 
@@ -278,7 +284,7 @@ def verify_pz_reconstruction(
     cleaned_noise_result = calculate_pz_func(
         cleaned_df,
         model_details,
-        reference_co=reference_co,
+        reference=reference,
         info=True,
     ).rename(columns={"px": "px_calc", "py": "py_calc"})
 
@@ -404,7 +410,7 @@ def assert_dispersive_measurement_recovers_pt(
     result = calculate_pz(
         tracking_df.copy(deep=True),
         model_details,
-        reference_co=reference_co_from_model(model_details, tracking_df),
+        reference=momentum_reference_from_model(model_details, tracking_df),
         measurement_dir=str(meas_dir),
         reverse_meas_tws=reverse_meas_tws,
         info=False,

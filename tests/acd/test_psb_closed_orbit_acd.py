@@ -48,20 +48,8 @@ The test is parametrised over ``delta_p``:
   ``_check_bpm_state_consistency`` (max|residual| ~3e-4) that the on-momentum case
   does not, isolating the dispersive branch of the closed-orbit handling.
 
-and over the two ways ``pt`` can enter the closed-orbit reference
-(``ACDipoleConfig.dispersive_closed_orbit``):
-
-* ``linear``: the ``dp/p=0`` twiss closed orbit plus a first-order ``pt * D``
-  dispersive orbit. Correct only to first order — the neglected ``pt**2 * D2``
-  term is a constant per-BPM offset, so the reconstructed momenta keep their
-  shape but acquire a bias, which is why it shows up as a mildly degraded R^2
-  rather than as noise. Off momentum this is expected to fail, and is marked
-  ``xfail(strict=True)`` so that fixing it is noticed rather than silently
-  absorbed.
-* ``exact``: the closed orbit MAD-NG solves at the model's ``pt``, exact to all
-  orders and carrying the magnet errors the model knows about, with the
-  ``pt * D`` correction switched off. Required to hold to the same strict
-  thresholds on and off momentum.
+The reconstruction always uses the exact dispersive closed orbit MAD-NG solves
+at the model's ``pt``.
 """
 
 from __future__ import annotations
@@ -69,7 +57,7 @@ from __future__ import annotations
 import pytest
 
 from tests.psb_tracking import ACD_ELEMENT, DRIVEN_TUNES, build_psb_tracking_setup
-from tests.reference_co import zero_reference_co
+from tests.reference_co import zero_momentum_reference
 from tmom_recon import ACDipoleConfig, ModelDetails, calculate_pz
 
 from .acd_test_helpers import acd_state_marker_names, assert_acd_momenta_match_truth
@@ -87,29 +75,15 @@ OFF_MOMENTUM_DELTA_P = 8.0e-3
 
 @pytest.mark.slow
 @pytest.mark.parametrize(
-    ("delta_p", "dispersive_closed_orbit"),
+    "delta_p",
     [
-        pytest.param(0.0, False, id="on_momentum-linear"),
-        pytest.param(0.0, True, id="on_momentum-exact"),
-        pytest.param(
-            OFF_MOMENTUM_DELTA_P,
-            False,
-            id="off_momentum-linear",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    "First-order pt*D dispersive orbit: the neglected pt**2*D2 term is a "
-                    "constant per-BPM offset (~1e-5 rad in px against ~1e-4 rad of driven "
-                    "px), amplified by the error orbit feeding down through the perturbed "
-                    "quadrupoles. Use dispersive_closed_orbit=True instead."
-                ),
-            ),
-        ),
-        pytest.param(OFF_MOMENTUM_DELTA_P, True, id="off_momentum-exact"),
+        pytest.param(0.0, id="on_momentum"),
+        pytest.param(OFF_MOMENTUM_DELTA_P, id="off_momentum"),
     ],
 )
 def test_psb_acd_reconstruction_with_dipole_closed_orbit(
-    delta_p, dispersive_closed_orbit, data_dir
+    delta_p,
+    data_dir,
 ) -> None:
     setup = build_psb_tracking_setup(
         data_dir,
@@ -145,16 +119,16 @@ def test_psb_acd_reconstruction_with_dipole_closed_orbit(
     # `_check_bpm_state_consistency`; that is the failure we want to catch here.
     result = calculate_pz(
         bpm_df,
-        reference_co=zero_reference_co(bpm_df),
+        reference=zero_momentum_reference(bpm_df),
         model_details=ModelDetails(
             accelerator=model.accelerator,
             pt=model.pt,
             magnet_strengths=magnet_strengths,
         ),
+        use_dispersion=True,
         acd=ACDipoleConfig(
             ac_dipole_marker=ACD_ELEMENT,
             driven_tunes=ACD_DRIVEN_TUNES,
-            dispersive_closed_orbit=dispersive_closed_orbit,
         ),
         acd_only=True,
     )

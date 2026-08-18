@@ -15,17 +15,21 @@ from __future__ import annotations
 
 import pandas as pd
 
+from tmom_recon import MomentumReference
 
-def zero_reference_co(data: pd.DataFrame) -> pd.DataFrame:
+
+def zero_momentum_reference(data: pd.DataFrame, *, pt: float = 0.0) -> MomentumReference:
     """Zero reference, for a simulated machine with no on-momentum orbit errors."""
     names = pd.Index(pd.unique(data["name"]), name="name")
-    return pd.DataFrame({"x": 0.0, "y": 0.0}, index=names)
+    return MomentumReference(pd.DataFrame({"x": 0.0, "y": 0.0}, index=names), pt=pt)
 
 
-def reference_co_from_twiss(tws: pd.DataFrame) -> pd.DataFrame:
+def momentum_reference_from_twiss(tws: pd.DataFrame, *, pt: float = 0.0) -> MomentumReference:
     """On-momentum orbit taken from a twiss that matches the simulated machine.
 
     Only valid when the model provably carries the machine's errors -- i.e. the
     test applied them to both sides.
     """
-    return pd.DataFrame({"x": tws["x"].astype(float), "y": tws["y"].astype(float)})
+    return MomentumReference(
+        pd.DataFrame({"x": tws["x"].astype(float), "y": tws["y"].astype(float)}), pt=pt
+    )

@@ -1,8 +1,7 @@
 Usage
 =====
 
-This page focuses on the package entry points that are intended to be called
-directly from analysis code.
+Main entry points for analysis code.
 
 Top-level API
 -------------
@@ -29,17 +28,16 @@ Most reconstruction entry points expect a turn-by-turn BPM frame with columns
 such as ``name``, ``turn``, ``x``, ``y``, ``var_x``, and ``var_y`` plus a
 Twiss dataframe indexed by BPM element name.
 
-As a rule:
+Inputs and outputs:
 
 - the measurement frame provides observed coordinates and their variances
 - the Twiss frame provides lattice optics for the same BPM names
-- outputs are returned as pandas dataframes so they can be merged back into
-  analysis pipelines easily
+- outputs are pandas dataframes
 
 Typical workflow
 ----------------
 
-For most use cases the flow is:
+Typical flow:
 
 1. prepare a turn-by-turn BPM dataframe
 2. prepare or reconstruct a compatible Twiss dataframe
@@ -55,8 +53,7 @@ Two-BPM transverse reconstruction
 
    result = calculate_transverse_pz(tracking_df, twiss_df)
 
-This is the most direct reconstruction path and is a good default when you
-want a lightweight BPM-pair-based estimate of ``px`` and ``py``.
+Reconstructs ``px`` and ``py`` from a BPM pair.
 
 Dispersive momentum reconstruction
 ----------------------------------
@@ -67,8 +64,7 @@ Dispersive momentum reconstruction
 
    dp_over_p = calculate_dispersive_pz(tracking_df, twiss_df)
 
-Use this when the quantity of interest is longitudinal momentum offset
-``delta p / p`` rather than transverse momentum itself.
+Returns the longitudinal momentum offset ``delta p / p``.
 
 n-BPM combination
 -----------------
@@ -79,9 +75,7 @@ n-BPM combination
 
    nbpm_result = calculate_transverse_pz_nbpm(tracking_df, twiss_df)
 
-The n-BPM workflow combines information from multiple BPMs and is useful when
-the local two-BPM estimate is too noisy or when you want a more constrained
-reconstruction window.
+Combines information from multiple BPMs over a reconstruction window.
 
 AC-dipole reconstruction
 ------------------------
@@ -99,12 +93,9 @@ AC-dipole reconstruction
        dpy_tune=0.322,
    )
 
-The ``model`` object is expected to provide the MAD-NG tracking interface used
-by ``tmom_recon.acd.madng_driver.ACDipoleMadDriver``.
-
-The returned dataframe includes both raw kick estimates and cleaned fit-based
-quantities such as ``dpx_fit_rad`` and ``dpy_fit_rad``, together with metadata
-describing the selected upstream and downstream BPMs.
+The ``model`` must provide the MAD-NG tracking interface used by
+``tmom_recon.acd.madng_driver.ACDipoleMadDriver``. The result contains raw and
+fitted kick estimates, cleaned states, and selected-BPM metadata.
 
 The reconstruction models the AC dipole as a thin kick at the marker:
 
@@ -113,9 +104,8 @@ The reconstruction models the AC dipole as a thin kick at the marker:
 - the cleaned marker-side states are transported back to the adjacent BPMs to
   produce cleaned BPM-local momenta.
 
-If you want to apply AC-dipole-cleaned BPM momenta during higher-level
-reconstruction, prefer using :class:`tmom_recon.ACDipoleConfig` through the
-transverse, dispersive, or n-BPM integration paths.
+Use :class:`tmom_recon.ACDipoleConfig` to apply cleaned momenta in higher-level
+reconstruction.
 
 Using ``ACDipoleConfig`` in higher-level reconstruction
 -------------------------------------------------------
@@ -135,13 +125,12 @@ Using ``ACDipoleConfig`` in higher-level reconstruction
        ),
    )
 
-This pattern is preferable when AC-dipole-corrected BPM momenta are only an
-intermediate step inside a larger reconstruction call.
+This applies AC-dipole correction as an intermediate reconstruction step.
 
 Kicker-based single-turn reconstruction
 ---------------------------------------
 
-The package also contains a lower-level helper for single-kick datasets:
+For single-kick datasets:
 
 .. code-block:: python
 
@@ -154,10 +143,8 @@ The package also contains a lower-level helper for single-kick datasets:
        n_turns_after_kick=3,
    )
 
-This workflow is intended for turn-by-turn data with one clear kicker
-excitation. It subtracts the closed orbit, detects the kick turn, then solves
-the linear transport equation from the kicker to the first downstream BPM
-response using the Twiss-parameterized transfer matrix.
+Subtracts the closed orbit, detects the kick turn, and solves linear transport
+from the kicker to the first downstream BPM.
 
 Measurement-driven Twiss reconstruction
 ---------------------------------------

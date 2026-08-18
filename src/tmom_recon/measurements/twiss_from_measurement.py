@@ -1,3 +1,14 @@
+r"""Build a twiss-shaped frame from an omc3 optics measurement directory.
+
+Phase convention: every phase in this module -- the ``MUX``/``MUY`` columns, the
+``Q1``/``Q2`` headers and the accumulated :class:`PhaseData` -- is a **cumulative
+betatron phase in turns**, the same quantity as the model twiss ``mu1``/``mu2``.
+It is *not* the ``delta`` of :mod:`tmom_recon.physics.bpm_phases`, which is the
+deviation of a selected neighbour advance from a quarter turn
+(:math:`\phi_{\mathrm{code}} = \phi_x - \pi/2`). The conversion between them
+happens only in the neighbour finders.
+"""
+
 import logging
 from pathlib import Path
 
@@ -312,9 +323,7 @@ def _ordered_phase_edges(
 ) -> tuple[list, np.ndarray, np.ndarray, float]:
     """Read per-edge phase advances by following the NAME -> NAME2 chain.
 
-    The phase measurement files give the phase *advance between adjacent BPMs*, so this
-    returns those measured differences directly (in accumulation order) rather than a
-    pre-accumulated cumulative phase.
+    Returns measured phase advances between adjacent BPMs in accumulation order.
 
     Args:
         phase_df: TFS dataframe with phase measurements (index=NAME, contains NAME2 column).
@@ -382,11 +391,8 @@ def _compute_cumulative_phase(
     """
     Compute cumulative phase by accumulating the measured (mod-1) edge advances.
 
-    The phase measurement gives each adjacent advance modulo one turn (the FFT phase).
-    The cumulative phase is the running sum of those advances, starting at 0 for the
-    first BPM in the chain; this is what later restricts neighbour candidates to within
-    one betatron oscillation (the cumulative advance staying below one turn). Variances
-    accumulate the per-edge measurement variances.
+    Accumulates the modulo-one edge advances and their variances from the first
+    BPM in the chain.
 
     Args:
         phase_df: TFS dataframe with phase measurements (index=NAME, contains NAME2 column).
@@ -415,16 +421,8 @@ def _compute_cumulative_phase(
 def _reconstruct_ring_tune(phase_data: "PhaseData", q_header: float | None) -> float:
     """Reconstruct the full ring tune (integer + fractional) from an open phase chain.
 
-    The measured phase chain runs from the first BPM to the last but does not close back to
-    the first, so the cumulative phase stops at ``mu_last`` (the sum of the measured adjacent
-    edges) rather than reaching the full tune. The OMC3 ``Q`` header carries only the
-    *fractional* tune. The closing edge from the last BPM back to the first is therefore not
-    measured directly; it is reconstructed as ``tune - sum_of_phases`` modulo one turn,
-    ``(Q_frac - mu_last) mod 1``. Adding it to ``mu_last`` (whose integer part already counts
-    the betatron oscillations accumulated around the chain) yields the full tune.
-
-    Falls back to ``mu_last`` when the header is missing (no fractional tune available),
-    which is the cumulative phase short of the unmeasured closing edge.
+    Reconstructs the closing edge from the fractional tune in the ``Q`` header.
+    Without that header, returns the cumulative phase before the closing edge.
     """
     mu_last = phase_data.mu[phase_data.index[-1]]
     if q_header is None:

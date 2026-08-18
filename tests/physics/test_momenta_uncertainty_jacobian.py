@@ -3,7 +3,7 @@ import pandas as pd
 
 from tmom_recon.data.schema import PREV, SUFFIX_PREV
 from tmom_recon.physics.errors import compute_measurement_errors, compute_optics_errors
-from tmom_recon.physics.momenta import _compute_nominal_momenta
+from tmom_recon.physics.momenta import _compute_nominal_momenta, momenta_from_prev
 
 
 def make_row_prev(*, with_optics_errs: bool) -> pd.DataFrame:
@@ -228,3 +228,14 @@ def test_jacobian_full_optics_prev():
         raise AssertionError(
             "Y-plane optics derivative failures (rtol=0.5%):\n" + "\n".join(failures_y)
         )
+
+
+def test_momentum_wrapper_can_include_optics_uncertainty() -> None:
+    with_errors = make_row_prev(with_optics_errs=True)
+    without_errors = make_row_prev(with_optics_errs=False)
+
+    momenta_from_prev(with_errors, include_optics_errors=True)
+    momenta_from_prev(without_errors, include_optics_errors=True)
+
+    assert with_errors.loc[0, "var_px"] > without_errors.loc[0, "var_px"]
+    assert with_errors.loc[0, "var_py"] > without_errors.loc[0, "var_py"]

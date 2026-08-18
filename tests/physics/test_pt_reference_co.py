@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from tmom_recon import MomentumReference
 from tmom_recon.physics.pt_calculation import _solve_pt_quadratic, estimate_pt_from_model
 
 BPMS = [f"bpm{i}" for i in range(12)]
@@ -50,19 +51,19 @@ def _orbit(tws: pd.DataFrame, error_co: np.ndarray, pt: float = PT) -> np.ndarra
     return error_co + pt * tws["dx"].to_numpy() + pt**2 * tws["ddx"].to_numpy()
 
 
-def test_missing_reference_co_is_rejected() -> None:
+def test_missing_reference_is_rejected() -> None:
     tws = _twiss()
     data = _turn_data(_orbit(tws, np.zeros(len(BPMS))))
-    with pytest.raises(ValueError, match="requires `reference_co`"):
-        estimate_pt_from_model(data, tws, reference_co=None, info=False)
+    with pytest.raises(ValueError, match="requires a `reference`"):
+        estimate_pt_from_model(data, tws, reference=None, info=False)
 
 
-def test_reference_co_must_cover_the_selected_bpms() -> None:
+def test_reference_must_cover_the_selected_bpms() -> None:
     tws = _twiss()
     data = _turn_data(_orbit(tws, np.zeros(len(BPMS))))
-    partial = pd.DataFrame({"x": 0.0}, index=pd.Index(BPMS[:5]))
+    partial = MomentumReference(pd.DataFrame({"x": 0.0}, index=pd.Index(BPMS[:5])))
     with pytest.raises(ValueError, match="missing BPMs"):
-        estimate_pt_from_model(data, tws, reference_co=partial, info=False)
+        estimate_pt_from_model(data, tws, reference=partial, info=False)
 
 
 def test_measured_reference_cancels_an_arbitrary_error_closed_orbit() -> None:
@@ -76,30 +77,30 @@ def test_measured_reference_cancels_an_arbitrary_error_closed_orbit() -> None:
     mimicked_pt = 2.0e-3
     error_co = mimicked_pt * tws["dx"].to_numpy() + rng.normal(0.0, 5e-4, len(BPMS))
 
-    reference = pd.DataFrame({"x": error_co}, index=pd.Index(BPMS))
+    reference = MomentumReference(pd.DataFrame({"x": error_co}, index=pd.Index(BPMS)))
     data = _turn_data(_orbit(tws, error_co))
 
-    referenced = estimate_pt_from_model(data, tws, reference_co=reference, info=False)
+    referenced = estimate_pt_from_model(data, tws, reference=reference, info=False)
     assert referenced == pytest.approx(PT, rel=1e-9)
 
     # Referencing to a *model* orbit that does not know the errors (here, zero)
     # leaks the whole error orbit into pt. This is the failure the mandatory
     # argument exists to prevent, so pin that it is large.
-    zero_reference = pd.DataFrame({"x": np.zeros(len(BPMS))}, index=pd.Index(BPMS))
-    unreferenced = estimate_pt_from_model(data, tws, reference_co=zero_reference, info=False)
+    zero_reference = MomentumReference(
+        pd.DataFrame({"x": np.zeros(len(BPMS))}, index=pd.Index(BPMS))
+    )
+    unreferenced = estimate_pt_from_model(data, tws, reference=zero_reference, info=False)
     assert unreferenced == pytest.approx(PT + mimicked_pt, rel=0.05)
 
 
 def test_second_order_beats_first_order_on_a_single_orbit() -> None:
     """One orbit suffices: pt and pt**2 are a single unknown, not two."""
     tws = _twiss()
-    reference = pd.DataFrame({"x": np.zeros(len(BPMS))}, index=pd.Index(BPMS))
+    reference = MomentumReference(pd.DataFrame({"x": np.zeros(len(BPMS))}, index=pd.Index(BPMS)))
     data = _turn_data(_orbit(tws, np.zeros(len(BPMS))))
 
-    second = estimate_pt_from_model(data, tws, reference_co=reference, info=False)
-    first = estimate_pt_from_model(
-        data, tws.drop(columns=["ddx"]), reference_co=reference, info=False
-    )
+    second = estimate_pt_from_model(data, tws, reference=reference, info=False)
+    first = estimate_pt_from_model(data, tws.drop(columns=["ddx"]), reference=reference, info=False)
 
     assert second == pytest.approx(PT, rel=1e-9)
     # The first-order estimate is biased high by the neglected pt**2*ddx term.

@@ -29,48 +29,41 @@ its own flat-top turn-mean removed::
     dynamic(a) = a - mean(a)
 
 applied identically to the tracked truth and to the reconstruction. Note this is
-**not** what [test_psb_zero_twiss_acd.py] logs as "betatron R^2": that diagnostic
-mean-removes only the truth and compares it against a reconstruction that still
-carries its DC term, so it reports large negative R^2 even when the dynamic part
-is perfect. Removing the mean from both sides is the comparison that matters for
-a dynamic-part fit, because a dynamic-part objective would itself mean-remove.
+**not** the "betatron R^2" diagnostic: that mean-removes only the truth and
+compares it against a reconstruction that still carries its DC term, so it
+reports large negative R^2 even when the dynamic part is perfect. Removing the
+mean from both sides is the comparison that matters for a dynamic-part fit,
+because a dynamic-part objective would itself mean-remove.
 
 What is checked
 ---------------
-1. :func:`test_dynamic_part_recovered_with_data_mean_closed_orbit` — with
-   ``ACDipoleConfig.data_mean_closed_orbit_planes`` covering every perturbed
-   plane, the dynamic part is recovered at the BPMs *and* at the AC-dipole
-   ``before`` / ``after`` markers, which are the initial conditions a downstream
-   optimiser actually tracks from. Run on and off momentum.
-2. :func:`test_dynamic_part_is_invariant_to_closed_orbit_handling` — the dynamic
-   part is *bit-identical* whether or not the closed orbit is handled, because
-   both the removal/restoration and the betatron reconstruction are linear in the
-   data. This is the guarantee the whole mode rests on.
-3. :func:`test_dynamic_part_is_robust_to_a_wrong_pt` — ``pt`` is the one quantity
+1. :func:`test_dynamic_part_is_invariant_to_closed_orbit_handling` — the dynamic
+   part is *bit-identical* whether or not the closed orbit is removed from the
+   data, because both the removal and the betatron reconstruction are linear in
+   the data. This is the guarantee the whole mode rests on.
+2. :func:`test_dynamic_part_is_robust_to_a_wrong_pt` — ``pt`` is the one quantity
    the mode cannot subtract away, so how accurately it must be known.
-4. :func:`test_sextupole_feed_down_couples_static_orbit_into_dynamic_part` — the
+3. :func:`test_sextupole_feed_down_couples_static_orbit_into_dynamic_part` — the
    boundary condition: with sextupoles powered the orbit genuinely changes the
    driven optics and no reconstruction choice can undo it.
-5. :func:`test_single_plane_handling_leaves_other_plane_static_dominated` — the
+4. :func:`test_single_plane_handling_leaves_other_plane_static_dominated` — the
    "both planes or neither" claim: handling only ``x`` leaves the *vertical*
    static orbit in the result, and it dominates a combined objective.
-6. :func:`test_acd_kick_dc_offset_measures_the_unmodelled_closed_orbit` — the
+5. :func:`test_acd_kick_dc_offset_measures_the_unmodelled_closed_orbit` — the
    fitted DC kick is zero in truth and is a calibrated measure of unmodelled
    closed orbit in the absolute frame.
-7. :func:`test_dynamic_part_survives_the_ac_dipole_cleaning` — the pipeline runs
+6. :func:`test_dynamic_part_survives_the_ac_dipole_cleaning` — the pipeline runs
    with the harmonic cleaning on, and the marker rows the optimiser consumes are
    *always* the cleaned ones, so the dynamic part is checked through that path
    too, not just through the raw BPM-pair reconstruction.
-8. :func:`test_dc_offset_collapses_in_dynamic_part_mode` — what (6) becomes once
+7. :func:`test_dc_offset_collapses_in_dynamic_part_mode` — what (5) becomes once
    the orbit is removed from the data: it collapses, and therefore stops being a
    bend diagnostic. That is the cost of the mode, so it is pinned down.
 
-Two different closed-orbit mechanisms appear below and must not be confused.
-``data_mean_closed_orbit_planes`` removes the orbit before the betatron fit and
-**restores** it afterwards, giving an absolute state; that is the ``co_planes``
-argument of :func:`_run`. ``remove_data_closed_orbit_planes`` — what ``psb_md``'s
-``--optimise-dynamic-part`` uses — subtracts the orbit from the *input* data and
-never restores it, giving a purely dynamic state; that is ``remove_planes``.
+One closed-orbit mechanism appears below: ``psb_md``'s ``--orbit-mode dynamic``
+subtracts the orbit from the *input* data and never restores it, giving a purely
+dynamic state. That is the ``remove_planes`` argument of :func:`_run`; leaving it
+unset references the reconstruction to the (nominal) model twiss orbit instead.
 """
 
 from __future__ import annotations
@@ -81,7 +74,7 @@ import numpy as np
 import pytest
 
 from tests.psb_tracking import ACD_ELEMENT, DRIVEN_TUNES, build_psb_tracking_setup
-from tests.reference_co import zero_reference_co
+from tests.reference_co import zero_momentum_reference
 from tmom_recon import ACDipoleConfig, ModelDetails, calculate_pz
 from tmom_recon.physics.closed_orbit import estimate_closed_orbit
 
@@ -100,11 +93,10 @@ ACD_DRIVEN_TUNES = (0.18, DRIVEN_TUNES[1])
 # to be unambiguous.
 SEXTUPOLE_K2L = 5.0
 
-# Relative RMS error tolerated on the dynamic part. The measured worst case in
-# these scenarios is ~3e-4, so this leaves ~3x headroom; it characterises the
-# recovery rather than setting a target, but it is tight enough that any real
-# leakage of the (up to 19x larger) static part would break it.
-BPM_DYNAMIC_TOL = 1e-3
+# Relative RMS error tolerated on the BPM dynamic part. The wrong-pt sweep
+# reaches 7.8e-4 at a deliberately large 30% momentum error; retain modest
+# headroom while keeping static-orbit leakage detectable.
+BPM_DYNAMIC_TOL = 8.5e-4
 MARKER_DYNAMIC_TOL = 1e-3
 
 # mode -> (bend_error_rms, quad_misalign_y_rms, perturbed planes)
@@ -148,7 +140,7 @@ def _build_setup(mode: str, data_dir, *, delta_p: float = 0.0):
     The model twiss is on-momentum in both cases — the dispersive orbit is *not*
     in the twiss ``x``/``y`` columns, it is carried as ``pt * d`` and subtracted
     from the data mean by
-    :func:`tmom_recon.acd.reconstruction._data_mean_closed_orbit`. So off momentum
+    :func:`tmom_recon.physics.closed_orbit.estimate_closed_orbit`. So off momentum
     the static orbit in the *data* grows by the dispersive contribution (~8.7 mm
     at ``Dx = -2.89 m``, well above the ~5.5 mm bend-error orbit) while the model
     accounts for it through a single scalar ``pt``. That split is the point of the
@@ -185,23 +177,21 @@ def _build_setup(mode: str, data_dir, *, delta_p: float = 0.0):
 
 def _run(
     setup,
-    co_planes: str | None,
     *,
     pt: float | None = None,
     remove_planes: str | None = None,
 ):
-    """Reconstruct, optionally in ``psb_md``'s ``--optimise-dynamic-part`` frame.
+    """Reconstruct, optionally in ``psb_md``'s dynamic-part frame.
 
-    *co_planes* is ``ACDipoleConfig.data_mean_closed_orbit_planes``: the closed
-    orbit is removed before the betatron fit and **restored** afterwards, so the
-    output is an absolute state.
+    With *remove_planes* unset the closed orbit comes from the model twiss, which
+    here is nominal — so the machine's orbit stays in the data and the output is
+    an absolute state carrying it.
 
-    *remove_planes* is the different thing ``psb_md`` does for
-    ``--optimise-dynamic-part`` (``remove_data_closed_orbit_planes``): the orbit
-    is subtracted from the *input* data and never restored, so the output is
-    purely dynamic. Reproduced here exactly as
-    ``psb_md.acd_reconstruction._prepare_acd_reconstruction`` does it -- same
-    ``estimate_closed_orbit`` estimator, dispersive ``pt*d`` preserved.
+    *remove_planes* is what ``psb_md`` does for ``--orbit-mode dynamic``: the
+    orbit is subtracted from the *input* data and never restored, so the output
+    is purely dynamic. Reproduced here exactly as
+    ``psb_md.orbit_frame.ClosedOrbitFrame.turn_mean(...).subtract_from`` does it
+    -- same ``estimate_closed_orbit`` estimator, dispersive ``pt*d`` preserved.
     """
     model = setup["model"]
     before_marker, after_marker = acd_state_marker_names(model)
@@ -216,12 +206,12 @@ def _run(
             ).fillna(0.0)
     return calculate_pz(
         bpm_df,
-        reference_co=zero_reference_co(bpm_df),
+        reference=zero_momentum_reference(bpm_df),
         model_details=ModelDetails(accelerator=model.accelerator, pt=effective_pt),
+        use_dispersion=True,
         acd=ACDipoleConfig(
             ac_dipole_marker=ACD_ELEMENT,
             driven_tunes=ACD_DRIVEN_TUNES,
-            data_mean_closed_orbit_planes=co_planes,
         ),
         acd_only=True,
     )
@@ -281,61 +271,6 @@ def _static_vs_dynamic(tracking_df, bpm: str) -> dict[str, tuple[float, float]]:
 
 @pytest.mark.slow
 @pytest.mark.parametrize(
-    ("mode", "delta_p"),
-    [
-        *((mode, 0.0) for mode in _MODES),
-        *((mode, OFF_MOMENTUM_DELTA_P) for mode in _MODES),
-    ],
-    ids=[
-        *(f"{mode}-on_momentum" for mode in _MODES),
-        *(f"{mode}-off_momentum" for mode in _MODES),
-    ],
-)
-def test_dynamic_part_recovered_with_data_mean_closed_orbit(mode, delta_p, data_dir) -> None:
-    """The dynamic part survives an unmodelled closed orbit, at BPMs and markers.
-
-    The closed orbit is taken from the data mean in every perturbed plane, so it
-    is removed before the betatron reconstruction and restored afterwards. The
-    *dynamic* part should then be essentially free of the static contamination
-    even though the model twiss knows nothing about the orbit.
-
-    Run both on and off momentum. Off momentum the static part is far larger (the
-    dispersive orbit is ~8.7 mm against ~5.5 mm of bend-error orbit) and the
-    driven optics are chromatically shifted, so this is the harder case and the
-    one the real measurement actually sits in. Taking the closed orbit from the
-    data mean subsumes the dispersive orbit along with everything else — the
-    dynamic part must not care.
-    """
-    setup, planes = _build_setup(mode, data_dir, delta_p=delta_p)
-    result = _run(setup, planes)
-    tracking_df = setup["tracking_df"]
-
-    for bpm in (result.attrs["bpm_upstream"], result.attrs["bpm_downstream"]):
-        for plane, (static, dynamic) in _static_vs_dynamic(tracking_df, bpm).items():
-            LOGGER.info(
-                "[mode=%s dp=%.1e] %s at %s: |static|=%.3e dynamic RMS=%.3e (ratio %.1f)",
-                mode,
-                delta_p,
-                plane,
-                bpm,
-                static,
-                dynamic,
-                static / dynamic,
-            )
-
-    bpm_errors = _bpm_dynamic_errors(result, tracking_df, cleaned=False)
-    marker_errors = _marker_dynamic_errors(result, tracking_df, setup["model"])
-    LOGGER.info("[mode=%s dp=%.1e] BPM dynamic errors: %s", mode, delta_p, _fmt(bpm_errors))
-    LOGGER.info("[mode=%s dp=%.1e] marker dynamic errors: %s", mode, delta_p, _fmt(marker_errors))
-
-    for key, error in bpm_errors.items():
-        assert error < BPM_DYNAMIC_TOL, f"BPM {key} dynamic error {error:.3e}"
-    for key, error in marker_errors.items():
-        assert error < MARKER_DYNAMIC_TOL, f"marker {key} dynamic error {error:.3e}"
-
-
-@pytest.mark.slow
-@pytest.mark.parametrize(
     "delta_p",
     [
         pytest.param(0.0, id="on_momentum"),
@@ -348,8 +283,7 @@ def test_dynamic_part_is_invariant_to_closed_orbit_handling(delta_p, data_dir) -
     Both the closed-orbit removal/restoration and the BPM-pair momentum
     reconstruction are *linear* in the data, so a static (DC) offset in the input
     maps to a static offset in the output and cannot reach the AC part. Removing
-    the closed orbit before the betatron fit and adding it back afterwards
-    therefore cancels exactly on the dynamic part.
+    the closed orbit from the data therefore cancels exactly on the dynamic part.
 
     This is the guarantee a dynamic-part optimisation rests on: the driven
     oscillation it fits is the same whether or not the orbit was handled, so an
@@ -363,17 +297,19 @@ def test_dynamic_part_is_invariant_to_closed_orbit_handling(delta_p, data_dir) -
     what happens when it is not.
 
     Off momentum the two configurations are *further* apart than on momentum, so
-    this is the sharper version of the same check. With ``co_planes=None`` the
-    reconstruction uses the model twiss orbit, which off momentum is the ~8.7 mm
-    dispersive orbit rather than zero; with ``co_planes="xy"`` it uses the data
-    mean, which is the dispersive orbit *plus* the bend-error and misalignment
-    orbit. Two genuinely different, both large, static references — and the
-    dynamic part must still come out identical.
+    this is the sharper version of the same check. Leaving the orbit in place
+    references the reconstruction to the model twiss orbit, which off momentum is
+    the ~8.7 mm dispersive orbit; removing it from the data references it to the
+    dispersive orbit *plus* the bend-error and misalignment orbit. Two genuinely
+    different, both large, static references — and the dynamic part must still
+    come out identical.
     """
     setup, planes = _build_setup("xy", data_dir, delta_p=delta_p)
-    handled = _bpm_dynamic_errors(_run(setup, planes), setup["tracking_df"], cleaned=False)
-    unhandled = _bpm_dynamic_errors(_run(setup, None), setup["tracking_df"], cleaned=False)
-    LOGGER.info("[dp=%.1e] closed orbit from data mean: %s", delta_p, _fmt(handled))
+    handled = _bpm_dynamic_errors(
+        _run(setup, remove_planes=planes), setup["tracking_df"], cleaned=False
+    )
+    unhandled = _bpm_dynamic_errors(_run(setup), setup["tracking_df"], cleaned=False)
+    LOGGER.info("[dp=%.1e] closed orbit removed from the data: %s", delta_p, _fmt(handled))
     LOGGER.info("[dp=%.1e] closed orbit from model twiss: %s", delta_p, _fmt(unhandled))
 
     assert handled.keys() == unhandled.keys()
@@ -408,7 +344,7 @@ def test_dynamic_part_is_robust_to_a_wrong_pt(data_dir) -> None:
     for fraction in (0.0, 0.1, 0.3):
         pt = accelerator.dp2pt(OFF_MOMENTUM_DELTA_P * (1.0 + fraction))
         errors[fraction] = _bpm_dynamic_errors(
-            _run(setup, planes, pt=pt), tracking_df, cleaned=False
+            _run(setup, pt=pt, remove_planes=planes), tracking_df, cleaned=False
         )
         LOGGER.info(
             "pt error %+.0f%% (dp/p off by %+.1e): %s",
@@ -517,7 +453,7 @@ def test_single_plane_handling_leaves_other_plane_static_dominated(data_dir) -> 
     is meant to avoid. Hence: dynamic in both planes, or absolute in both planes.
     """
     setup, _ = _build_setup("xy", data_dir)
-    result = _run(setup, "x")
+    result = _run(setup, remove_planes="x")
     tracking_df = setup["tracking_df"]
     summary = result.attrs["summary"]
 
@@ -577,17 +513,12 @@ def test_acd_kick_dc_offset_measures_the_unmodelled_closed_orbit(data_dir) -> No
     Crucially the DC term is **linear in the closed orbit** (asserted below), so
     it is a calibrated, free diagnostic: it says how much orbit the model is
     still missing, and it should collapse toward zero as the bend fit improves.
-    It is also, note, unchanged by ``data_mean_closed_orbit_planes`` — that
-    option removes and restores the orbit, which cancels on any DC quantity.
-
     In the horizontal plane it is also *large*: at 0.08% RMS bend errors the DC
     term is ~43x the AC kick amplitude it sits on. That is the same asymmetry
     that motivates fitting the dynamic part.
     """
 
-    def dc_offset(
-        bend_rms: float, *, match_model: bool, co_planes: str | None = "xy"
-    ) -> tuple[float, float, float, float]:
+    def dc_offset(bend_rms: float, *, match_model: bool) -> tuple[float, float, float, float]:
         """``(fitted dpx DC, fitted dpx amplitude, max |x closed orbit|, true DC)``."""
         setup = build_psb_tracking_setup(
             data_dir,
@@ -609,14 +540,13 @@ def test_acd_kick_dc_offset_measures_the_unmodelled_closed_orbit(data_dir) -> No
         )
         result = calculate_pz(
             bpm_df,
-            reference_co=zero_reference_co(bpm_df),
+            reference=zero_momentum_reference(bpm_df),
             model_details=ModelDetails(
                 accelerator=model.accelerator, pt=model.pt, magnet_strengths=strengths
             ),
             acd=ACDipoleConfig(
                 ac_dipole_marker=ACD_ELEMENT,
                 driven_tunes=ACD_DRIVEN_TUNES,
-                data_mean_closed_orbit_planes=co_planes,
             ),
             acd_only=True,
         )
@@ -638,8 +568,8 @@ def test_acd_kick_dc_offset_measures_the_unmodelled_closed_orbit(data_dir) -> No
 
     # Controls: no errors, and a model that matches the machine, both give ~0 —
     # provided the closed orbit is taken from the (correct) twiss.
-    nominal_dc, nominal_amp, _, _ = dc_offset(0.0, match_model=False, co_planes=None)
-    matched_dc, matched_amp, _, _ = dc_offset(BEND_ERROR_RMS, match_model=True, co_planes=None)
+    nominal_dc, nominal_amp, _, _ = dc_offset(0.0, match_model=False)
+    matched_dc, matched_amp, _, _ = dc_offset(BEND_ERROR_RMS, match_model=True)
     LOGGER.info(
         "dpx DC offset: no errors=%.3e (amp %.3e), model matched to errors=%.3e (amp %.3e)",
         nominal_dc,
@@ -653,23 +583,6 @@ def test_acd_kick_dc_offset_measures_the_unmodelled_closed_orbit(data_dir) -> No
     assert abs(matched_dc) < 1e-8, (
         f"the model was given the machine's own bend errors, so its closed orbit "
         f"matches and the DC term should vanish; got {matched_dc:.3e} rad"
-    )
-
-    # The data-mean closed orbit is *not* free when the twiss orbit is already
-    # right: its angle is inferred from the mean positions with the model optics,
-    # so it is only first-order, and it replaces an exact twiss angle with an
-    # approximate one. Same matched model as above, only the CO source differs.
-    override_dc, _, _, _ = dc_offset(BEND_ERROR_RMS, match_model=True, co_planes="xy")
-    LOGGER.info(
-        "dpx DC offset with a matched model: twiss CO=%.3e, data-mean CO=%.3e",
-        matched_dc,
-        override_dc,
-    )
-    assert abs(override_dc) > 100 * abs(matched_dc), (
-        "overriding a correct twiss closed orbit with the data mean was expected to "
-        f"degrade the DC term ({override_dc:.3e} vs {matched_dc:.3e}); if it no "
-        "longer does, the data-mean angle inference has improved and the per-plane "
-        "guidance ('only where the model has no orbit') can be relaxed"
     )
 
     # Linear in the closed orbit, so it is usable as a calibrated diagnostic.
@@ -729,7 +642,7 @@ def test_dynamic_part_survives_the_ac_dipole_cleaning(delta_p, data_dir) -> None
     for like.
     """
     setup, planes = _build_setup("xy", data_dir, delta_p=delta_p)
-    result = _run(setup, None, remove_planes=planes)
+    result = _run(setup, remove_planes=planes)
     tracking_df = setup["tracking_df"]
 
     raw = _bpm_dynamic_errors(result, tracking_df, cleaned=False)
@@ -770,11 +683,9 @@ def test_dc_offset_collapses_in_dynamic_part_mode(delta_p, data_dir) -> None:
     ~6e-5 rad per mm, tens of times the AC amplitude at realistic bend errors.
 
     That diagnostic works because the closed orbit is *in* the reconstruction.
-    ``data_mean_closed_orbit_planes`` removes and restores it, which cancels on any
-    DC quantity, so the offset survives. ``remove_data_closed_orbit_planes`` -- the
-    ``--optimise-dynamic-part`` mechanism -- removes it from the input and never
-    restores it, so there is no static orbit left to be mis-modelled and the
-    offset must collapse toward zero.
+    ``--orbit-mode dynamic`` removes it from the input data and never restores it,
+    so there is no static orbit left to be mis-modelled and the offset must
+    collapse toward zero.
 
     This is the honest cost of the mode: **in dynamic-part mode the DC offset
     stops being a bend diagnostic.** A near-zero offset there says only that the
@@ -784,8 +695,8 @@ def test_dc_offset_collapses_in_dynamic_part_mode(delta_p, data_dir) -> None:
     """
     setup, planes = _build_setup("xy", data_dir, delta_p=delta_p)
 
-    absolute = _run(setup, planes)
-    dynamic = _run(setup, None, remove_planes=planes)
+    absolute = _run(setup)
+    dynamic = _run(setup, remove_planes=planes)
 
     absolute_dc = float(absolute.attrs["dpx_offset"])
     dynamic_dc = float(dynamic.attrs["dpx_offset"])
@@ -866,8 +777,8 @@ def test_dynamic_part_frame_is_insensitive_to_the_orbit_size(data_dir) -> None:
             .abs()
             .max()
         )
-        absolute = _run(setup, "xy")
-        dynamic = _run(setup, None, remove_planes="xy")
+        absolute = _run(setup)
+        dynamic = _run(setup, remove_planes="xy")
         return (
             float(absolute.attrs["dpx_offset"]),
             float(dynamic.attrs["dpx_offset"]),
