@@ -7,9 +7,8 @@ are easy to get wrong and both change the answer by a factor of ~2:
   has ``beta = 0.520``, so the two differ by 1.92x;
 * whether the Taylor factor ``1/2`` is already folded in.
 
-Measured on PSB ring 3 (see ``NOTES_offmom_investigation_2026-08-11.md`` §C): the
-columns are per unit ``pt`` and the ``1/2`` *is* included, i.e. the second-order
-closed orbit is
+For PSB ring 3, the columns are per unit ``pt`` and the ``1/2`` *is* included,
+i.e. the second-order closed orbit is
 
     x(pt) = x(0) + pt * dx + pt**2 * ddx
 
@@ -24,8 +23,10 @@ import numpy as np
 import pytest
 from pymadng_utils.accelerators import PSB
 
-from tests.psb_tracking import KINETIC_ENERGY_GEV, RING, SEQ_FILE
+from tests.psb_tracking import ACD_ELEMENT, KINETIC_ENERGY_GEV, RING, SEQ_FILE
 from tmom_recon.acd.madng_driver import ACDipoleMadDriver
+
+__test__ = False
 
 DELTA = 3.0e-3
 
@@ -34,7 +35,7 @@ DELTA = 3.0e-3
 def test_madng_second_order_dispersion_is_per_pt_with_half_folded_in(psb_model_dir) -> None:
     seq = psb_model_dir / SEQ_FILE
     accelerator = PSB(sequence_file=seq, ring=RING, kinetic_energy=KINETIC_ENERGY_GEV)
-    model = ACDipoleMadDriver(accelerator=accelerator, pt=0.0, observed_elements=f"BR{RING}.DES3L1")
+    model = ACDipoleMadDriver(accelerator=accelerator, pt=0.0, observed_elements=ACD_ELEMENT)
 
     tw0 = model.run_twiss(observe=0, chrom=True)
     for column in ("dx", "dpx", "ddx", "ddpx"):

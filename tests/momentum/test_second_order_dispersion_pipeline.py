@@ -7,9 +7,7 @@ first-order fallback biases pt by ~2e-3 relative at dp/p = 8e-3, which the
 second-order solve removes.
 
 The comparison is run at a single dp/p because each point costs a full tracking
-run; the dp/p sweep behind the thresholds lives in
-`experimental/offmom/dpp_sweep_pz.py` and is tabulated in §C.5 of
-NOTES_offmom_investigation_2026-08-11.md.
+run; the broader sweep is intentionally kept out of the test suite.
 """
 
 from __future__ import annotations
@@ -20,11 +18,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tests.reference_co import zero_momentum_reference
+from tests.reference_co import measured_zero_reference_for_simulation
+from tests.support.assertions import rmse
 from tmom_recon import ModelDetails, calculate_pz, reconstruction
 from tmom_recon.model import resolve_model_details
 
-from .momentum_test_utils import rmse
+pytestmark = [pytest.mark.psb, pytest.mark.integration]
+__test__ = False
 
 DELTA_P = 8e-3
 SECOND_ORDER_COLUMNS = ("ddx", "ddpx", "ddy", "ddpy")
@@ -54,7 +54,7 @@ def _reconstruct(tracking_df: pd.DataFrame, model, *, second_order: bool) -> pd.
             # pt=0: the model is built on momentum, so the reconstruction has to
             # recover the beam's momentum from the orbit rather than be told it.
             ModelDetails(accelerator=model.accelerator, pt=0.0),
-            reference=zero_momentum_reference(tracking_df),
+            reference=measured_zero_reference_for_simulation(tracking_df),
             use_dispersion=True,
             info=False,
         )
@@ -69,7 +69,7 @@ def test_generated_model_twiss_carries_second_order_dispersion(psb_tracking_setu
     Note this is `resolve_model_details`' twiss, not the one the tracking setup
     builds for its own bookkeeping -- the latter is not what the pipeline uses.
     """
-    model = psb_tracking_setup(0.0)["model"]
+    model = psb_tracking_setup(0.0).machine.madng_model
     resolved = resolve_model_details(ModelDetails(accelerator=model.accelerator, pt=0.0))
     for name, tws in (("optics", resolved.optics_tws), ("closed orbit", resolved.closed_orbit_tws)):
         missing = [col for col in SECOND_ORDER_COLUMNS if col not in tws.columns]
@@ -79,12 +79,12 @@ def test_generated_model_twiss_carries_second_order_dispersion(psb_tracking_setu
 @pytest.mark.slow
 def test_second_order_dispersion_improves_pt_and_px_off_momentum(psb_tracking_setup) -> None:
     setup = psb_tracking_setup(DELTA_P)
-    tracking_df = setup["tracking_df"]
-    truth = setup["truth"]
-    pt_true = setup["model"].pt
+    tracking_df = setup.measurement.data
+    truth = setup.measurement.truth
+    pt_true = setup.measurement.pt
 
     results = {
-        label: _reconstruct(tracking_df, setup["model"], second_order=second_order)
+        label: _reconstruct(tracking_df, setup.machine.madng_model, second_order=second_order)
         for label, second_order in (("second", True), ("first", False))
     }
     errors = {}
@@ -111,10 +111,10 @@ def test_second_order_dispersion_improves_pt_and_px_off_momentum(psb_tracking_se
 def test_second_order_dispersion_changes_nothing_on_momentum(psb_tracking_setup) -> None:
     """At pt = 0 the pt**2 terms vanish, so both paths must agree exactly."""
     setup = psb_tracking_setup(0.0)
-    tracking_df = setup["tracking_df"]
+    tracking_df = setup.measurement.data
 
-    second = _reconstruct(tracking_df, setup["model"], second_order=True)
-    first = _reconstruct(tracking_df, setup["model"], second_order=False)
+    second = _reconstruct(tracking_df, setup.machine.madng_model, second_order=True)
+    first = _reconstruct(tracking_df, setup.machine.madng_model, second_order=False)
 
     # pt is ~1e-9 here rather than exactly zero, so compare absolutely: a
     # relative tolerance on a number that small is meaningless.

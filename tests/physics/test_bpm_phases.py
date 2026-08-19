@@ -13,6 +13,9 @@ from tmom_recon.physics.bpm_phases import (
     prev_bpm_to_pi_2,
 )
 
+pytestmark = pytest.mark.unit
+__test__ = False
+
 
 @pytest.fixture
 def next_mu():

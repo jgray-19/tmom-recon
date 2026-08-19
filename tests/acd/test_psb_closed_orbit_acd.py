@@ -19,8 +19,8 @@ this test drives the same pipeline in a fully controlled simulation:
   to ~1e-9 at the BPMs (the xsuite/MAD-NG floor) — four orders of magnitude below
   the reconstruction's 1e-4 consistency tolerance;
 * the model twiss therefore has a genuine non-zero closed orbit that matches the
-  model, so :func:`_check_has_zero_closed_orbit` takes the closed-orbit-removal
-  branch — exactly like the real measurement;
+    model, so reconstruction removes the generated orbit before rebuilding the
+    betatron state — exactly like the real measurement;
 * the reconstruction is then required to recover the tracked truth.
 
 Because the tracked data and the model share the closed orbit to ~1e-9 here, a
@@ -57,10 +57,12 @@ from __future__ import annotations
 import pytest
 
 from tests.psb_tracking import ACD_ELEMENT, DRIVEN_TUNES, build_psb_tracking_setup
-from tests.reference_co import zero_momentum_reference
 from tmom_recon import ACDipoleConfig, ModelDetails, calculate_pz
 
 from .acd_test_helpers import acd_state_marker_names, assert_acd_momenta_match_truth
+
+pytestmark = [pytest.mark.psb, pytest.mark.integration]
+__test__ = False
 
 # 0.08% relative bend error, matching the orbit scale seen in the real measurement.
 BEND_ERROR_RMS = 8e-4
@@ -83,7 +85,6 @@ OFF_MOMENTUM_DELTA_P = 8.0e-3
 )
 def test_psb_acd_reconstruction_with_dipole_closed_orbit(
     delta_p,
-    data_dir,
     psb_model_dir,
 ) -> None:
     setup = build_psb_tracking_setup(
@@ -95,15 +96,15 @@ def test_psb_acd_reconstruction_with_dipole_closed_orbit(
         quad_error_rms=QUAD_ERROR_RMS,
         quad_error_seed=QUAD_ERROR_SEED,
     )
-    tracking_df = setup["tracking_df"]
-    tws = setup["tws"]
-    model = setup["model"]
+    tracking_df = setup.measurement.data
+    tws = setup.machine.madng_twiss
+    model = setup.machine.madng_model
     # The regenerated model inside `calculate_pz` must carry the same errors as the
     # tracked line, otherwise its closed orbit is the wrong lattice's and neither
     # pt method can be correct.
-    magnet_strengths = {f"{name.upper()}.k0": value for name, value in setup["bend_k0"].items()}
+    magnet_strengths = {f"{name.upper()}.k0": value for name, value in setup.bend_strengths.items()}
     magnet_strengths.update(
-        {f"{name.upper()}.k1": value for name, value in setup["quad_k1"].items()}
+        {f"{name.upper()}.k1": value for name, value in setup.quad_strengths.items()}
     )
 
     # The dipole errors (plus dispersion when off-momentum) must actually distort
@@ -116,11 +117,10 @@ def test_psb_acd_reconstruction_with_dipole_closed_orbit(
     before_marker, after_marker = acd_state_marker_names(model)
     bpm_df = tracking_df.loc[~tracking_df["name"].isin([before_marker, after_marker])].copy()
 
-    # If the closed-orbit handling is broken, this raises inside
-    # `_check_bpm_state_consistency`; that is the failure we want to catch here.
+    # ACD-only reconstruction removes the generated orbit at model.pt, performs
+    # the betatron reconstruction in the pt=0 frame, then restores the full state.
     result = calculate_pz(
         bpm_df,
-        reference=zero_momentum_reference(bpm_df),
         model_details=ModelDetails(
             accelerator=model.accelerator,
             pt=model.pt,

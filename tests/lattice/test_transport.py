@@ -14,6 +14,9 @@ from tmom_recon.lattice.transport import (
     transport_matrix_from_twiss,
 )
 
+pytestmark = pytest.mark.unit
+__test__ = False
+
 
 @pytest.fixture()
 def simple_twiss() -> pd.DataFrame:

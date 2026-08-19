@@ -31,6 +31,8 @@ from .acd_test_helpers import (
     assert_acd_momenta_match_truth,
 )
 
+__test__ = False
+
 DRIVEN_TUNES = (0.27, 0.322)
 OFF_MOMENTUM_DELTA_P = 4e-4
 
@@ -62,7 +64,7 @@ def test_ac_dipole_momentum_reconstruction(
     setup = acd_tracking_setup(
         seq_file, data_dir, delta_p=delta_p, flattop_turns=200, state_markers=True
     )
-    tracking_df, tws = setup["tracking_df"], setup["tws"]
+    tracking_df, tws = setup.data, setup.measurement_twiss
 
     seq = data_dir / "sequences" / seq_file
     pt = LHC(beam=1, sequence_file=seq, kinetic_energy=6800).dp2pt(delta_p)

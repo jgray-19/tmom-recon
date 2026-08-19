@@ -11,16 +11,15 @@ from tests.acd.acd_test_helpers import (
     _ac_dipole_segment_around_element,
     _get_driver,
 )
+from tests.support.assertions import rmse
+from tests.support.model_details import lhc_model_details
+from tests.support.reconstruction import dispersive_calc, transverse_calc
+from tests.support.truth import simulated_nominal_reference_from_model
 from tmom_recon import ACDipoleConfig, inject_noise_xy
 from tmom_recon.svd import svd_clean_measurements  # noqa: E402
 
-from .momentum_test_utils import (
-    dispersive_calc,
-    lhc_model_details,
-    momentum_reference_from_model,
-    rmse,
-    transverse_calc,
-)
+pytestmark = [pytest.mark.lhc, pytest.mark.integration]
+__test__ = False
 
 
 @pytest.mark.slow
@@ -32,15 +31,14 @@ def test_dispersive_momentum_on_momentum(seq_file, data_dir, acd_tracking_setup)
     should produce nearly identical results.
     """
     setup = acd_tracking_setup(seq_file, data_dir, delta_p=0.0)
-    tracking_df = setup["tracking_df"]
-    tws = setup["tws"]
-    truth = setup["truth"]
-    model_details = lhc_model_details(seq_file, data_dir, tws)
+    tracking_df = setup.data
+    truth = setup.truth
+    model_details = lhc_model_details(seq_file, data_dir)
     # The nominal-RF reference comes from the model, which matches the simulated
     # machine here. Neither shortcut works: the tracking turn-mean is driven data
     # and carries the AC dipole's offset, while a zero reference misses the
     # crossing optics' separation bumps.
-    reference = momentum_reference_from_model(model_details, tracking_df)
+    reference = simulated_nominal_reference_from_model(model_details, tracking_df)
 
     # Transverse reconstruction (baseline)
     trans_result = transverse_calc(
@@ -104,11 +102,10 @@ def test_dispersive_momentum_on_momentum_with_ac_dipole_config(
     pytest.importorskip("pymadng_utils")
 
     setup = acd_tracking_setup(seq_file, data_dir, delta_p=0.0)
-    tracking_df = setup["tracking_df"]
-    tws = setup["tws"]
-    truth = setup["truth"]
-    model_details = lhc_model_details(seq_file, data_dir, tws)
-    reference = momentum_reference_from_model(model_details, tracking_df)
+    tracking_df = setup.data
+    truth = setup.truth
+    model_details = lhc_model_details(seq_file, data_dir)
+    reference = simulated_nominal_reference_from_model(model_details, tracking_df)
     seq = data_dir / "sequences" / seq_file
     model = _get_driver(seq, pt=0.0)
     bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
@@ -192,14 +189,13 @@ def test_dispersive_momentum_off_momentum_with_ac_dipole_config(
     pytest.importorskip("pymadng_utils")
 
     setup = acd_tracking_setup(seq_file, data_dir, delta_p=delta_p)
-    tracking_df = setup["tracking_df"]
-    tws = setup["tws"]
-    truth = setup["truth"]
-    model_details = lhc_model_details(seq_file, data_dir, tws, delta_p=delta_p)
+    tracking_df = setup.data
+    truth = setup.truth
+    model_details = lhc_model_details(seq_file, data_dir, delta_p=delta_p)
     # The reference orbit is defined at nominal RF, so it comes from the
     # on-momentum model even though the reconstruction runs off momentum.
-    reference = momentum_reference_from_model(
-        lhc_model_details(seq_file, data_dir, tws), tracking_df
+    reference = simulated_nominal_reference_from_model(
+        lhc_model_details(seq_file, data_dir), tracking_df
     )
     seq = data_dir / "sequences" / seq_file
     accelerator = LHC(beam=1, sequence_file=seq, kinetic_energy=6800)
@@ -286,15 +282,14 @@ def test_dispersive_momentum_off_momentum_cases(seq_file, delta_p, data_dir, acd
     sequence and δp value.
     """
     setup = acd_tracking_setup(seq_file, data_dir, delta_p=delta_p)
-    tracking_df = setup["tracking_df"]
-    tws = setup["tws"]
-    truth = setup["truth"]
+    tracking_df = setup.data
+    truth = setup.truth
     # Plain reconstruction: nominal (on-momentum) model, pt estimated.
-    model_details = lhc_model_details(seq_file, data_dir, tws)
+    model_details = lhc_model_details(seq_file, data_dir)
     # Nominal-RF reference from the model. A zero reference would hand the
     # crossing optics' mm-scale separation bumps to the pt estimate as a
     # spurious momentum offset.
-    reference = momentum_reference_from_model(model_details, tracking_df)
+    reference = simulated_nominal_reference_from_model(model_details, tracking_df)
 
     trans_result = transverse_calc(
         tracking_df.copy(deep=True),

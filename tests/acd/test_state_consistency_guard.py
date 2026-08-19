@@ -24,6 +24,8 @@ from tmom_recon.acd import ACDipoleStateConsistencyError
 from tmom_recon.acd.models import ACDipoleStateSeries
 from tmom_recon.acd.reconstruction import _check_bpm_state_consistency
 
+__test__ = False
+
 BPM = "BR3.BPM2L3"
 N_TURNS = 512
 

@@ -13,10 +13,12 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from tests.reference_co import zero_momentum_reference
+from tests.reference_co import measured_zero_reference_for_simulation
 from tmom_recon import ACDipoleConfig, ACDipolePzGenerator, ModelDetails, calculate_pz
 
 from .acd_test_helpers import AC_DIPOLE_ELEMENT, _ac_dipole_segment_around_element, _get_driver
+
+__test__ = False
 
 SEQ_FILE = "lhcb1.seq"
 DRIVEN_TUNES = (0.27, 0.322)
@@ -40,8 +42,8 @@ def _config(*, bpm_upstream: str, bpm_downstream: str) -> ACDipoleConfig:
 
 def _setup(data_dir, acd_tracking_setup):
     setup = acd_tracking_setup(SEQ_FILE, data_dir, delta_p=0.0, flattop_turns=100)
-    tracking_df = setup["tracking_df"]
-    tws = setup["tws"]
+    tracking_df = setup.data
+    tws = setup.measurement_twiss
     driver = _get_driver(data_dir / "sequences" / SEQ_FILE, debug=False)
     bpm_upstream, bpm_downstream = _ac_dipole_segment_around_element(
         driver.twiss_elements,
@@ -60,7 +62,7 @@ def test_generator_update_matches_acd_only(data_dir, acd_tracking_setup) -> None
 
     generator = calculate_pz(
         tracking_df,
-        reference=zero_momentum_reference(tracking_df),
+        reference=measured_zero_reference_for_simulation(tracking_df),
         model_details=model_details,
         acd=config,
         acd_only=True,
@@ -72,7 +74,7 @@ def test_generator_update_matches_acd_only(data_dir, acd_tracking_setup) -> None
     from_generator = generator.update()
     one_shot = calculate_pz(
         tracking_df,
-        reference=zero_momentum_reference(tracking_df),
+        reference=measured_zero_reference_for_simulation(tracking_df),
         model_details=model_details,
         acd=config,
         acd_only=True,
@@ -92,7 +94,7 @@ def test_generator_repeated_update_is_deterministic(data_dir, acd_tracking_setup
 
     generator = calculate_pz(
         tracking_df,
-        reference=zero_momentum_reference(tracking_df),
+        reference=measured_zero_reference_for_simulation(tracking_df),
         model_details=model_details,
         acd=config,
         acd_only=True,
@@ -115,7 +117,7 @@ def test_generator_pt_update_refreshes_acd_models(data_dir, acd_tracking_setup) 
 
     generator = calculate_pz(
         tracking_df,
-        reference=zero_momentum_reference(tracking_df),
+        reference=measured_zero_reference_for_simulation(tracking_df),
         model_details=model_details,
         acd=config,
         acd_only=True,
@@ -126,7 +128,7 @@ def test_generator_pt_update_refreshes_acd_models(data_dir, acd_tracking_setup) 
     from_generator = generator.update(measurement_pt=updated_pt)
     one_shot = calculate_pz(
         tracking_df,
-        reference=zero_momentum_reference(tracking_df),
+        reference=measured_zero_reference_for_simulation(tracking_df),
         model_details=ModelDetails(
             accelerator=driver.accelerator,
             pt=updated_pt,

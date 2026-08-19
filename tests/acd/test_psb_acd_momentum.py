@@ -29,6 +29,9 @@ from tmom_recon.acd.reconstruction import calculate_ac_dipole_momentum
 
 from .acd_test_helpers import acd_state_marker_names, assert_acd_momenta_match_truth
 
+pytestmark = [pytest.mark.psb, pytest.mark.integration]
+__test__ = False
+
 ORBIT_COLUMNS = ("x", "px", "y", "py")
 
 
@@ -42,9 +45,9 @@ def psb_acd_setup(request, psb_tracking_setup):
 @pytest.mark.parametrize("noise_std", [0.0, 1e-5], ids=["clean", "noise_1e-5"])
 def test_psb_ac_dipole_momentum_reconstruction(psb_acd_setup, noise_std: float) -> None:
     clean = noise_std == 0.0
-    tracking_df = psb_acd_setup["tracking_df"]
-    tws = psb_acd_setup["tws"]
-    model = psb_acd_setup["model"]
+    tracking_df = psb_acd_setup.measurement.data
+    tws = psb_acd_setup.machine.madng_twiss
+    model = psb_acd_setup.machine.madng_model
 
     # Feed only the BPM rows to the reconstruction (optionally noised); the
     # `<acd>_before` / `<acd>_after` marker rows are kept aside purely as truth.

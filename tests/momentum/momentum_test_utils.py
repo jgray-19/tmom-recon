@@ -1,4 +1,10 @@
-"""Shared utilities for momentum reconstruction integration tests."""
+"""Legacy compatibility imports for momentum integration-test support.
+
+New tests should import from ``tests.support`` modules grouped by responsibility:
+``assertions``, ``measurements``, ``model_details``, ``reconstruction``, and
+``truth``. This module remains temporarily to support downstream test modules
+that have not yet migrated.
+"""
 
 from __future__ import annotations
 
@@ -18,7 +24,7 @@ from omc3.scripts.fake_measurement_from_model import generate as generate_fake_m
 from pymadng_utils.accelerators import LHC
 from pymadng_utils.madx import convert_tfs_to_madx
 
-from tests.reference_co import momentum_reference_from_twiss
+from tests.reference_co import position_only_reference_from_twiss
 from tmom_recon import ModelDetails, MomentumReference, calculate_pz, inject_noise_xy
 from tmom_recon.model import resolve_model_details
 from tmom_recon.svd import svd_clean_measurements
@@ -37,10 +43,10 @@ def rmse(actual: np.ndarray, predicted: np.ndarray) -> float:
 
 
 def model_details_for(accelerator, *, pt: float) -> ModelDetails:
-    """Build :class:`ModelDetails` with tunes read from a tracking twiss.
+    """Build :class:`ModelDetails` for a generated MAD-NG model.
 
-    ``calculate_pz`` generates the MAD-NG optics itself; the test only supplies the
-    accelerator, target tunes and momentum.
+    ``calculate_pz`` generates the optics itself; the test supplies only the
+    accelerator and the absolute MAD-NG momentum of the tracked beam.
     """
     return ModelDetails(
         accelerator=accelerator,
@@ -48,30 +54,18 @@ def model_details_for(accelerator, *, pt: float) -> ModelDetails:
     )
 
 
-def lhc_model_details(seq_file: str, data_dir, tws, *, delta_p: float = 0.0) -> ModelDetails:
-    """Build LHC :class:`ModelDetails` matching a tracking setup's optics."""
+def lhc_model_details(seq_file: str, data_dir, *, delta_p: float = 0.0) -> ModelDetails:
+    """Build LHC :class:`ModelDetails` at the tracked absolute momentum."""
     accelerator = LHC(beam=1, sequence_file=data_dir / "sequences" / seq_file, kinetic_energy=6800)
     return model_details_for(accelerator, pt=accelerator.dp2pt(delta_p))
 
 
-def momentum_reference_from_model(
+def simulated_nominal_reference_from_model(
     model_details: ModelDetails, df: pd.DataFrame
 ) -> MomentumReference:
-    """The nominal-RF reference closed orbit, taken from the model's own twiss.
-
-    Deliberately *not* the turn mean of the tracking data. That data is driven,
-    so its per-BPM mean carries the AC dipole's forced offset rather than the
-    closed orbit -- on ``lhcb1``, whose true orbit is zero, the mean is ~4e-5 m
-    of pure contamination and lands in ``px`` as ~1.4e-6.
-
-    A hardcoded zero is equally wrong the other way: the crossing optics run
-    separation bumps of several mm, which the pt estimate would read as a
-    momentum offset. The model orbit is right in both cases because these
-    simulated machines carry no errors the model lacks, so model and machine
-    closed orbits agree by construction. On a real machine this substitution is
-    illegal -- an unknown dipole-error orbit is exactly degenerate with the
-    dispersive orbit, so the reference must be measured.
-    """
+    """Simulation-only nominal-RF reference from a model-matched Twiss."""
+    if model_details.pt != 0.0:
+        raise ValueError("simulated_nominal_reference_from_model requires pt=0.0")
     names = pd.Index(pd.unique(df["name"]), name="name")
     # The reference has to cover every name the data carries, which on the PSB
     # includes the AC-dipole before/after markers. Those only exist in the twiss
@@ -94,10 +88,7 @@ def momentum_reference_from_model(
         )
     orbit = by_upper.loc[wanted].copy()
     orbit.index = names
-    # closed_orbit_tws is always evaluated at deltap=0.0 (see
-    # resolve_model_details), i.e. the nominal-RF orbit, regardless of
-    # model_details.pt -- so the reference origin is 0.0, not model_details.pt.
-    return momentum_reference_from_twiss(orbit, pt=0.0)
+    return position_only_reference_from_twiss(orbit, pt=model_details.pt)
 
 
 def transverse_calc(
@@ -114,7 +105,7 @@ def transverse_calc(
     *reference* is positional and required on purpose. It used to default to a
     zero orbit, which silently produced wrong answers twice: the crossing optics
     run mm-scale separation bumps that the pt estimate then reads as momentum.
-    Build it with :func:`momentum_reference_from_model`.
+    Build it with :func:`simulated_nominal_reference_from_model`.
     """
     result = calculate_pz(
         df,
@@ -136,12 +127,12 @@ def dispersive_calc(
     ac_dipole_config=None,
     **kwargs,
 ) -> pd.DataFrame:
-    """Model-only reconstruction with dispersion (old dispersive behaviour).
+    """Compatibility wrapper for a model-only dispersive reconstruction.
 
     *reference* is positional and required on purpose. It used to default to a
     zero orbit, which silently produced wrong answers twice: the crossing optics
     run mm-scale separation bumps that the pt estimate then reads as momentum.
-    Build it with :func:`momentum_reference_from_model`.
+    Build it with :func:`simulated_nominal_reference_from_model`.
     """
     result = calculate_pz(
         df,
@@ -178,7 +169,9 @@ def xsuite_to_ngtws(tbl: xt.Table) -> pd.DataFrame:
     # remove
     df["name"] = df["name"].str.upper()  # ty:ignore[unresolved-attribute]
     df = df.set_index("name")
-    bpm_names = df[df.index.str.match(r"^BPM.*\.B1$")].index.tolist()
+    bpm_names = df[
+        df.index.str.contains("BPM", case=False, regex=False) & df.index.str.endswith(".B1")
+    ].index.tolist()
     return df[df.index.isin(bpm_names)]
 
 
@@ -218,6 +211,8 @@ def verify_pz_reconstruction(
     px_cleaned_max: float,
     py_cleaned_max: float,
     rng_seed: int = 42,
+    *,
+    reference: MomentumReference,
 ):
     """Verify momentum reconstruction with noise and SVD cleaning.
 
@@ -257,11 +252,6 @@ def verify_pz_reconstruction(
     rng_seed : int
         Random seed for noise generation.
     """
-    # The nominal-RF reference must come from the model, not a hardcoded zero:
-    # these setups perturb magnets and run orbit correction, and the model
-    # carries both, so the machine's closed orbit is non-zero by construction.
-    reference = momentum_reference_from_model(model_details, tracking_df)
-
     no_noise_result = calculate_pz_func(
         tracking_df.copy(deep=True),
         model_details,
@@ -373,29 +363,27 @@ def add_error_to_orbit_measurement(fldr):
         tfs.write(meas_file, df)
 
 
-def assert_dispersive_measurement_recovers_pt(
+def run_dispersive_measurement(
     tracking_df: pd.DataFrame,
-    ng_tws: pd.DataFrame,
-    truth: pd.DataFrame,
+    measurement_tws: pd.DataFrame,
     meas_dir,
-    expected_pt: float,
     model_details: ModelDetails,
     *,
-    px_rmse_max: float,
-    py_rmse_max: float,
+    reference: MomentumReference,
     reverse_meas_tws: bool = False,
+    measurement_pt: float | None = None,
 ):
-    """Reconstruct momenta from fake measurements and check pt and RMSE vs truth.
+    """Generate a fake dispersive measurement and reconstruct the momenta.
 
-    Generates an omc3 fake measurement from ``ng_tws`` (MAD-NG format), injects a
-    constant orbit error, runs :func:`calculate_pz` against ``measurement_dir`` and
-    asserts that the estimated pt matches the caller-provided ``expected_pt`` and
-    that the reconstructed ``px``/``py`` match ``truth`` within the given RMSE
-    thresholds.
+    Generates an omc3 fake measurement from ``measurement_tws`` (MAD-NG format),
+    injects a constant orbit error, runs :func:`calculate_pz` against
+    ``meas_dir``. The caller supplies ``reference`` separately
+    because it is the nominal-RF momentum origin, not necessarily the twiss used
+    to create the off-momentum measurement.
 
-    Returns the reconstruction result so callers can make extra assertions.
+    ``measurement_pt`` bypasses the estimator for known-momentum diagnostics.
     """
-    madx_tws = convert_tfs_to_madx(ng_tws, remove_drifts=False)
+    madx_tws = convert_tfs_to_madx(measurement_tws, remove_drifts=False)
 
     generate_fake_measurement(
         twiss=madx_tws,
@@ -410,12 +398,41 @@ def assert_dispersive_measurement_recovers_pt(
     result = calculate_pz(
         tracking_df.copy(deep=True),
         model_details,
-        reference=momentum_reference_from_model(model_details, tracking_df),
+        reference=reference,
+        use_dispersion=True,
         measurement_dir=str(meas_dir),
         reverse_meas_tws=reverse_meas_tws,
+        measurement_pt=measurement_pt,
         info=False,
     )
     assert isinstance(result, pd.DataFrame), "Result should be a DataFrame"
+    return result
+
+
+def assert_dispersive_measurement_recovers_pt(
+    tracking_df: pd.DataFrame,
+    measurement_tws: pd.DataFrame,
+    truth: pd.DataFrame,
+    meas_dir,
+    expected_pt: float,
+    model_details: ModelDetails,
+    *,
+    reference: MomentumReference,
+    px_rmse_max: float,
+    py_rmse_max: float,
+    reverse_meas_tws: bool = False,
+    measurement_pt: float | None = None,
+):
+    """Check estimated momentum and reconstructed transverse momentum."""
+    result = run_dispersive_measurement(
+        tracking_df,
+        measurement_tws,
+        meas_dir,
+        model_details,
+        reference=reference,
+        reverse_meas_tws=reverse_meas_tws,
+        measurement_pt=measurement_pt,
+    )
 
     pt_est = result.attrs["PT_EST"]
     assert abs(pt_est - expected_pt) < 1e-5, (

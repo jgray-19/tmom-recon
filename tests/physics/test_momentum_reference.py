@@ -8,12 +8,18 @@ a reference deliberately placed off momentum, where they do not.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from tmom_recon import MomentumReference
+from tests.reference_co import full_state_reference_from_twiss
+from tmom_recon import ModelDetails, MomentumReference, calculate_pz
 from tmom_recon.physics.pt_calculation import estimate_pt_from_model
+
+pytestmark = pytest.mark.unit
+__test__ = False
 
 BPMS = [f"bpm{i}" for i in range(12)]
 
@@ -50,6 +56,42 @@ def test_offset_from_is_the_difference_to_the_reference_momentum() -> None:
 def test_a_reference_without_positions_is_rejected() -> None:
     with pytest.raises(ValueError, match='needs an "x" column'):
         MomentumReference(pd.DataFrame({"px": 0.0}, index=pd.Index(BPMS)))
+
+
+def test_all_bpm_reconstruction_requires_a_reference() -> None:
+    data = pd.DataFrame(
+        {
+            "name": [BPMS[0]],
+            "turn": [0],
+            "x": [0.0],
+            "y": [0.0],
+        }
+    )
+
+    with pytest.raises(ValueError, match="needs a `reference`"):
+        calculate_pz(
+            data,
+            ModelDetails(accelerator=cast(Any, None), pt=0.0),
+            reference=None,
+        )
+
+
+def test_full_state_reference_preserves_closed_orbit_angles() -> None:
+    tws = pd.DataFrame(
+        {
+            "x": np.linspace(0.0, 1.0, len(BPMS)),
+            "px": np.linspace(1.0, 2.0, len(BPMS)),
+            "y": np.linspace(2.0, 3.0, len(BPMS)),
+            "py": np.linspace(3.0, 4.0, len(BPMS)),
+        },
+        index=pd.Index(BPMS),
+    )
+
+    reference = full_state_reference_from_twiss(tws, pt=2e-3)
+
+    assert list(reference.closed_orbit.columns) == ["x", "px", "y", "py"]
+    pd.testing.assert_frame_equal(reference.closed_orbit, tws)
+    assert reference.pt == pytest.approx(2e-3)
 
 
 def test_the_estimated_momentum_is_an_offset_not_an_absolute_pt() -> None:

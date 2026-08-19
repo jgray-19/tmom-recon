@@ -13,7 +13,6 @@ import logging
 import tempfile
 from functools import cache
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 from omc3.model_creator import create_instance_and_model
@@ -27,7 +26,8 @@ from xtrack_tools.errors import (
 )
 from xtrack_tools.monitors import process_tracking_data
 
-from tests.momentum.momentum_test_utils import get_truth
+from tests.support.psb import PSBScenario, SimulatedMachine, SimulatedMeasurement
+from tests.support.truth import get_truth
 from tmom_recon.acd.madng_driver import ACDipoleMadDriver
 
 LOGGER = logging.getLogger(__name__)
@@ -38,6 +38,8 @@ SEQ_NAME = f"psb{RING}"
 KINETIC_ENERGY_GEV = 0.160
 ACD_ELEMENT = "HACMAP"
 BPM_PATTERN = rf"(?i)br{RING}\.bpm.*"
+NATURAL_TUNES = (0.17, 0.225)
+MODEL_CREATOR_DRIVEN_TUNES = (0.162, 0.232)
 DRIVEN_TUNES = (0.16, 0.24)
 RAMP_TURNS = 1000
 FLATTOP_TURNS = 1000
@@ -67,8 +69,8 @@ def create_psb_model_dir(acc_models_dir: Path) -> Path:
         outputdir=model_dir,
         accel="psbooster",
         type="nominal",
-        nat_tunes=[0.17, 0.225],
-        drv_tunes=[0.162, 0.232],
+        nat_tunes=list(NATURAL_TUNES),
+        drv_tunes=list(MODEL_CREATOR_DRIVEN_TUNES),
         driven_excitation="acd",
         dpp=0.0,
         fetch="path",
@@ -179,12 +181,12 @@ def build_psb_tracking_setup(
     quad_error_seed: int = 0,
     apply_quad_errors_to_model: bool = True,
     sextupole_k2l: float = 0.0,
-) -> dict[str, Any]:
+) -> PSBScenario:
     """Track one PSB AC-dipole excitation seeded on the ``delta_p`` closed orbit.
 
-    Returns a dict with the tracked BPM data (``tracking_df``), the MAD-NG model
-    twiss (``tws``), the per-turn truth momenta (``truth``), the MAD-NG ``model``
-    and the requested ``delta_p``.
+    Returns a :class:`PSBScenario` with explicit tracking and reconstruction
+    optics. The scenario keeps Xsuite-generated measurement optics separate from
+    the MAD-NG reconstruction optics.
 
     When ``bend_error_rms > 0`` a seeded relative dipole error of that RMS is added
     to the xsuite tracking line's powered main bends. If
@@ -306,12 +308,20 @@ def build_psb_tracking_setup(
         )
 
     truth = get_truth(tracking_df, tws)
-    return {
-        "tracking_df": tracking_df,
-        "tws": tws,
-        "truth": truth,
-        "model": model,
-        "delta_p": delta_p,
-        "bend_k0": bend_k0,
-        "quad_k1": quad_k1,
-    }
+    return PSBScenario(
+        machine=SimulatedMachine(
+            accelerator=accelerator,
+            xsuite_line=line,
+            madng_model=model,
+            xsuite_twiss=off_momentum_tws,
+            madng_twiss=tws,
+        ),
+        measurement=SimulatedMeasurement(
+            data=tracking_df,
+            truth=truth,
+            delta_p=delta_p,
+            pt=model.pt,
+        ),
+        bend_strengths=bend_k0,
+        quad_strengths=quad_k1,
+    )

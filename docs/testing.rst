@@ -14,6 +14,28 @@ Run the non-slow tests with:
 
 This is the quickest way to validate typical refactors and small API changes.
 
+The suite also labels ownership and cost explicitly:
+
+.. code-block:: bash
+
+   pytest -m "unit or (integration and not slow)"
+   pytest -m "not crosscode"
+   pytest -m crosscode
+   pytest -m "slow or regression"
+
+``unit`` tests use synthetic data only. ``integration`` tests deliberately
+construct accelerator models; ``crosscode`` tests compare Xsuite and MAD-NG;
+``regression`` tests are small reproductions of previously observed failures.
+PSB and LHC ownership is available through the ``psb`` and ``lhc`` markers.
+
+Test layout
+-----------
+
+New tests are organized under ``tests/unit``, ``tests/integration`` and
+``tests/regression``. Shared construction and assertions live under
+``tests/support``. The PSB dynamic-part characterization is a study under
+``studies/psb`` and is intentionally excluded from normal pytest collection.
+
 Full test suite
 ---------------
 

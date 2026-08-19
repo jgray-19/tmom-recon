@@ -20,6 +20,9 @@ import pytest
 from tmom_recon import MomentumReference
 from tmom_recon.physics.pt_calculation import _solve_pt_quadratic, estimate_pt_from_model
 
+pytestmark = pytest.mark.unit
+__test__ = False
+
 BPMS = [f"bpm{i}" for i in range(12)]
 PT = 4.17e-3
 

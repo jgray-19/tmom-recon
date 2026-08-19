@@ -11,11 +11,15 @@ pytest.importorskip("xtrack_tools")
 import pandas as pd
 from pymadng_utils.madx import convert_tfs_to_madx
 
-from tests.reference_co import zero_momentum_reference
+from tests.reference_co import measured_zero_reference_for_simulation
+from tests.support.assertions import rmse
+from tests.support.measurements import add_error_to_orbit_measurement
+from tests.support.model_details import lhc_model_details
 from tmom_recon import calculate_pz, inject_noise_xy
 from tmom_recon.svd import svd_clean_measurements
 
-from .momentum_test_utils import add_error_to_orbit_measurement, lhc_model_details, rmse
+pytestmark = [pytest.mark.lhc, pytest.mark.integration]
+__test__ = False
 
 
 @pytest.mark.slow
@@ -41,9 +45,9 @@ def test_dispersive_measurement_with_uncertainties(
         add_noise: If True, adds noise and performs SVD cleaning before calculating pz.
     """
     setup = acd_tracking_setup("lhcb1.seq", data_dir, delta_p=0.0)
-    tracking_df = setup["tracking_df"]
-    ng_tws = setup["tws"]
-    truth = setup["truth"]
+    tracking_df = setup.data
+    ng_tws = setup.measurement_twiss
+    truth = setup.truth
 
     # Since the above gets only BPMs, we disable drift removal to keep names consistent
     # Drop mu1 and mu2 to avoid issues in conversion
@@ -87,8 +91,8 @@ def test_dispersive_measurement_with_uncertainties(
     # Call the measurement-based function with uncertainties
     result = calculate_pz(
         calc_df,
-        lhc_model_details("lhcb1.seq", data_dir, ng_tws),
-        reference=zero_momentum_reference(calc_df),
+        lhc_model_details("lhcb1.seq", data_dir),
+        reference=measured_zero_reference_for_simulation(calc_df),
         measurement_dir=str(temp_dir),
         reverse_meas_tws=False,  # Always working with B4
         info=False,

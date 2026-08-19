@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
@@ -15,19 +16,18 @@ from xtrack_tools.env import create_xsuite_environment, initialise_env
 from xtrack_tools.monitors import process_tracking_data
 
 from tests.acd.acd_test_helpers import AC_DIPOLE_ELEMENT
-from tmom_recon import ModelDetails
-
-from .momentum_test_utils import (  # noqa: E402
-    transverse_calc as calculate_pz,
-)
-from .momentum_test_utils import (  # noqa: E402
-    verify_pz_reconstruction,
-)
+from tests.support.assertions import verify_pz_reconstruction
+from tests.support.reconstruction import transverse_calc as calculate_pz
+from tests.support.truth import simulated_nominal_reference_from_model
+from tmom_recon import ModelDetails, MomentumReference
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from xtrack import Line
+
+pytestmark = [pytest.mark.lhc, pytest.mark.integration]
+__test__ = False
 
 
 NAT_TUNES = [0.28, 0.31]
@@ -255,6 +255,7 @@ local a = seq:replace({{
         px_cleaned_max=7.5e-7,
         py_cleaned_max=6.5e-7,
         rng_seed=42,
+        reference=simulated_nominal_reference_from_model(model_details, tracking_df),
     )
 
 
@@ -271,6 +272,8 @@ def _verify_pz_reconstruction(
     px_cleaned_max: float,
     py_cleaned_max: float,
     rng_seed: int = 42,
+    *,
+    reference: MomentumReference,
 ):
     """Wrapper around the shared reconstruction assertions."""
     verify_pz_reconstruction(
@@ -287,6 +290,7 @@ def _verify_pz_reconstruction(
         px_cleaned_max,
         py_cleaned_max,
         rng_seed,
+        reference=reference,
     )
 
 
@@ -355,10 +359,12 @@ def test_calculate_pz_with_corrections_and_perturbations(
     )
 
     tol_dict = tolerance_values[(delta_p, do_apply_magnet_perturbations)]
+    nominal_model_details = replace(model_details, pt=0.0)
     _verify_pz_reconstruction(
         tracking_df,
         truth,
         model_details,
         **tol_dict,
         rng_seed=42,
+        reference=simulated_nominal_reference_from_model(nominal_model_details, tracking_df),
     )

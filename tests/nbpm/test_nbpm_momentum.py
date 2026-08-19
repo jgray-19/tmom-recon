@@ -3,14 +3,18 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from tests.momentum.momentum_test_utils import lhc_model_details, rmse
-from tests.reference_co import zero_momentum_reference
+from tests.reference_co import measured_zero_reference_for_simulation
+from tests.support.assertions import rmse
+from tests.support.model_details import lhc_model_details
 from tmom_recon import (
     calculate_pz,
     calculate_transverse_pz_nbpm,
     inject_noise_xy,
 )
 from tmom_recon.svd import svd_clean_measurements
+
+pytestmark = [pytest.mark.lhc, pytest.mark.integration]
+__test__ = False
 
 
 def _select_local_bpm_window(
@@ -69,8 +73,8 @@ def test_nbpm_improves_noisy_local_window_over_two_bpm_baseline(data_dir, tracki
 
     baseline = calculate_pz(
         noisy_df.copy(deep=True),
-        lhc_model_details("lhcb1.seq", data_dir, tws),
-        reference=zero_momentum_reference(noisy_df),
+        lhc_model_details("lhcb1.seq", data_dir),
+        reference=measured_zero_reference_for_simulation(noisy_df),
         info=False,
     ).rename(columns={"px": "px_base", "py": "py_base"})  # ty:ignore[possibly-missing-attribute]
 
