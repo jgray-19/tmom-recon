@@ -21,6 +21,8 @@ from .acd_test_helpers import AC_DIPOLE_ELEMENT, _ac_dipole_segment_around_eleme
 SEQ_FILE = "lhcb1.seq"
 DRIVEN_TUNES = (0.27, 0.322)
 
+pytestmark = [pytest.mark.lhc, pytest.mark.integration, pytest.mark.slow]
+
 
 def _model_details(driver, tws) -> ModelDetails:
     return ModelDetails(

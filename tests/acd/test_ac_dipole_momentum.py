@@ -47,6 +47,8 @@ MARKER_R2_MIN = {
     ("b1_120cm_crossing.seq", False): 0.999,
 }
 
+pytestmark = [pytest.mark.lhc, pytest.mark.integration]
+
 
 @pytest.mark.slow
 @pytest.mark.parametrize("seq_file", ["lhcb1.seq", "b1_120cm_crossing.seq"])
