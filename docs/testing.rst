@@ -33,8 +33,9 @@ Test layout
 
 New tests are organized under ``tests/unit``, ``tests/integration`` and
 ``tests/regression``. Shared construction and assertions live under
-``tests/support``. The PSB dynamic-part characterization is a study under
-``studies/psb`` and is intentionally excluded from normal pytest collection.
+``tests/support``. The PSB dynamic-part characterization remains under
+``tests/acd`` as a slow, explicitly marked integration suite. Excluding
+``slow`` tests from local checks does not exclude it from the full test run.
 
 Full test suite
 ---------------

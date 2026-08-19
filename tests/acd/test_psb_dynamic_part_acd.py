@@ -80,8 +80,8 @@ from tmom_recon.physics.closed_orbit import estimate_closed_orbit
 
 from .acd_test_helpers import acd_state_marker_names
 
-# This module is a characterization study, not a CI correctness suite. Its
-# exploratory routines are exposed through studies/psb/dynamic_closed_orbit.py.
+# This module is a slow characterization suite and is intentionally included in
+# the full test run.
 pytestmark = [pytest.mark.psb, pytest.mark.integration, pytest.mark.slow]
 
 LOGGER = logging.getLogger(__name__)

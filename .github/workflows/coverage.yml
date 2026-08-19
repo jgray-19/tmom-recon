@@ -13,15 +13,43 @@ defaults:
     shell: bash
 
 jobs:
-  coverage:
+  tests:
+    name: Tests (${{ matrix.shard }})
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Everything cheap, plus any legacy slow tests that have not yet
+          # been classified as LHC / PSB / cross-code.
+          - shard: general
+            markers: >-
+              not slow or
+              (slow and not lhc and not psb and not crosscode)
+
+          # Slow LHC integration tests.
+          - shard: lhc
+            markers: >-
+              slow and lhc and not crosscode
+
+          # Slow PSB integration tests.
+          # Exclude LHC explicitly so a mistakenly dual-marked test
+          # is still only executed once.
+          - shard: psb
+            markers: >-
+              slow and psb and not lhc and not crosscode
+
+          # Explicit Xsuite / MAD-NG compatibility tests.
+          - shard: crosscode
+            markers: >-
+              slow and crosscode
+
     permissions:
-      # Gives the action the necessary permissions for pushing data to the
-      # python-coverage-comment-action branch, and for editing existing
-      # comments (to avoid publishing multiple comments in the same PR)
       contents: write
+
     env:
-        python-version: "3.13"
+      python-version: "3.13"
 
     steps:
       - uses: actions/checkout@v5
@@ -34,23 +62,33 @@ jobs:
           python-version: ${{ env.python-version }}
           enable-cache: true
           activate-environment: true
-          cache-dependency-glob: 'pyproject.toml'
+          cache-dependency-glob: "pyproject.toml"
 
       - name: Ensure pip, setuptools and wheel
         run: uv pip install --upgrade pip setuptools wheel
 
-      # The uv pip should make & use an env from the Python install of the previous step
       - name: Install package
         run: uv pip install '.[test]'
 
       - name: Install dependencies from GitHub
-        run: uv pip install git+https://github.com/jgray-19/xtrack_tools.git git+https://github.com/jgray-19/pymadng-utils.git
-
-      - name: Run tests with coverage
         run: |
-          pytest --cov --cov-branch --cov-report=xml
+          uv pip install \
+            git+https://github.com/jgray-19/xtrack_tools.git \
+            git+https://github.com/jgray-19/pymadng-utils.git
 
-      - name: Upload coverage reports to Codecov
+      - name: Run ${{ matrix.shard }} tests
+        run: |
+          pytest \
+            -m "${{ matrix.markers }}" \
+            --cov \
+            --cov-branch \
+            --cov-report=xml:coverage.xml
+
+      - name: Upload ${{ matrix.shard }} coverage
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.xml
+          disable_search: true
+          flags: ${{ matrix.shard }}
+          name: ${{ matrix.shard }}
