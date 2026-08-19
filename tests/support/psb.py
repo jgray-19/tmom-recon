@@ -27,6 +27,7 @@ class SimulatedMeasurement:
     truth: Any
     delta_p: float
     pt: float
+    bpm_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,7 @@ class PSBScenario:
                 truth=self.measurement.truth.copy(deep=True),
                 delta_p=self.measurement.delta_p,
                 pt=self.measurement.pt,
+                bpm_names=self.measurement.bpm_names,
             ),
             bend_strengths=dict(self.bend_strengths),
             quad_strengths=dict(self.quad_strengths),

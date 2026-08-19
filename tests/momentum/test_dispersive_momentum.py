@@ -19,7 +19,6 @@ from tmom_recon import ACDipoleConfig, inject_noise_xy
 from tmom_recon.svd import svd_clean_measurements  # noqa: E402
 
 pytestmark = [pytest.mark.lhc, pytest.mark.integration]
-__test__ = False
 
 
 @pytest.mark.slow

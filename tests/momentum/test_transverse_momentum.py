@@ -27,7 +27,6 @@ if TYPE_CHECKING:
     from xtrack import Line
 
 pytestmark = [pytest.mark.lhc, pytest.mark.integration]
-__test__ = False
 
 
 NAT_TUNES = [0.28, 0.31]

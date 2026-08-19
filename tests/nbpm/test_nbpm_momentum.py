@@ -14,7 +14,6 @@ from tmom_recon import (
 from tmom_recon.svd import svd_clean_measurements
 
 pytestmark = [pytest.mark.lhc, pytest.mark.integration]
-__test__ = False
 
 
 def _select_local_bpm_window(

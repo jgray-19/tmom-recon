@@ -19,7 +19,6 @@ from tmom_recon import ModelDetails, MomentumReference, calculate_pz
 from tmom_recon.physics.pt_calculation import estimate_pt_from_model
 
 pytestmark = pytest.mark.unit
-__test__ = False
 
 BPMS = [f"bpm{i}" for i in range(12)]
 

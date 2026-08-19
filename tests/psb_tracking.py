@@ -15,6 +15,7 @@ from functools import cache
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from omc3.model_creator import create_instance_and_model
 from pymadng_utils.accelerators import PSB
 from pymadng_utils.madx.make_sequence import make_madx_sequence
@@ -307,7 +308,17 @@ def build_psb_tracking_setup(
             f"{len(common)} common rows (max|diff|={max_diff:.3e})"
         )
 
-    truth = get_truth(tracking_df, tws)
+    tracked_bpms = [
+        str(name).upper()
+        for name in pd.unique(tracking_df["name"].to_numpy())
+        if "BPM" in str(name).upper()
+    ]
+    tracking_twiss = off_momentum_tws.to_pandas()
+    tracking_twiss["name"] = tracking_twiss["name"].str.upper()
+    tracking_twiss = tracking_twiss.set_index("name")
+    tracking_twiss = tracking_twiss.loc[tracked_bpms]
+    truth = get_truth(tracking_df, tracking_twiss)
+    measurement_pt = accelerator.dp2pt(delta_p)
     return PSBScenario(
         machine=SimulatedMachine(
             accelerator=accelerator,
@@ -320,7 +331,8 @@ def build_psb_tracking_setup(
             data=tracking_df,
             truth=truth,
             delta_p=delta_p,
-            pt=model.pt,
+            pt=measurement_pt,
+            bpm_names=tuple(tracked_bpms),
         ),
         bend_strengths=bend_k0,
         quad_strengths=quad_k1,

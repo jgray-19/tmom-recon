@@ -15,7 +15,6 @@ from tmom_recon.lattice.transport import (
 )
 
 pytestmark = pytest.mark.unit
-__test__ = False
 
 
 @pytest.fixture()

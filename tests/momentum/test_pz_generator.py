@@ -12,7 +12,6 @@ from tmom_recon import PzGenerator, calculate_pz
 pytest.importorskip("xtrack_tools")
 
 pytestmark = [pytest.mark.lhc, pytest.mark.integration]
-__test__ = False
 
 
 @pytest.mark.slow

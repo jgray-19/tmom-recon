@@ -43,8 +43,6 @@ import pytest
 from tests.psb_tracking import ACD_ELEMENT, DRIVEN_TUNES
 from tests.support.scenarios import MATCHED_BEND_ERRORS, NO_ERRORS, scenario
 
-__test__ = False
-
 LOGGER = logging.getLogger(__name__)
 
 BEND_ERROR_RMS = 8e-4

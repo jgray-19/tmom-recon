@@ -62,7 +62,6 @@ from tmom_recon import ACDipoleConfig, ModelDetails, calculate_pz
 from .acd_test_helpers import acd_state_marker_names, assert_acd_momenta_match_truth
 
 pytestmark = [pytest.mark.psb, pytest.mark.integration]
-__test__ = False
 
 # 0.08% relative bend error, matching the orbit scale seen in the real measurement.
 BEND_ERROR_RMS = 8e-4

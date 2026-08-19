@@ -6,7 +6,6 @@ from tmom_recon.data.schema import NEXT, PREV
 from tmom_recon.lattice.neighbors import build_lattice_neighbor_tables
 
 pytestmark = pytest.mark.unit
-__test__ = False
 
 
 def _ring_twiss(*, include_s: bool = True):

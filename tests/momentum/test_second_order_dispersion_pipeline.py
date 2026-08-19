@@ -24,7 +24,6 @@ from tmom_recon import ModelDetails, calculate_pz, reconstruction
 from tmom_recon.model import resolve_model_details
 
 pytestmark = [pytest.mark.psb, pytest.mark.integration]
-__test__ = False
 
 DELTA_P = 8e-3
 SECOND_ORDER_COLUMNS = ("ddx", "ddpx", "ddy", "ddpy")

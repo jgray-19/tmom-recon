@@ -31,8 +31,6 @@ from .acd_test_helpers import (
     assert_acd_momenta_match_truth,
 )
 
-__test__ = False
-
 DRIVEN_TUNES = (0.27, 0.322)
 OFF_MOMENTUM_DELTA_P = 4e-4
 

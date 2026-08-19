@@ -21,7 +21,6 @@ from tmom_recon.data.schema import PREV, SUFFIX_PREV
 from tmom_recon.physics.momenta import _compute_nominal_momenta
 
 pytestmark = pytest.mark.unit
-__test__ = False
 
 PT = 8.0e-3
 DX, DDX = 1.7, -4.2

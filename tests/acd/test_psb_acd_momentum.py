@@ -30,7 +30,6 @@ from tmom_recon.acd.reconstruction import calculate_ac_dipole_momentum
 from .acd_test_helpers import acd_state_marker_names, assert_acd_momenta_match_truth
 
 pytestmark = [pytest.mark.psb, pytest.mark.integration]
-__test__ = False
 
 ORBIT_COLUMNS = ("x", "px", "y", "py")
 

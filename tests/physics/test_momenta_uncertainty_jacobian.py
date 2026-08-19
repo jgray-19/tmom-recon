@@ -7,7 +7,6 @@ from tmom_recon.physics.errors import compute_measurement_errors, compute_optics
 from tmom_recon.physics.momenta import _compute_nominal_momenta, momenta_from_prev
 
 pytestmark = pytest.mark.unit
-__test__ = False
 
 
 def make_row_prev(*, with_optics_errs: bool) -> pd.DataFrame:

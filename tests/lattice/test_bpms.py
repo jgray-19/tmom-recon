@@ -6,7 +6,6 @@ import pytest
 from tmom_recon.lattice.bpms import find_common_bpms
 
 pytestmark = pytest.mark.unit
-__test__ = False
 
 
 def test_find_common_bpms_preserves_first_table_order() -> None:

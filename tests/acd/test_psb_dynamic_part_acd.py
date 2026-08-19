@@ -82,7 +82,6 @@ from .acd_test_helpers import acd_state_marker_names
 
 # This module is a characterization study, not a CI correctness suite. Its
 # exploratory routines are exposed through studies/psb/dynamic_closed_orbit.py.
-__test__ = False
 pytestmark = [pytest.mark.psb, pytest.mark.integration, pytest.mark.slow]
 
 LOGGER = logging.getLogger(__name__)

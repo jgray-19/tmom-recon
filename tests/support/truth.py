@@ -10,8 +10,13 @@ from tmom_recon import ModelDetails, MomentumReference
 from tmom_recon.model import resolve_model_details
 
 
-def xsuite_to_ngtws(tbl) -> pd.DataFrame:
-    """Convert an Xsuite Twiss table to the MAD-NG-compatible BPM table."""
+def xsuite_to_ngtws(tbl, bpm_names: list[str] | tuple[str, ...] | None = None) -> pd.DataFrame:
+    """Convert an Xsuite Twiss table to the MAD-NG-compatible BPM table.
+
+    When ``bpm_names`` is supplied it is treated as the authoritative set of
+    observed BPMs. This keeps PSB/LHC conversion independent of accelerator naming
+    conventions such as ``.B1``-specific suffixes.
+    """
     df = tbl.to_pandas()
     df["beta11"] = df["betx"]
     df["beta22"] = df["bety"]
@@ -22,9 +27,12 @@ def xsuite_to_ngtws(tbl) -> pd.DataFrame:
     df = tfs.TfsDataFrame(df, headers={"q1": tbl.qx, "q2": tbl.qy})
     df["name"] = df["name"].str.upper()
     df = df.set_index("name")
-    bpm_names = df[
-        df.index.str.contains("BPM", case=False, regex=False) & df.index.str.endswith(".B1")
-    ].index.tolist()
+
+    if bpm_names is not None:
+        requested = {str(name).upper() for name in bpm_names}
+        return df[df.index.isin(requested)]
+
+    bpm_names = df[df.index.str.contains("BPM", case=False, regex=False)].index.tolist()
     return df[df.index.isin(bpm_names)]
 
 

@@ -14,7 +14,6 @@ from tmom_recon.physics.bpm_phases import (
 )
 
 pytestmark = pytest.mark.unit
-__test__ = False
 
 
 @pytest.fixture

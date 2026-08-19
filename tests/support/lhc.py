@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 from xtrack_tools.acd import run_acd_track
 
 from tests.support.truth import get_truth, xsuite_to_ngtws
@@ -96,7 +97,8 @@ def tracking_artifacts_loader(xsuite_json_path):
                 horizontal_excitation=_LHC_HORIZONTAL_EXCITATION,
                 vertical_excitation=_LHC_VERTICAL_EXCITATION,
             )
-            tws = xsuite_to_ngtws(tws_xsuite)
+            bpm_names = tuple(str(name).upper() for name in pd.unique(tracking_df["name"].to_numpy()))
+            tws = xsuite_to_ngtws(tws_xsuite, bpm_names=[name for name in bpm_names if "BPM" in name])
             cache[key] = TrackingArtifacts(
                 data=tracking_df,
                 measurement_twiss=tws,

@@ -18,8 +18,6 @@ from tmom_recon import ACDipoleConfig, ACDipolePzGenerator, ModelDetails, calcul
 
 from .acd_test_helpers import AC_DIPOLE_ELEMENT, _ac_dipole_segment_around_element, _get_driver
 
-__test__ = False
-
 SEQ_FILE = "lhcb1.seq"
 DRIVEN_TUNES = (0.27, 0.322)
 

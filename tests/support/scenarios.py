@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from tests.psb_tracking import DRIVEN_TUNES, PSBScenario, build_psb_tracking_setup
+from tests.psb_tracking import DRIVEN_TUNES, build_psb_tracking_setup
+from tests.support.psb import PSBScenario
 
 
 @dataclass(frozen=True)
