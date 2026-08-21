@@ -21,29 +21,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Everything cheap, plus any legacy slow tests that have not yet
-          # been classified as LHC / PSB / cross-code.
+          # Everything cheap, plus any slow tests that are not machine-specific.
           - shard: general
             markers: >-
               not slow or
-              (slow and not lhc and not psb and not crosscode)
+              (slow and not lhc and not psb)
 
           # Slow LHC integration tests.
           - shard: lhc
             markers: >-
-              slow and lhc and not crosscode
+              slow and lhc
 
           # Slow PSB integration tests.
           # Exclude LHC explicitly so a mistakenly dual-marked test
           # is still only executed once.
           - shard: psb
             markers: >-
-              slow and psb and not lhc and not crosscode
-
-          # Explicit Xsuite / MAD-NG compatibility tests.
-          - shard: crosscode
-            markers: >-
-              slow and crosscode
+              slow and psb and not lhc
 
     permissions:
       contents: write
