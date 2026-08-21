@@ -18,8 +18,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from tests.psb_tracking import ACD_ELEMENT
 from tests.reference_co import measured_zero_reference_for_simulation
-from tests.support.assertions import rmse
+from tests.support.acd_barrier import acd_barrier_s
+from tests.support.assertions import merge_tracking_truth, rmse
 from tmom_recon import ModelDetails, calculate_pz, reconstruction
 from tmom_recon.model import resolve_model_details
 
@@ -37,26 +39,24 @@ def _reconstruct(tracking_df: pd.DataFrame, model, *, second_order: bool) -> pd.
         resolved = original(*args, **kwargs)
         return replace(
             resolved,
-            optics_tws=resolved.optics_tws.drop(
-                columns=list(SECOND_ORDER_COLUMNS), errors="ignore"
-            ),
-            closed_orbit_tws=resolved.closed_orbit_tws.drop(
-                columns=list(SECOND_ORDER_COLUMNS), errors="ignore"
-            ),
+            tws=resolved.tws.drop(columns=list(SECOND_ORDER_COLUMNS), errors="ignore"),
         )
 
     if not second_order:
         reconstruction.resolve_model_details = without_second_order
     try:
-        return calculate_pz(
+        df = calculate_pz(
             tracking_df.copy(deep=True),
             # pt=0: the model is built on momentum, so the reconstruction has to
             # recover the beam's momentum from the orbit rather than be told it.
             ModelDetails(accelerator=model.accelerator, pt=0.0),
             reference=measured_zero_reference_for_simulation(tracking_df),
             use_dispersion=True,
+            barrier_s=acd_barrier_s(model, ACD_ELEMENT),
             info=False,
         )
+        assert isinstance(df, pd.DataFrame), "Result should be a DataFrame"
+        return df
     finally:
         reconstruction.resolve_model_details = original
 
@@ -70,16 +70,17 @@ def test_generated_model_twiss_carries_second_order_dispersion(psb_tracking_setu
     """
     model = psb_tracking_setup(0.0).machine.madng_model
     resolved = resolve_model_details(ModelDetails(accelerator=model.accelerator, pt=0.0))
-    for name, tws in (("optics", resolved.optics_tws), ("closed orbit", resolved.closed_orbit_tws)):
-        missing = [col for col in SECOND_ORDER_COLUMNS if col not in tws.columns]
-        assert not missing, f"{name} twiss is missing chrom columns {missing}"
+    missing = [col for col in SECOND_ORDER_COLUMNS if col not in resolved.tws.columns]
+    assert not missing, f"model twiss is missing chrom columns {missing}"
 
 
 @pytest.mark.slow
 def test_second_order_dispersion_improves_pt_and_px_off_momentum(psb_tracking_setup) -> None:
     setup = psb_tracking_setup(DELTA_P)
     tracking_df = setup.measurement.data
-    truth = setup.measurement.truth
+    physical_tracking_df = tracking_df.loc[
+        tracking_df["name"].isin(setup.measurement.bpm_names)
+    ].copy()
     pt_true = setup.measurement.pt
 
     results = {
@@ -88,8 +89,10 @@ def test_second_order_dispersion_improves_pt_and_px_off_momentum(psb_tracking_se
     }
     errors = {}
     for label, result in results.items():
-        merged = truth.merge(result[["name", "turn", "px", "py"]], on=["name", "turn"])
-        assert not merged.empty
+        merged = merge_tracking_truth(physical_tracking_df, result)
+        finite = np.isfinite(merged[["px", "py"]]).all(axis=1)
+        assert finite.any(), f"{label} reconstruction produced no finite BPM momenta"
+        merged = merged.loc[finite]
         errors[label] = {
             "pt_rel": abs(result.attrs["PT_EST"] - pt_true) / abs(pt_true),
             "px_rmse": rmse(merged["px_true"].to_numpy(), merged["px"].to_numpy()),

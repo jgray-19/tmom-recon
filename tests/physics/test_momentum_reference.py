@@ -8,6 +8,7 @@ a reference deliberately placed off momentum, where they do not.
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, cast
 
 import numpy as np
@@ -72,7 +73,14 @@ def test_all_bpm_reconstruction_requires_a_reference() -> None:
             data,
             ModelDetails(accelerator=cast(Any, None), pt=0.0),
             reference=None,
+            barrier_s=None,
         )
+
+
+def test_all_bpm_reconstruction_requires_an_explicit_acd_barrier_decision() -> None:
+    """A caller cannot silently transport a neighbour pair through a local kick."""
+    barrier_s = inspect.signature(calculate_pz).parameters["barrier_s"]
+    assert barrier_s.default is inspect.Parameter.empty
 
 
 def test_full_state_reference_preserves_closed_orbit_angles() -> None:

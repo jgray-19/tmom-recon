@@ -77,7 +77,7 @@ def calculate_pz(
     acd: ACDipoleConfig | None = None,
     acd_only: bool = False,
     generator: bool = False,
-    barrier_s: float | None = None,
+    barrier_s: float | None,
 ) -> pd.DataFrame | PzGenerator | ACDipolePzGenerator:
     """Reconstruct transverse momenta at every BPM from turn-by-turn data.
 
@@ -137,11 +137,13 @@ def calculate_pz(
         generator: Return a generator object instead of a DataFrame. With
             ``acd_only=True`` this returns :class:`ACDipolePzGenerator`;
             otherwise it returns :class:`PzGenerator`.
-        barrier_s: Optional longitudinal position of a localised element (e.g.
-            an AC dipole) that the all-BPM neighbour-pair reconstruction must not
-            transport across, because the free model optics do not contain the
-            kick that element imparts. When omitted and ``acd`` carries a
-            ``barrier_s``, that value is used automatically. Ignored for
+        barrier_s: Explicit longitudinal position of a localised element (e.g.
+            an AC dipole) that the all-BPM neighbour-pair reconstruction must
+            not transport across, because the free model optics do not contain
+            the kick that element imparts. Pass ``None`` explicitly only when
+            the reconstruction has no such localised element. This is required
+            even when ``acd`` is supplied, so the all-BPM and ACD paths cannot
+            silently disagree about the barrier location. Ignored for
             ``acd_only`` paths.
 
     Returns:
@@ -166,19 +168,14 @@ def calculate_pz(
         )
     if generator and acd is not None and not acd_only:
         raise ValueError("generator=True with an ACDipoleConfig requires acd_only=True")
-    if barrier_s is None and acd is not None:
-        barrier_s = acd.barrier_s
-
     validate_input(data)
     bpm_names = [str(name) for name in data["name"].unique()]
     if acd is not None:
         resolved_acd = resolve_ac_dipole_config(model_details, acd)
         optics_tws = resolved_acd.optics_tws
-        closed_orbit_tws = resolved_acd.closed_orbit_tws
     else:
         resolved_model = resolve_model_details(model_details)
-        optics_tws = resolved_model.optics_tws
-        closed_orbit_tws = resolved_model.closed_orbit_tws
+        optics_tws = resolved_model.tws
 
     if generator and acd_only:
         assert acd is not None
@@ -212,7 +209,6 @@ def calculate_pz(
 
     optics = resolve_optics(
         optics_tws=optics_tws,
-        closed_orbit_tws=closed_orbit_tws,
         reference=reference,
         measurement_dir=measurement_dir,
         model_optics=model_optics,
@@ -399,16 +395,10 @@ class ACDipolePzGenerator:
         if magnet_strengths is not None or pt_changed:
             optics_model = self._resolved_acd.optics_model
             self._closed_orbit_tws = self.model.run_twiss(
-                observe=1,
-                coupling=True,
-                chrom=True,
-                deltap=0.0,
+                observe=1, coupling=True, chrom=True, deltap=0.0
             )
             self._tracking_tws = self.model.run_twiss(
-                observe=1,
-                coupling=True,
-                chrom=True,
-                pt=self.model.pt,
+                observe=1, coupling=True, chrom=True, pt=self.model.pt
             )
             self._optics_tws = optics_model.run_twiss(
                 observe=1,
@@ -418,7 +408,6 @@ class ACDipolePzGenerator:
             )
         optics = resolve_optics(
             optics_tws=self._optics_tws,
-            closed_orbit_tws=self._closed_orbit_tws,
             reference=self._reference,
             measured=self._measured,
             model_optics=self._model_optics,
@@ -430,9 +419,9 @@ class ACDipolePzGenerator:
         self.latest = reconstruct_from_prepared(
             self._prepared,
             self._optics_tws,
-            resolved_tws=optics.tws,
             closed_orbit_tws=self._tracking_tws,
             dispersion_tws=self._closed_orbit_tws,
+            resolved_tws=optics.tws,
         )
         return self.latest
 
@@ -464,8 +453,7 @@ class PzGenerator:
     ) -> None:
         self._data = data.copy(deep=True)
         self._resolved_model = resolved_model
-        self._optics_tws = self._resolved_model.optics_tws
-        self._closed_orbit_tws = self._resolved_model.closed_orbit_tws
+        self._optics_tws = self._resolved_model.tws
         self._reference = reference
         self._measured = measured
         self._model_optics = tuple(model_optics)
@@ -545,13 +533,9 @@ class PzGenerator:
         if magnet_strengths is not None:
             model = self._resolved_model.model
             model.apply_strengths(magnet_strengths)
-            self._closed_orbit_tws = model.run_twiss(
-                observe=1, coupling=True, chrom=True, deltap=0.0
-            )
             self._optics_tws = model.run_twiss(observe=1, coupling=True, chrom=True, pt=model.pt)
         optics = resolve_optics(
             optics_tws=self._optics_tws,
-            closed_orbit_tws=self._closed_orbit_tws,
             reference=self._reference,
             measured=self._measured,
             model_optics=self._model_optics,

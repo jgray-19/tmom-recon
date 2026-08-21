@@ -13,8 +13,8 @@ from pymadng_utils.madx import convert_tfs_to_madx
 
 from tests.reference_co import measured_zero_reference_for_simulation
 from tests.support.assertions import rmse
+from tests.support.lhc import get_twiss, lhc_acd_barrier_s, lhc_model_details
 from tests.support.measurements import add_error_to_orbit_measurement
-from tests.support.model_details import lhc_model_details
 from tmom_recon import calculate_pz, inject_noise_xy
 from tmom_recon.svd import svd_clean_measurements
 
@@ -24,6 +24,7 @@ pytestmark = [pytest.mark.lhc, pytest.mark.integration]
 @pytest.mark.slow
 @pytest.mark.parametrize("add_noise", [False, True], ids=["no_noise", "with_noise"])
 def test_dispersive_measurement_with_uncertainties(
+    seq_b1,
     data_dir,
     tmp_path,
     add_noise,
@@ -43,14 +44,13 @@ def test_dispersive_measurement_with_uncertainties(
         tmp_path: Temporary path fixture.
         add_noise: If True, adds noise and performs SVD cleaning before calculating pz.
     """
-    setup = acd_tracking_setup("lhcb1.seq", data_dir, delta_p=0.0)
+    setup = acd_tracking_setup(seq_b1, delta_p=0.0)
     tracking_df = setup.data
-    ng_tws = setup.measurement_twiss
-    truth = setup.truth
+    tws = get_twiss(seq_b1, deltap=0.0)
 
     # Since the above gets only BPMs, we disable drift removal to keep names consistent
     # Drop mu1 and mu2 to avoid issues in conversion
-    madx_tws = convert_tfs_to_madx(ng_tws, remove_drifts=False)
+    madx_tws = convert_tfs_to_madx(tws, remove_drifts=False)
 
     # DY is zero in the model; add a tiny symmetric jitter so relative errors propagate
     # into non-zero absolute errors for DY (and DPY if present).
@@ -90,10 +90,11 @@ def test_dispersive_measurement_with_uncertainties(
     # Call the measurement-based function with uncertainties
     result = calculate_pz(
         calc_df,
-        lhc_model_details("lhcb1.seq", data_dir),
+        lhc_model_details(seq_b1),
         reference=measured_zero_reference_for_simulation(calc_df),
         measurement_dir=str(temp_dir),
         reverse_meas_tws=False,  # Always working with B4
+        barrier_s=lhc_acd_barrier_s(lhc_model_details(seq_b1).accelerator, 0.0),
         info=False,
     )
     assert isinstance(result, pd.DataFrame), "Result should be a DataFrame"
@@ -111,9 +112,12 @@ def test_dispersive_measurement_with_uncertainties(
     assert "var_py" in result.columns, "var_py column missing"
 
     # Merge with truth and check RMSE
-    merged = truth.merge(
+    merged = tracking_df.merge(
         result[["name", "turn", "px", "py", "var_px", "var_py"]],
         on=["name", "turn"],
+        suffixes=("_true", ""),
+        validate="one_to_one",
+        indicator=True,
     )
 
     px_rmse = rmse(merged["px_true"].to_numpy(), merged["px"].to_numpy())

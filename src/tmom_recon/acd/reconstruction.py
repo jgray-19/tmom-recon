@@ -797,16 +797,14 @@ def reconstruct_from_prepared(
         prepared: Output of :func:`prepare_ac_dipole_inputs`.
         tws: Model twiss for this reconstruction (optics + tune headers ``q1`` /
             ``q2``). Used for model optics and state transport.
+        closed_orbit_tws: Undriven twiss carrying the state reference.
+        dispersion_tws: Optional explicit dispersion source; defaults to
+            ``closed_orbit_tws``.
         resolved_tws: Optional resolved twiss from
             :func:`tmom_recon.optics.resolve_optics`. When provided, its optics,
             uncertainty and variance columns (and tune headers) override the
             model values for BPM-pair selection and the initial ``px``/``py``
             estimate.
-        closed_orbit_tws: Twiss carrying the generated closed orbit at
-            ``model.pt``.
-        dispersion_tws: Optional twiss carrying the dispersion columns to use for
-            off-momentum BPM reconstruction. If omitted, ``closed_orbit_tws`` is
-            used.
 
     Returns:
         A :class:`tfs.TfsDataFrame` with four long-form state row groups
@@ -1027,13 +1025,13 @@ def calculate_ac_dipole_momentum(
         use_immediate_neighbors_for_bpms: If ``True``, use immediate lattice
             neighbors instead of pi/2-phase neighbors for BPM momentum
             reconstruction.
+        closed_orbit_tws: Undriven twiss carrying the state reference.
+        dispersion_tws: Optional explicit dispersion source.
         resolved_tws: Optional resolved twiss from
             :func:`tmom_recon.optics.resolve_optics`. When provided, its optics,
             uncertainty and variance columns (and tune headers) override the
             model values for BPM-pair selection and the initial ``px``/``py``
             estimate.
-        closed_orbit_tws: Generated closed orbit at ``model.pt``.
-        dispersion_tws: Optional explicit dispersion source.
 
     Returns:
         A :class:`tfs.TfsDataFrame` with four long-form state row groups:

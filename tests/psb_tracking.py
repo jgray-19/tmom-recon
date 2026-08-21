@@ -1,10 +1,9 @@
 """Shared PSB AC-dipole tracking setup used by several integration tests.
 
-Both the standalone AC-dipole reconstruction test ([tests/acd/test_psb_acd_momentum.py])
-and the dispersive-measurement test ([tests/momentum/test_dispersive_measurement.py])
-need one PSB ring-3 AC-dipole excitation tracked on the (off-)momentum closed orbit
-together with a matching MAD-NG model. This module centralises that setup so the two
-tests share a single, cacheable implementation.
+The canonical ACD and dispersion contracts need one PSB ring-3 AC-dipole
+excitation tracked on the (off-)momentum closed orbit together with a matching
+MAD-NG model. This module centralises that setup so the contracts share a
+single, cacheable implementation.
 """
 
 from __future__ import annotations
@@ -28,7 +27,6 @@ from xtrack_tools.errors import (
 from xtrack_tools.monitors import process_tracking_data
 
 from tests.support.psb import PSBScenario, SimulatedMachine, SimulatedMeasurement
-from tests.support.truth import get_truth
 from tmom_recon.acd.madng_driver import ACDipoleMadDriver
 
 LOGGER = logging.getLogger(__name__)
@@ -308,28 +306,22 @@ def build_psb_tracking_setup(
             f"{len(common)} common rows (max|diff|={max_diff:.3e})"
         )
 
+    observed_bpm_names = {str(name).upper() for name in tws.index if "BPM" in str(name).upper()}
     tracked_bpms = [
         str(name).upper()
         for name in pd.unique(tracking_df["name"].to_numpy())
-        if "BPM" in str(name).upper()
+        if str(name).upper() in observed_bpm_names
     ]
-    tracking_twiss = off_momentum_tws.to_pandas()
-    tracking_twiss["name"] = tracking_twiss["name"].str.upper()
-    tracking_twiss = tracking_twiss.set_index("name")
-    tracking_twiss = tracking_twiss.loc[tracked_bpms]
-    truth = get_truth(tracking_df, tracking_twiss)
     measurement_pt = accelerator.dp2pt(delta_p)
     return PSBScenario(
         machine=SimulatedMachine(
             accelerator=accelerator,
-            xsuite_line=line,
+            xsuite_line=monitored_line,
             madng_model=model,
-            xsuite_twiss=off_momentum_tws,
             madng_twiss=tws,
         ),
         measurement=SimulatedMeasurement(
             data=tracking_df,
-            truth=truth,
             delta_p=delta_p,
             pt=measurement_pt,
             bpm_names=tuple(tracked_bpms),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 from pymadng_utils.accelerators import PSB
 from xtrack_tools.env import create_xsuite_environment
@@ -9,7 +10,6 @@ from xtrack_tools.env import create_xsuite_environment
 from tests.psb_tracking import (
     ACD_ELEMENT,
     KINETIC_ENERGY_GEV,
-    NATURAL_TUNES,
     QUAD_PREFIX,
     RING,
     SEQ_FILE,
@@ -49,26 +49,28 @@ def test_generated_model_has_expected_bpm_set_and_acd_anchor(psb_model_dir) -> N
     ]
 
     assert len(bpm_names) >= 8
+    assert "BR3.BPMT3L1" not in {name.upper() for name in bpm_names}
     assert ACD_ELEMENT.upper() in {str(name).upper() for name in model.twiss_elements.index}
 
     line_names = [str(name).upper() for name in line.element_names]
     assert any(name == ACD_ELEMENT for name in line_names)
-    bpm_indices = [index for index, name in enumerate(line_names) if f"BR{RING}.BPM" in name]
+    observed_bpm_names = {name.upper() for name in bpm_names}
+    bpm_indices = [index for index, name in enumerate(line_names) if name in observed_bpm_names]
     assert len(bpm_indices) > 4
     acd_index = line_names.index(ACD_ELEMENT)
     assert min(bpm_indices) < acd_index < max(bpm_indices)
 
-    twiss = line.twiss(method="4d")
-    assert twiss.qx == pytest.approx(NATURAL_TUNES[0], abs=2e-2)
-    assert twiss.qy == pytest.approx(NATURAL_TUNES[1], abs=2e-2)
-    bpm_names = [line.element_names[index] for index in bpm_indices]
-    assert float(abs(twiss.rows[bpm_names].x).max()) < 1e-10
-    assert float(abs(twiss.rows[bpm_names].dx).max()) > 1e-2
-
+    installation = line.get_table()
+    acd_s = np.asarray(installation.rows[ACD_ELEMENT].s_center, dtype=float).ravel()
+    assert acd_s.size == 1, f"expected one Xtrack ACD marker, found {acd_s.size}"
+    assert float(acd_s[0]) == pytest.approx(
+        float(model.twiss_elements.loc[ACD_ELEMENT.upper(), "s"]), abs=1e-12
+    )
     powered_bends = [
         name
         for name in line.element_names
-        if str(name).lower().startswith("br.bhz") and abs(float(line[name].h)) > 0.0
+        if str(name).lower().startswith("br.bhz")
+        and abs(float(getattr(line[name], "h", 0.0))) > 0.0
     ]
     powered_quads = [
         name

@@ -218,6 +218,7 @@ def _run(
             driven_tunes=ACD_DRIVEN_TUNES,
         ),
         acd_only=True,
+        barrier_s=None,
     )
 
 
@@ -553,6 +554,7 @@ def test_acd_kick_dc_offset_measures_the_unmodelled_closed_orbit(data_dir) -> No
                 driven_tunes=ACD_DRIVEN_TUNES,
             ),
             acd_only=True,
+            barrier_s=None,
         )
 
         # The true kick is a difference of the two tracked marker momenta.

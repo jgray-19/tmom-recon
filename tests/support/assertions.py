@@ -18,6 +18,26 @@ def rmse(actual: np.ndarray, predicted: np.ndarray) -> float:
     return float(np.sqrt(np.mean((predicted - actual) ** 2)))
 
 
+def merge_tracking_truth(tracking_df: pd.DataFrame, result: pd.DataFrame) -> pd.DataFrame:
+    """Join reconstruction to truth without silently dropping BPM/turn rows."""
+    keys = ["name", "turn"]
+    truth = tracking_df[keys + ["px", "py"]].rename(columns={"px": "px_true", "py": "py_true"})
+    merged = truth.merge(
+        result[keys + ["px", "py"]],
+        on=keys,
+        how="left",
+        validate="one_to_one",
+        indicator=True,
+    )
+    missing = merged.loc[merged["_merge"] != "both", keys]
+    if not missing.empty:
+        examples = missing.head(8).to_dict(orient="records")
+        raise AssertionError(
+            f"Reconstruction omitted {len(missing)} tracked BPM/turn rows; examples: {examples}"
+        )
+    return merged.drop(columns="_merge")
+
+
 def verify_pz_reconstruction(
     tracking_df,
     truth: pd.DataFrame,
@@ -34,12 +54,14 @@ def verify_pz_reconstruction(
     rng_seed: int = 42,
     *,
     reference,
+    barrier_s: float | None = None,
 ):
     """Verify momentum reconstruction with noise and SVD cleaning."""
     no_noise_result = calculate_pz_func(
         tracking_df.copy(deep=True),
         model_details,
         reference=reference,
+        barrier_s=barrier_s,
         info=True,
     ).rename(columns={"px": "px_calc", "py": "py_calc"})
 
@@ -50,6 +72,7 @@ def verify_pz_reconstruction(
         noisy_df,
         model_details,
         reference=reference,
+        barrier_s=barrier_s,
         info=True,
     ).rename(columns={"px": "px_calc", "py": "py_calc"})
 
@@ -58,6 +81,7 @@ def verify_pz_reconstruction(
         cleaned_df,
         model_details,
         reference=reference,
+        barrier_s=barrier_s,
         info=True,
     ).rename(columns={"px": "px_calc", "py": "py_calc"})
 
@@ -78,12 +102,20 @@ def verify_pz_reconstruction(
     assert len(merged_noisy) == len(truth)
     assert len(merged_cleaned) == len(truth)
 
-    px_rmse_nonoise = rmse(merged_no_noise["px_true"].to_numpy(), merged_no_noise["px_calc"].to_numpy())
-    py_rmse_nonoise = rmse(merged_no_noise["py_true"].to_numpy(), merged_no_noise["py_calc"].to_numpy())
+    px_rmse_nonoise = rmse(
+        merged_no_noise["px_true"].to_numpy(), merged_no_noise["px_calc"].to_numpy()
+    )
+    py_rmse_nonoise = rmse(
+        merged_no_noise["py_true"].to_numpy(), merged_no_noise["py_calc"].to_numpy()
+    )
     px_rmse_noisy = rmse(merged_noisy["px_true"].to_numpy(), merged_noisy["px_calc"].to_numpy())
     py_rmse_noisy = rmse(merged_noisy["py_true"].to_numpy(), merged_noisy["py_calc"].to_numpy())
-    px_rmse_cleaned = rmse(merged_cleaned["px_true"].to_numpy(), merged_cleaned["px_calc"].to_numpy())
-    py_rmse_cleaned = rmse(merged_cleaned["py_true"].to_numpy(), merged_cleaned["py_calc"].to_numpy())
+    px_rmse_cleaned = rmse(
+        merged_cleaned["px_true"].to_numpy(), merged_cleaned["px_calc"].to_numpy()
+    )
+    py_rmse_cleaned = rmse(
+        merged_cleaned["py_true"].to_numpy(), merged_cleaned["py_calc"].to_numpy()
+    )
 
     LOGGER.info(
         "PX RMSE no noise: %.2e, noisy: %.2e, cleaned: %.2e",
@@ -124,4 +156,4 @@ def verify_pz_reconstruction(
     )
 
 
-__all__ = ["rmse", "verify_pz_reconstruction"]
+__all__ = ["merge_tracking_truth", "rmse", "verify_pz_reconstruction"]

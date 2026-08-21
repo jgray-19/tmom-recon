@@ -15,16 +15,14 @@ class SimulatedMachine:
     accelerator: Any
     xsuite_line: Any
     madng_model: ACDipoleMadDriver
-    xsuite_twiss: Any
     madng_twiss: Any
 
 
 @dataclass(frozen=True)
 class SimulatedMeasurement:
-    """Tracked observations and their known momentum truth."""
+    """Tracked observations, optics, and their known momentum truth."""
 
     data: Any
-    truth: Any
     delta_p: float
     pt: float
     bpm_names: tuple[str, ...] = ()
@@ -46,12 +44,10 @@ class PSBScenario:
                 accelerator=self.machine.accelerator,
                 xsuite_line=self.machine.xsuite_line,
                 madng_model=self.machine.madng_model,
-                xsuite_twiss=_copy_if_possible(self.machine.xsuite_twiss),
                 madng_twiss=self.machine.madng_twiss.copy(deep=True),
             ),
             measurement=SimulatedMeasurement(
                 data=self.measurement.data.copy(deep=True),
-                truth=self.measurement.truth.copy(deep=True),
                 delta_p=self.measurement.delta_p,
                 pt=self.measurement.pt,
                 bpm_names=self.measurement.bpm_names,
@@ -59,13 +55,3 @@ class PSBScenario:
             bend_strengths=dict(self.bend_strengths),
             quad_strengths=dict(self.quad_strengths),
         )
-
-
-def _copy_if_possible(value: Any):
-    copy_method = getattr(value, "copy", None)
-    if callable(copy_method):
-        try:
-            return copy_method(deep=True)
-        except TypeError:
-            return copy_method()
-    return value

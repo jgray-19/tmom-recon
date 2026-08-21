@@ -5,7 +5,16 @@ from __future__ import annotations
 from tmom_recon import calculate_pz
 
 
-def transverse_calc(df, model_details, reference, *, ac_dipole_config=None, use_dispersion: bool = True, **kwargs):
+def transverse_calc(
+    df,
+    model_details,
+    reference,
+    *,
+    barrier_s: float | None,
+    ac_dipole_config=None,
+    use_dispersion: bool = True,
+    **kwargs,
+):
     """Model-only transverse reconstruction entry point."""
     result = calculate_pz(
         df,
@@ -13,13 +22,22 @@ def transverse_calc(df, model_details, reference, *, ac_dipole_config=None, use_
         reference=reference,
         use_dispersion=use_dispersion,
         acd=ac_dipole_config,
+        barrier_s=barrier_s,
         **kwargs,
     )
     assert hasattr(result, "columns")
     return result
 
 
-def dispersive_calc(df, model_details, reference, *, ac_dipole_config=None, **kwargs):
+def dispersive_calc(
+    df,
+    model_details,
+    reference,
+    *,
+    barrier_s: float | None,
+    ac_dipole_config=None,
+    **kwargs,
+):
     """Model-only dispersive reconstruction entry point."""
     result = calculate_pz(
         df,
@@ -27,6 +45,7 @@ def dispersive_calc(df, model_details, reference, *, ac_dipole_config=None, **kw
         reference=reference,
         use_dispersion=True,
         acd=ac_dipole_config,
+        barrier_s=barrier_s,
         **kwargs,
     )
     assert hasattr(result, "columns")

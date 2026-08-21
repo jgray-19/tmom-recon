@@ -141,7 +141,12 @@ def reconstruct_momenta(
 
     tws = optics.tws
     shared_bpm_names = set(tws.index).intersection(data["name"].unique())
-    data = data[data["name"].isin(shared_bpm_names)]
+    # The public all-BPM path accepts tracking tables that may also contain ACD
+    # state markers or timing pseudo-monitors.  They have no all-BPM optics row;
+    # omit them from both calculation and output rather than returning a row of
+    # undefined momenta that a downstream comparison might accidentally retain.
+    orig_data = orig_data[orig_data["name"].isin(shared_bpm_names)].copy(deep=True)
+    data = orig_data.copy(deep=True)
     tws = tws.loc[tws.index.isin(shared_bpm_names)]
 
     # The reconstruction works entirely in deviations from the reference orbit,
@@ -149,7 +154,7 @@ def reconstruct_momenta(
     # momentum. See :mod:`tmom_recon.reference`.
     # pt is estimated *before* the closed orbit is removed: the estimator
     # references the raw orbit to the measured nominal-RF orbit itself, so
-    # subtracting optics.co first would double-subtract.
+    # subtracting a model orbit first would double-subtract.
     if measurement_pt is not None:
         pt_est = reference.offset_from(measurement_pt)
         LOGGER.info(
@@ -164,9 +169,9 @@ def reconstruct_momenta(
         pt_est = 0.0
 
     # Position comes from the *measured* reference orbit and momentum from the
-    # model twiss: BPMs measure position, never angle. Using optics.co for both
-    # would subtract a model orbit while pt was referenced to the measured one,
-    # leaving (reference orbit - optics.co) as an unmodelled residual.
+    # model twiss: BPMs measure position, never angle. Using a model orbit for
+    # both would subtract it while pt was referenced to the measured orbit,
+    # leaving a reference-orbit residual unmodelled.
     data = remove_closed_orbit(data, reference.closed_orbit)
     complete_data = data
     if bpm_names is not None:
@@ -203,10 +208,10 @@ def reconstruct_momenta(
     data_avg = weighted_average(data_p, data_n)
 
     # Prefer the reference orbit's own px/py when it carries them: a reference
-    # fitted to the measured orbit tracks the machine's real errors, while
-    # optics.co is a plain model twiss that does not. Falling back to optics.co
-    # keeps a measurement-only reference (no px/py columns) working.
-    momentum_co = optics.co
+    # fitted to the measured orbit tracks the machine's real errors. A
+    # position-only measurement remains supported, with the one operational
+    # model twiss as an explicit fallback for the unmeasurable angles.
+    momentum_co = tws
     if {"px", "py"}.issubset(reference.closed_orbit.columns):
         momentum_co = reference.closed_orbit
     data_avg = restore_closed_orbit_and_reference_momenta(

@@ -109,21 +109,14 @@ class ResolvedOptics:
     Attributes:
         tws: Twiss DataFrame (tfs, lowercase columns/headers) with all optics
             and uncertainty columns, indexed by BPM name in ring order.
-        co: Twiss used for closed-orbit removal/restoration (the explicit
-            closed-orbit twiss when available, else the model twiss, else
-            ``tws``).
         reference: The momentum origin: a **measured** closed orbit together
-            with the absolute ``pt`` it was taken at. Deliberately separate from
-            ``co``: ``co`` is a modelling convenience for removing and restoring
-            the orbit, while this is a physical measurement that no model can
-            substitute for (see
-            :func:`tmom_recon.physics.pt_calculation.estimate_pt_from_model`).
+            with the absolute ``pt`` it was taken at. Its positions are removed
+            from the data and its fitted angles, when present, are restored.
         sources: Resolved source per optics category.
         use_dispersion: Whether dispersion is available and enabled.
     """
 
     tws: pd.DataFrame
-    co: pd.DataFrame
     reference: MomentumReference | None
     sources: dict[OpticsCategory, OpticsSource]
     use_dispersion: bool
@@ -312,7 +305,6 @@ def _synthesise_dispersion_errors(tws: pd.DataFrame, errors: ModelOpticsErrors) 
 def resolve_optics(
     *,
     optics_tws: tfs.TfsDataFrame | None = None,
-    closed_orbit_tws: tfs.TfsDataFrame | None = None,
     reference: MomentumReference | None = None,
     measurement_dir: str | Path | None = None,
     model_optics: Collection[OpticsCategory] = (),
@@ -327,9 +319,6 @@ def resolve_optics(
     Args:
         optics_tws: Model twiss indexed by element name (lowercase optics
             columns ``beta11/alfa11/mu1/...`` and tune headers ``q1``/``q2``).
-        closed_orbit_tws: Model twiss carrying the closed-orbit reference to
-            subtract and restore. This is deliberately separate from
-            ``optics_tws`` so off-momentum optics do not become the closed orbit.
         reference: The momentum origin -- a measured closed orbit and the
             absolute ``pt`` it sits at (:class:`~tmom_recon.reference.MomentumReference`).
             Required by the all-BPM reconstruction. A model closed orbit is not a
@@ -358,7 +347,6 @@ def resolve_optics(
         raise ValueError("At least one of optics_tws or measurement_dir must be provided")
     model_categories = _validate_categories(model_optics)
     errors = model_errors if model_errors is not None else ModelOpticsErrors()
-    co_tws = closed_orbit_tws if closed_orbit_tws is not None else optics_tws
 
     measured_tws = None
     measurement_dispersion_found = False
@@ -451,7 +439,6 @@ def resolve_optics(
 
     return ResolvedOptics(
         tws=tws,
-        co=co_tws if co_tws is not None else tws,
         reference=reference,
         sources=sources,
         use_dispersion=dispersion_on,

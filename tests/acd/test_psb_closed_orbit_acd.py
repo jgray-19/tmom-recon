@@ -131,6 +131,7 @@ def test_psb_acd_reconstruction_with_dipole_closed_orbit(
             driven_tunes=ACD_DRIVEN_TUNES,
         ),
         acd_only=True,
+        barrier_s=None,
     )
 
     assert_acd_momenta_match_truth(

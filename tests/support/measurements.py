@@ -9,7 +9,7 @@ from omc3.scripts.fake_measurement_from_model import generate as generate_fake_m
 from pymadng_utils.madx import convert_tfs_to_madx
 
 from tests.support.assertions import rmse
-from tmom_recon import ModelDetails, MomentumReference, calculate_pz
+from tmom_recon import ACDipoleConfig, ModelDetails, MomentumReference, calculate_pz
 
 
 def add_error_to_orbit_measurement(fldr):
@@ -28,6 +28,8 @@ def run_dispersive_measurement(
     model_details: ModelDetails,
     *,
     reference: MomentumReference,
+    barrier_s: float | None,
+    acd: ACDipoleConfig | None = None,
     reverse_meas_tws: bool = False,
     measurement_pt: float | None = None,
 ):
@@ -47,6 +49,8 @@ def run_dispersive_measurement(
         measurement_dir=str(meas_dir),
         reverse_meas_tws=reverse_meas_tws,
         measurement_pt=measurement_pt,
+        barrier_s=barrier_s,
+        acd=acd,
         info=False,
     )
     assert isinstance(result, pd.DataFrame), "Result should be a DataFrame"
@@ -56,12 +60,13 @@ def run_dispersive_measurement(
 def assert_dispersive_measurement_recovers_pt(
     tracking_df: pd.DataFrame,
     measurement_tws: pd.DataFrame,
-    truth: pd.DataFrame,
     meas_dir,
     expected_pt: float,
     model_details: ModelDetails,
     *,
     reference: MomentumReference,
+    barrier_s: float | None,
+    acd: ACDipoleConfig | None = None,
     px_rmse_max: float,
     py_rmse_max: float,
     reverse_meas_tws: bool = False,
@@ -76,6 +81,8 @@ def assert_dispersive_measurement_recovers_pt(
         reference=reference,
         reverse_meas_tws=reverse_meas_tws,
         measurement_pt=measurement_pt,
+        barrier_s=barrier_s,
+        acd=acd,
     )
 
     pt_est = result.attrs["PT_EST"]
@@ -86,7 +93,13 @@ def assert_dispersive_measurement_recovers_pt(
     expected_cols = ["name", "turn", "x", "y", "px", "py"]
     assert all(col in result.columns for col in expected_cols)
 
-    merged = truth.merge(result[["name", "turn", "px", "py"]], on=["name", "turn"])
+    merged = tracking_df.merge(
+        result[["name", "turn", "px", "py"]],
+        on=["name", "turn"],
+        suffixes=("_true", ""),
+        validate="one_to_one",
+        indicator=True,
+    )
     px_rmse_value = rmse(merged["px_true"].to_numpy(), merged["px"].to_numpy())
     py_rmse_value = rmse(merged["py_true"].to_numpy(), merged["py"].to_numpy())
     print(f"Dispersive measurement px RMSE: {px_rmse_value:.2e}, py RMSE: {py_rmse_value:.2e}")

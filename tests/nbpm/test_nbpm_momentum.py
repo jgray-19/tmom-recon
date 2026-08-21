@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from tests.reference_co import measured_zero_reference_for_simulation
 from tests.support.assertions import rmse
-from tests.support.model_details import lhc_model_details
+from tests.support.lhc import get_twiss, lhc_model_details
 from tmom_recon import (
     calculate_pz,
     calculate_transverse_pz_nbpm,
@@ -34,12 +35,10 @@ def _select_local_bpm_window(
 
 
 @pytest.mark.slow
-def test_nbpm_reconstruction_returns_valid_output_for_fixture_data(
-    data_dir, tracking_setup
-) -> None:
-    tracking_df, tws, truth = tracking_setup("lhcb1.seq", data_dir, delta_p=0.0)
+def test_nbpm_reconstruction_returns_valid_output_for_fixture_data(seq_b1, tracking_setup) -> None:
+    tracking_df = tracking_setup(seq_b1, delta_p=0.0)
+    tws = get_twiss(seq_b1, deltap=0.0)
     tracking_df, tws, selected_bpms = _select_local_bpm_window(tracking_df, tws)
-    truth = truth[truth["name"].isin(selected_bpms)].copy(deep=True)
 
     result = calculate_transverse_pz_nbpm(
         tracking_df.copy(deep=True),
@@ -49,33 +48,39 @@ def test_nbpm_reconstruction_returns_valid_output_for_fixture_data(
         max_bpm_distance=11,
     )
 
-    merged = truth.merge(
-        result[["name", "turn", "px", "py", "var_px", "var_py"]], on=["name", "turn"]
+    merged = tracking_df.merge(
+        result[["name", "turn", "px", "py", "var_px", "var_py"]],
+        on=["name", "turn"],
+        suffixes=("_tracked", "_reconstructed"),
+        validate="one_to_one",
+        indicator=True,
     )
-    assert len(merged) == len(truth)
-    assert np.isfinite(merged["px"]).all()
-    assert np.isfinite(merged["py"]).all()
-    assert np.isfinite(merged["var_px"]).all()
-    assert np.isfinite(merged["var_py"]).all()
-    assert (merged["var_px"] > 0.0).all()
-    assert (merged["var_py"] > 0.0).all()
+    assert (merged["_merge"] == "both").all()
+    assert np.isfinite(merged["px_reconstructed"]).all()
+    assert np.isfinite(merged["py_reconstructed"]).all()
+    assert np.isfinite(merged["var_px_reconstructed"]).all()
+    assert np.isfinite(merged["var_py_reconstructed"]).all()
+    assert (merged["var_px_reconstructed"] > 0.0).all()
+    assert (merged["var_py_reconstructed"] > 0.0).all()
 
 
 @pytest.mark.slow
-def test_nbpm_improves_noisy_local_window_over_two_bpm_baseline(data_dir, tracking_setup) -> None:
-    tracking_df, tws, truth = tracking_setup("lhcb1.seq", data_dir, delta_p=0.0)
+def test_nbpm_improves_noisy_local_window_over_two_bpm_baseline(seq_b1, tracking_setup) -> None:
+    tracking_df = tracking_setup(seq_b1, delta_p=0.0)
+    tws = get_twiss(seq_b1, deltap=0.0)
     tracking_df, tws, selected_bpms = _select_local_bpm_window(tracking_df, tws)
-    truth = truth[truth["name"].isin(selected_bpms)].copy(deep=True)
 
     noisy_df = tracking_df.copy(deep=True)
     noisy_df = inject_noise_xy(noisy_df, np.random.default_rng(42), noise_std=1e-4)
 
     baseline = calculate_pz(
         noisy_df.copy(deep=True),
-        lhc_model_details("lhcb1.seq", data_dir),
+        lhc_model_details(seq_b1, delta_p=0.0),
         reference=measured_zero_reference_for_simulation(noisy_df),
+        barrier_s=None,
         info=False,
-    ).rename(columns={"px": "px_base", "py": "py_base"})  # ty:ignore[possibly-missing-attribute]
+    )
+    assert isinstance(baseline, pd.DataFrame)
 
     nbpm = calculate_transverse_pz_nbpm(
         noisy_df.copy(deep=True),
@@ -85,12 +90,17 @@ def test_nbpm_improves_noisy_local_window_over_two_bpm_baseline(data_dir, tracki
         max_bpm_distance=11,
     ).rename(columns={"px": "px_nbpm", "py": "py_nbpm"})
 
-    merged = truth.merge(
-        baseline[["name", "turn", "px_base", "py_base"]],
+    merged = tracking_df.merge(
+        baseline[["name", "turn", "px", "py"]],
         on=["name", "turn"],
+        suffixes=("_true", "_base"),
+        validate="one_to_one",
+        indicator="base_merge",
     ).merge(
         nbpm[["name", "turn", "px_nbpm", "py_nbpm"]],
         on=["name", "turn"],
+        validate="one_to_one",
+        indicator="nbpm_merge",
     )
 
     px_rmse_base = rmse(merged["px_true"].to_numpy(), merged["px_base"].to_numpy())
@@ -108,11 +118,14 @@ def test_nbpm_improves_noisy_local_window_over_two_bpm_baseline(data_dir, tracki
         twiss_elements=tws,
         info=False,
         max_bpm_distance=11,
-    ).rename(columns={"px": "px_nbpm_cleaned", "py": "py_nbpm_cleaned"})
+    )
 
-    merged_cleaned = truth.merge(
-        nbpm_cleaned[["name", "turn", "px_nbpm_cleaned", "py_nbpm_cleaned"]],
+    merged_cleaned = tracking_df.merge(
+        nbpm_cleaned[["name", "turn", "px", "py"]],
         on=["name", "turn"],
+        suffixes=("_true", "_nbpm_cleaned"),
+        validate="one_to_one",
+        indicator=True,
     )
     px_rmse_nbpm_cleaned = rmse(
         merged_cleaned["px_true"].to_numpy(),
