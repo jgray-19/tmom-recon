@@ -6,6 +6,7 @@ from model and/or measured optics, with optional AC-dipole refinement.
 
 from __future__ import annotations
 
+from .frame import ReconstructionFrame
 from .lattice.core import inject_noise_xy
 from .measurements.twiss_from_measurement import build_twiss_from_measurements
 from .model import ModelDetails
@@ -17,14 +18,13 @@ from .reconstruction import (
     PzGenerator,
     calculate_pz,
 )
-from .reference import MomentumReference
 
 __all__ = [
     "ACDipoleConfig",
     "ACDipolePzGenerator",
     "ModelDetails",
     "ModelOpticsErrors",
-    "MomentumReference",
+    "ReconstructionFrame",
     "PzGenerator",
     "ResolvedOptics",
     "build_twiss_from_measurements",

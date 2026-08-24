@@ -28,11 +28,19 @@ Direct reconstruction:
 
 .. code-block:: python
 
-   from tmom_recon import calculate_ac_dipole_momentum
+   from tmom_recon import ReconstructionFrame, calculate_ac_dipole_momentum
+
+   frame = ReconstructionFrame(
+       measured_orbit_zero[["x", "y"]],
+       dynamic_planes=("x", "y"),
+   )
 
    acd_result = calculate_ac_dipole_momentum(
        tracking_df,
        twiss_df,
+       frame=frame,
+       tracking_orbit_tws=tracking_orbit_twiss,
+       orbit_zero_model_tws=orbit_zero_model_twiss,
        ac_dipole_marker="MKQA.6L4.B1",
        model=acd_model,
        dpx_tune=0.27,

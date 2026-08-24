@@ -174,3 +174,6 @@ plots/
 *.png
 .vscode/
 kalman/
+tests/data/sequences/*.mad
+tests/data/sequences/*.json
+experimental/

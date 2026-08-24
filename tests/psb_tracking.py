@@ -1,19 +1,23 @@
 """Shared PSB AC-dipole tracking setup used by several integration tests.
 
-Both the standalone AC-dipole reconstruction test ([tests/acd/test_psb_acd_momentum.py])
-and the dispersive-measurement test ([tests/momentum/test_dispersive_measurement.py])
-need one PSB ring-3 AC-dipole excitation tracked on the (off-)momentum closed orbit
-together with a matching MAD-NG model. This module centralises that setup so the two
-tests share a single, cacheable implementation.
+The canonical ACD and dispersion contracts need one PSB ring-3 AC-dipole
+excitation tracked on the (off-)momentum closed orbit together with a matching
+MAD-NG model. This module centralises that setup so the contracts share a
+single, cacheable implementation.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+import tempfile
+from functools import cache
+from pathlib import Path
 
 import numpy as np
+import pandas as pd
+from omc3.model_creator import create_instance_and_model
 from pymadng_utils.accelerators import PSB
+from pymadng_utils.madx.make_sequence import make_madx_sequence
 from xtrack_tools.acd import run_ac_dipole_tracking
 from xtrack_tools.env import create_xsuite_environment
 from xtrack_tools.errors import (
@@ -22,11 +26,8 @@ from xtrack_tools.errors import (
 )
 from xtrack_tools.monitors import process_tracking_data
 
-from tests.momentum.momentum_test_utils import get_truth
+from tests.support.psb import PSBScenario, SimulatedMachine, SimulatedMeasurement
 from tmom_recon.acd.madng_driver import ACDipoleMadDriver
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -34,8 +35,10 @@ RING = 3
 SEQ_FILE = "psb3_saved.seq"
 SEQ_NAME = f"psb{RING}"
 KINETIC_ENERGY_GEV = 0.160
-ACD_ELEMENT = f"BR{RING}.DES3L1"
+ACD_ELEMENT = "HACMAP"
 BPM_PATTERN = rf"(?i)br{RING}\.bpm.*"
+NATURAL_TUNES = (0.17, 0.225)
+MODEL_CREATOR_DRIVEN_TUNES = (0.162, 0.232)
 DRIVEN_TUNES = (0.16, 0.24)
 RAMP_TURNS = 1000
 FLATTOP_TURNS = 1000
@@ -55,6 +58,33 @@ QUAD_PREFIX = "br.q"
 # Chromaticity sextupoles, thin multipoles carrying their strength in ``knl[2]``.
 # All zero in the saved sequence, matching the no-multipole PSB campaign.
 SEXTUPOLE_PREFIX = "br3.xno"
+
+
+@cache
+def create_psb_model_dir(acc_models_dir: Path) -> Path:
+    """Create and cache a temporary PSB ring-3 model directory."""
+    model_dir = Path(tempfile.mkdtemp(prefix="tmom-recon-psb-model-"))
+    create_instance_and_model(
+        outputdir=model_dir,
+        accel="psbooster",
+        type="nominal",
+        nat_tunes=list(NATURAL_TUNES),
+        drv_tunes=list(MODEL_CREATOR_DRIVEN_TUNES),
+        driven_excitation="acd",
+        dpp=0.0,
+        fetch="path",
+        path=acc_models_dir,
+        scenario="lhc_indiv",
+        year="2026",
+        cycle_point="1_flat_bottom",
+        str_file="psb_fb_lhcindiv.str",
+        ring=3,
+        list_choices=False,
+        show_help=False,
+        logfile=None,
+    )
+    make_madx_sequence(model_dir)
+    return model_dir
 
 
 def _power_sextupoles(line, k2l: float) -> int:
@@ -134,7 +164,7 @@ def _apply_bend_errors_to_model(model: ACDipoleMadDriver, new_k0: dict[str, floa
 
 
 def build_psb_tracking_setup(
-    data_dir: Path,
+    model_dir: Path,
     delta_p: float,
     *,
     driven_tunes: tuple[float, float] = DRIVEN_TUNES,
@@ -150,12 +180,12 @@ def build_psb_tracking_setup(
     quad_error_seed: int = 0,
     apply_quad_errors_to_model: bool = True,
     sextupole_k2l: float = 0.0,
-) -> dict[str, Any]:
+) -> PSBScenario:
     """Track one PSB AC-dipole excitation seeded on the ``delta_p`` closed orbit.
 
-    Returns a dict with the tracked BPM data (``tracking_df``), the MAD-NG model
-    twiss (``tws``), the per-turn truth momenta (``truth``), the MAD-NG ``model``
-    and the requested ``delta_p``.
+    Returns a :class:`PSBScenario` with explicit tracking and reconstruction
+    optics. The scenario keeps Xsuite-generated measurement optics separate from
+    the MAD-NG reconstruction optics.
 
     When ``bend_error_rms > 0`` a seeded relative dipole error of that RMS is added
     to the xsuite tracking line's powered main bends. If
@@ -187,8 +217,10 @@ def build_psb_tracking_setup(
     against each other rather than against the model.
     """
     delta_p = float(delta_p)
-    seq = data_dir / "sequences" / SEQ_FILE
-    json_path = data_dir / "sequences" / f"{seq.stem}.json"
+    if not (model_dir / SEQ_FILE).is_file():
+        model_dir = create_psb_model_dir(model_dir / "acc-models-psb")
+    seq = model_dir / SEQ_FILE
+    json_path = model_dir / f"{seq.stem}.json"
 
     env = create_xsuite_environment(
         sequence_file=seq,
@@ -274,13 +306,26 @@ def build_psb_tracking_setup(
             f"{len(common)} common rows (max|diff|={max_diff:.3e})"
         )
 
-    truth = get_truth(tracking_df, tws)
-    return {
-        "tracking_df": tracking_df,
-        "tws": tws,
-        "truth": truth,
-        "model": model,
-        "delta_p": delta_p,
-        "bend_k0": bend_k0,
-        "quad_k1": quad_k1,
-    }
+    observed_bpm_names = {str(name).upper() for name in tws.index if "BPM" in str(name).upper()}
+    tracked_bpms = [
+        str(name).upper()
+        for name in pd.unique(tracking_df["name"].to_numpy())
+        if str(name).upper() in observed_bpm_names
+    ]
+    measurement_pt = accelerator.dp2pt(delta_p)
+    return PSBScenario(
+        machine=SimulatedMachine(
+            accelerator=accelerator,
+            xsuite_line=monitored_line,
+            madng_model=model,
+            madng_twiss=tws,
+        ),
+        measurement=SimulatedMeasurement(
+            data=tracking_df,
+            delta_p=delta_p,
+            pt=measurement_pt,
+            bpm_names=tuple(tracked_bpms),
+        ),
+        bend_strengths=bend_k0,
+        quad_strengths=quad_k1,
+    )

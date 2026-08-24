@@ -1,8 +1,11 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from tmom_recon.data.schema import NEXT, PREV
 from tmom_recon.lattice.neighbors import build_lattice_neighbor_tables
+
+pytestmark = pytest.mark.unit
 
 
 def _ring_twiss(*, include_s: bool = True):

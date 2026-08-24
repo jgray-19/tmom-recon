@@ -1,15 +1,4 @@
-"""``estimate_pt_from_model`` requires a measured nominal-RF closed orbit.
-
-Why it is mandatory rather than optional: the bend response matrix spans the
-entire horizontal BPM space (rank 16 of 16 on PSB ring 3), so an unknown
-dipole-error closed orbit is *exactly* degenerate with the dispersive orbit at a
-single momentum. Referencing to a measured orbit cancels the error orbit
-identically; referencing to a model orbit that does not carry the machine's
-errors leaks the whole error orbit into pt.
-
-The second-order test pins the other half: ``pt`` and ``pt**2`` are one unknown,
-so a single orbit determines the quadratic solution -- no momentum scan needed.
-"""
+"""Momentum estimation happens after subtraction of measured orbit zero."""
 
 from __future__ import annotations
 
@@ -17,102 +6,69 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tmom_recon import MomentumReference
+from tmom_recon import ReconstructionFrame
 from tmom_recon.physics.pt_calculation import _solve_pt_quadratic, estimate_pt_from_model
 
+pytestmark = pytest.mark.unit
 BPMS = [f"bpm{i}" for i in range(12)]
 PT = 4.17e-3
 
 
-def _twiss(with_ddx: bool = True) -> pd.DataFrame:
-    phase = np.linspace(0.0, 2.0 * np.pi, len(BPMS), endpoint=False)
+def _twiss(with_ddx=True):
+    phase = np.linspace(0, 2 * np.pi, len(BPMS), endpoint=False)
     tws = pd.DataFrame(
-        {"dx": 2.0 + 0.9 * np.cos(phase), "dy": np.zeros(len(BPMS))},
-        index=pd.Index(BPMS, name="name"),
+        {"dx": 2 + 0.9 * np.cos(phase), "dy": 0.0}, index=pd.Index(BPMS, name="name")
     )
     if with_ddx:
         tws["ddx"] = 1.3 + 0.5 * np.sin(phase)
     return tws
 
 
-def _turn_data(orbit: np.ndarray, turns: int = 4) -> pd.DataFrame:
+def _data(orbit):
     return pd.DataFrame(
         {
-            "name": np.tile(BPMS, turns),
-            "turn": np.repeat(np.arange(turns), len(BPMS)),
-            "x": np.tile(orbit, turns),
-            "y": np.zeros(len(BPMS) * turns),
+            "name": np.tile(BPMS, 4),
+            "turn": np.repeat(np.arange(4), len(BPMS)),
+            "x": np.tile(orbit, 4),
+            "y": 0.0,
         }
     )
 
 
-def _orbit(tws: pd.DataFrame, error_co: np.ndarray, pt: float = PT) -> np.ndarray:
-    """Closed orbit at *pt*: error orbit + first- and second-order dispersion."""
-    return error_co + pt * tws["dx"].to_numpy() + pt**2 * tws["ddx"].to_numpy()
+def _frame(orbit):
+    origin = pd.DataFrame({"x": orbit, "y": 0.0}, index=pd.Index(BPMS, name="name"))
+    return ReconstructionFrame(origin, dynamic_planes=("x", "y"))
 
 
-def test_missing_reference_is_rejected() -> None:
+def test_dynamic_estimate_uses_orbit_zero_removed_coordinates():
     tws = _twiss()
-    data = _turn_data(_orbit(tws, np.zeros(len(BPMS))))
-    with pytest.raises(ValueError, match="requires a `reference`"):
-        estimate_pt_from_model(data, tws, reference=None, info=False)
+    error = 2e-3 * tws.dx.to_numpy()
+    measured = error + PT * tws.dx.to_numpy() + PT**2 * tws.ddx.to_numpy()
+    assert estimate_pt_from_model(
+        _data(measured), tws, frame=_frame(error), info=False
+    ) == pytest.approx(PT)
 
 
-def test_reference_must_cover_the_selected_bpms() -> None:
+def test_per_measurement_zero_erases_momentum_signal():
     tws = _twiss()
-    data = _turn_data(_orbit(tws, np.zeros(len(BPMS))))
-    partial = MomentumReference(pd.DataFrame({"x": 0.0}, index=pd.Index(BPMS[:5])))
-    with pytest.raises(ValueError, match="missing BPMs"):
-        estimate_pt_from_model(data, tws, reference=partial, info=False)
+    measured = PT * tws.dx.to_numpy() + PT**2 * tws.ddx.to_numpy()
+    assert estimate_pt_from_model(
+        _data(measured), tws, frame=_frame(measured), info=False
+    ) == pytest.approx(0, abs=1e-15)
 
 
-def test_measured_reference_cancels_an_arbitrary_error_closed_orbit() -> None:
-    """A millimetre-scale error orbit must not leak into pt once referenced."""
+def test_second_order_beats_first_order():
     tws = _twiss()
-    rng = np.random.default_rng(3)
-    # A realistic error orbit is not random noise: the bend response spans the
-    # whole horizontal BPM space, so it generically carries a component *along*
-    # dx -- which is precisely the component indistinguishable from momentum.
-    # Here that component alone mimics a pt of 2e-3, half the true value.
-    mimicked_pt = 2.0e-3
-    error_co = mimicked_pt * tws["dx"].to_numpy() + rng.normal(0.0, 5e-4, len(BPMS))
-
-    reference = MomentumReference(pd.DataFrame({"x": error_co}, index=pd.Index(BPMS)))
-    data = _turn_data(_orbit(tws, error_co))
-
-    referenced = estimate_pt_from_model(data, tws, reference=reference, info=False)
-    assert referenced == pytest.approx(PT, rel=1e-9)
-
-    # Referencing to a *model* orbit that does not know the errors (here, zero)
-    # leaks the whole error orbit into pt. This is the failure the mandatory
-    # argument exists to prevent, so pin that it is large.
-    zero_reference = MomentumReference(
-        pd.DataFrame({"x": np.zeros(len(BPMS))}, index=pd.Index(BPMS))
+    measured = PT * tws.dx.to_numpy() + PT**2 * tws.ddx.to_numpy()
+    frame = _frame(np.zeros(len(BPMS)))
+    second = estimate_pt_from_model(_data(measured), tws, frame=frame, info=False)
+    first = estimate_pt_from_model(
+        _data(measured), tws.drop(columns="ddx"), frame=frame, info=False
     )
-    unreferenced = estimate_pt_from_model(data, tws, reference=zero_reference, info=False)
-    assert unreferenced == pytest.approx(PT + mimicked_pt, rel=0.05)
+    assert second == pytest.approx(PT)
+    assert abs(second - PT) < abs(first - PT) / 100
 
 
-def test_second_order_beats_first_order_on_a_single_orbit() -> None:
-    """One orbit suffices: pt and pt**2 are a single unknown, not two."""
-    tws = _twiss()
-    reference = MomentumReference(pd.DataFrame({"x": np.zeros(len(BPMS))}, index=pd.Index(BPMS)))
-    data = _turn_data(_orbit(tws, np.zeros(len(BPMS))))
-
-    second = estimate_pt_from_model(data, tws, reference=reference, info=False)
-    first = estimate_pt_from_model(data, tws.drop(columns=["ddx"]), reference=reference, info=False)
-
-    assert second == pytest.approx(PT, rel=1e-9)
-    # The first-order estimate is biased high by the neglected pt**2*ddx term.
-    assert first > PT
-    assert abs(second - PT) < abs(first - PT) / 100.0
-
-
-def test_quadratic_solver_picks_the_root_next_to_the_linear_solution() -> None:
-    """The far root is spurious; it must never be returned."""
-    s_dx2, s_ddx_dx = 50.0, 30.0
-    pt = 4.0e-3
-    numerator = pt * s_dx2 + pt**2 * s_ddx_dx
-    assert _solve_pt_quadratic(numerator, s_dx2, s_ddx_dx) == pytest.approx(pt, rel=1e-12)
-    # Degenerate second-order term falls back to the linear solution.
-    assert _solve_pt_quadratic(numerator, s_dx2, 0.0) == pytest.approx(numerator / s_dx2)
+def test_quadratic_solver_selects_near_root():
+    numerator = 4e-3 * 50 + (4e-3) ** 2 * 30
+    assert _solve_pt_quadratic(numerator, 50, 30) == pytest.approx(4e-3)

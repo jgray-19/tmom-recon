@@ -60,10 +60,10 @@ What is checked
    the orbit is removed from the data: it collapses, and therefore stops being a
    bend diagnostic. That is the cost of the mode, so it is pinned down.
 
-One closed-orbit mechanism appears below: ``psb_md``'s ``--orbit-mode dynamic``
-subtracts the orbit from the *input* data and never restores it, giving a purely
-dynamic state. That is the ``remove_planes`` argument of :func:`_run`; leaving it
-unset references the reconstruction to the (nominal) model twiss orbit instead.
+One closed-orbit mechanism appears below: a :class:`ReconstructionFrame` carries
+the separately measured setting-0 orbit. Dynamic planes subtract that common
+origin before momentum estimation and restore no non-dispersive orbit; dispersion
+remains enabled. That is the ``remove_planes`` argument of :func:`_run`.
 """
 
 from __future__ import annotations
@@ -74,11 +74,16 @@ import numpy as np
 import pytest
 
 from tests.psb_tracking import ACD_ELEMENT, DRIVEN_TUNES, build_psb_tracking_setup
-from tests.reference_co import zero_momentum_reference
-from tmom_recon import ACDipoleConfig, ModelDetails, calculate_pz
+from tests.reference_co import measured_zero_reference_for_simulation
+from tests.support.truth import simulated_mixed_reference_from_model
+from tmom_recon import ACDipoleConfig, ModelDetails, ReconstructionFrame, calculate_pz
 from tmom_recon.physics.closed_orbit import estimate_closed_orbit
 
 from .acd_test_helpers import acd_state_marker_names
+
+# This module is a slow characterization suite and is intentionally included in
+# the full test run.
+pytestmark = [pytest.mark.psb, pytest.mark.integration, pytest.mark.slow]
 
 LOGGER = logging.getLogger(__name__)
 
@@ -161,11 +166,11 @@ def _build_setup(mode: str, data_dir, *, delta_p: float = 0.0):
     # The model must not know about the perturbations: this is the whole point of
     # the scenario, and if the model twiss ever acquired the orbit the test would
     # silently stop exercising the data-mean path.
-    assert float(setup["tws"]["x"].abs().max()) < 1e-5
-    assert float(setup["tws"]["y"].abs().max()) < 1e-5
+    assert float(setup.machine.madng_twiss["x"].abs().max()) < 1e-5
+    assert float(setup.machine.madng_twiss["y"].abs().max()) < 1e-5
     # Off momentum the *data* must actually carry the dispersive orbit, otherwise
     # the off-momentum variants would be duplicates of the on-momentum ones.
-    tracking_df = setup["tracking_df"]
+    tracking_df = setup.measurement.data
     data_orbit = float(tracking_df.groupby("name", observed=True)["x"].mean().abs().max())
     LOGGER.info("[mode=%s dp=%.1e] max |data mean x| = %.3f mm", mode, delta_p, 1e3 * data_orbit)
     if delta_p != 0.0:
@@ -187,33 +192,46 @@ def _run(
     here is nominal — so the machine's orbit stays in the data and the output is
     an absolute state carrying it.
 
-    *remove_planes* is what ``psb_md`` does for ``--orbit-mode dynamic``: the
-    orbit is subtracted from the *input* data and never restored, so the output
-    is purely dynamic. Reproduced here exactly as
-    ``psb_md.orbit_frame.ClosedOrbitFrame.turn_mean(...).subtract_from`` does it
-    -- same ``estimate_closed_orbit`` estimator, dispersive ``pt*d`` preserved.
+    *remove_planes* builds the simulation equivalent of a separately measured
+    orbit-0 frame. tmom-recon owns the subtraction, momentum estimate, dispersive
+    reconstruction, and selective restoration.
     """
-    model = setup["model"]
+    model = setup.machine.madng_model
     before_marker, after_marker = acd_state_marker_names(model)
-    bpm_df = setup["tracking_df"]
+    bpm_df = setup.measurement.data
     bpm_df = bpm_df.loc[~bpm_df["name"].isin([before_marker, after_marker])].copy()
+    # Inserting the ACD replaces the colocated BPM observation with marker-side
+    # observations.  It is therefore not part of the reconstruction lattice.
+    bpm_df = bpm_df.loc[bpm_df["name"].isin(setup.machine.madng_twiss.index)].copy()
     effective_pt = model.pt if pt is None else pt
+    frame = measured_zero_reference_for_simulation(bpm_df)
     if remove_planes:
-        closed_orbit = estimate_closed_orbit(bpm_df, setup["tws"], pt_est=effective_pt)
-        for plane in remove_planes:
-            bpm_df[plane] = bpm_df[plane] - bpm_df["name"].map(closed_orbit[plane]).astype(
-                float
-            ).fillna(0.0)
+        # Simulation-only construction of the separately measured setting-0
+        # orbit. Production obtains this from the campaign's orbit-0 blanks.
+        closed_orbit = estimate_closed_orbit(
+            bpm_df, setup.machine.madng_twiss, pt_est=effective_pt
+        ).loc[bpm_df["name"].unique(), ["x", "y"]]
+        dynamic_planes = tuple(remove_planes)
+        retained_momenta = frame.fitted_momenta[
+            [f"p{plane}" for plane in ("x", "y") if plane not in dynamic_planes]
+        ]
+        frame = ReconstructionFrame(
+            closed_orbit,
+            dynamic_planes=dynamic_planes,
+            fitted_momenta=retained_momenta,
+        )
     return calculate_pz(
         bpm_df,
-        reference=zero_momentum_reference(bpm_df),
+        frame=frame,
         model_details=ModelDetails(accelerator=model.accelerator, pt=effective_pt),
+        measurement_pt_offset=effective_pt,
         use_dispersion=True,
         acd=ACDipoleConfig(
             ac_dipole_marker=ACD_ELEMENT,
             driven_tunes=ACD_DRIVEN_TUNES,
         ),
         acd_only=True,
+        barrier_s=None,
     )
 
 
@@ -306,9 +324,9 @@ def test_dynamic_part_is_invariant_to_closed_orbit_handling(delta_p, data_dir) -
     """
     setup, planes = _build_setup("xy", data_dir, delta_p=delta_p)
     handled = _bpm_dynamic_errors(
-        _run(setup, remove_planes=planes), setup["tracking_df"], cleaned=False
+        _run(setup, remove_planes=planes), setup.measurement.data, cleaned=False
     )
-    unhandled = _bpm_dynamic_errors(_run(setup), setup["tracking_df"], cleaned=False)
+    unhandled = _bpm_dynamic_errors(_run(setup), setup.measurement.data, cleaned=False)
     LOGGER.info("[dp=%.1e] closed orbit removed from the data: %s", delta_p, _fmt(handled))
     LOGGER.info("[dp=%.1e] closed orbit from model twiss: %s", delta_p, _fmt(unhandled))
 
@@ -337,8 +355,8 @@ def test_dynamic_part_is_robust_to_a_wrong_pt(data_dir) -> None:
     every case.
     """
     setup, planes = _build_setup("xy", data_dir, delta_p=OFF_MOMENTUM_DELTA_P)
-    accelerator = setup["model"].accelerator
-    tracking_df = setup["tracking_df"]
+    accelerator = setup.machine.accelerator
+    tracking_df = setup.measurement.data
 
     errors: dict[float, dict[str, float]] = {}
     for fraction in (0.0, 0.1, 0.3):
@@ -398,8 +416,8 @@ def test_sextupole_feed_down_couples_static_orbit_into_dynamic_part(data_dir) ->
             apply_bend_errors_to_model=False,
             sextupole_k2l=k2l,
         )
-        tracking_df = setup["tracking_df"]
-        before, after = acd_state_marker_names(setup["model"])
+        tracking_df = setup.measurement.data
+        before, after = acd_state_marker_names(setup.machine.madng_model)
         bpms = sorted(
             set(tracking_df["name"].unique()) - {before, after},
             key=str,
@@ -411,7 +429,7 @@ def test_sextupole_feed_down_couples_static_orbit_into_dynamic_part(data_dir) ->
                 .to_numpy(dtype=float)
             )
             for bpm in bpms
-        }
+        }  # ty:ignore[invalid-return-type]
 
     def relative_change(k2l: float) -> float:
         flat = dynamic_at_bpms(k2l=k2l, bend_rms=0.0)
@@ -454,7 +472,7 @@ def test_single_plane_handling_leaves_other_plane_static_dominated(data_dir) -> 
     """
     setup, _ = _build_setup("xy", data_dir)
     result = _run(setup, remove_planes="x")
-    tracking_df = setup["tracking_df"]
+    tracking_df = setup.measurement.data
     summary = result.attrs["summary"]
 
     dynamic_errors = _bpm_dynamic_errors(result, tracking_df, cleaned=False)
@@ -528,27 +546,40 @@ def test_acd_kick_dc_offset_measures_the_unmodelled_closed_orbit(data_dir) -> No
             bend_error_seed=BEND_ERROR_SEED,
             apply_bend_errors_to_model=match_model,
         )
-        model = setup["model"]
-        tracking_df = setup["tracking_df"]
+        model = setup.machine.madng_model
+        tracking_df = setup.measurement.data
         before, after = acd_state_marker_names(model)
         bpm_df = tracking_df.loc[~tracking_df["name"].isin([before, after])].copy()
+        bpm_df = bpm_df.loc[bpm_df["name"].isin(setup.machine.madng_twiss.index)].copy()
         orbit = float(bpm_df.groupby("name", observed=True)["x"].mean().abs().max())
         strengths = (
-            {f"{name.upper()}.k0": value for name, value in setup["bend_k0"].items()}
-            if (setup["bend_k0"] and match_model)
+            {f"{name.upper()}.k0": value for name, value in setup.bend_strengths.items()}
+            if (setup.bend_strengths and match_model)
             else None
         )
+        frame = measured_zero_reference_for_simulation(bpm_df)
+        if match_model:
+            frame = simulated_mixed_reference_from_model(
+                ModelDetails(
+                    accelerator=model.accelerator,
+                    pt=0.0,
+                    magnet_strengths=strengths,
+                ),
+                bpm_df,
+            )
         result = calculate_pz(
             bpm_df,
-            reference=zero_momentum_reference(bpm_df),
+            frame=frame,
             model_details=ModelDetails(
                 accelerator=model.accelerator, pt=model.pt, magnet_strengths=strengths
             ),
+            measurement_pt_offset=model.pt,
             acd=ACDipoleConfig(
                 ac_dipole_marker=ACD_ELEMENT,
                 driven_tunes=ACD_DRIVEN_TUNES,
             ),
             acd_only=True,
+            barrier_s=None,
         )
 
         # The true kick is a difference of the two tracked marker momenta.
@@ -556,7 +587,8 @@ def test_acd_kick_dc_offset_measures_the_unmodelled_closed_orbit(data_dir) -> No
             return tracking_df.loc[tracking_df["name"] == name].sort_values("turn")
 
         true_dc = float(np.mean(at(after)["px"].to_numpy(float) - at(before)["px"].to_numpy(float)))
-        return result.attrs["dpx_offset"], result.attrs["dpx_amplitude"], orbit, true_dc
+        result_attrs = getattr(result, "attrs")
+        return result_attrs["dpx_offset"], result_attrs["dpx_amplitude"], orbit, true_dc
 
     # The AC dipole cannot produce a DC kick, whatever the machine errors are.
     for bend_rms, match_model in ((0.0, False), (BEND_ERROR_RMS, False), (BEND_ERROR_RMS, True)):
@@ -643,11 +675,11 @@ def test_dynamic_part_survives_the_ac_dipole_cleaning(delta_p, data_dir) -> None
     """
     setup, planes = _build_setup("xy", data_dir, delta_p=delta_p)
     result = _run(setup, remove_planes=planes)
-    tracking_df = setup["tracking_df"]
+    tracking_df = setup.measurement.data
 
     raw = _bpm_dynamic_errors(result, tracking_df, cleaned=False)
     cleaned = _bpm_dynamic_errors(result, tracking_df, cleaned=True)
-    markers = _marker_dynamic_errors(result, tracking_df, setup["model"])
+    markers = _marker_dynamic_errors(result, tracking_df, setup.machine.madng_model)
     LOGGER.info("[dp=%.1e] BPM dynamic errors, raw:     %s", delta_p, _fmt(raw))
     LOGGER.info("[dp=%.1e] BPM dynamic errors, cleaned: %s", delta_p, _fmt(cleaned))
     LOGGER.info("[dp=%.1e] marker dynamic errors (always cleaned): %s", delta_p, _fmt(markers))
@@ -768,8 +800,8 @@ def test_dynamic_part_frame_is_insensitive_to_the_orbit_size(data_dir) -> None:
             bend_error_seed=BEND_ERROR_SEED,
             apply_bend_errors_to_model=False,
         )
-        before, after = acd_state_marker_names(setup["model"])
-        bpm_df = setup["tracking_df"]
+        before, after = acd_state_marker_names(setup.machine.madng_model)
+        bpm_df = setup.measurement.data
         orbit = float(
             bpm_df.loc[~bpm_df["name"].isin([before, after])]
             .groupby("name", observed=True)["x"]

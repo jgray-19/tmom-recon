@@ -40,7 +40,8 @@ import logging
 import numpy as np
 import pytest
 
-from tests.psb_tracking import ACD_ELEMENT, DRIVEN_TUNES, build_psb_tracking_setup
+from tests.psb_tracking import ACD_ELEMENT, DRIVEN_TUNES
+from tests.support.scenarios import MATCHED_BEND_ERRORS, NO_ERRORS, scenario
 
 LOGGER = logging.getLogger(__name__)
 
@@ -58,14 +59,12 @@ ROUNDTRIP_TOL = 1e-12
 CHAINED_TOL = 1e-11
 
 
-def _setup(data_dir, *, with_orbit: bool):
-    return build_psb_tracking_setup(
-        data_dir,
+def _setup(psb_model_dir, *, with_orbit: bool):
+    return scenario(
+        psb_model_dir,
         delta_p=0.0,
         driven_tunes=ACD_DRIVEN_TUNES,
-        bend_error_rms=BEND_ERROR_RMS if with_orbit else 0.0,
-        bend_error_seed=BEND_ERROR_SEED,
-        apply_bend_errors_to_model=True,
+        errors=(MATCHED_BEND_ERRORS if with_orbit else NO_ERRORS),
     )
 
 
@@ -78,8 +77,8 @@ def _states_at(tracking_df, name: str) -> np.ndarray:
 
 def _ring_bpms(setup) -> list[str]:
     """BPM names present in both the model twiss and the tracking data, by ``s``."""
-    tws = setup["tws"]
-    tracked = {str(name).upper() for name in setup["tracking_df"]["name"].unique()}
+    tws = setup.machine.madng_twiss
+    tracked = {str(name).upper() for name in setup.measurement.data["name"].unique()}
     bpms = tws.loc[tws.index.str.contains("BPM", case=False)].sort_values("s")
     names = [str(name) for name in bpms.index if str(name).upper() in tracked]
     assert len(names) >= 8, f"expected the full PSB BPM set, got {len(names)}"
@@ -88,8 +87,8 @@ def _ring_bpms(setup) -> list[str]:
 
 def _acd_leg(setup, bpms: list[str]) -> int:
     """Index of the leg ``bpms[i] -> bpms[i+1]`` that contains the AC dipole."""
-    tws = setup["tws"]
-    acd_s = float(setup["model"].twiss_elements.loc[ACD_ELEMENT.upper(), "s"])
+    tws = setup.machine.madng_twiss
+    acd_s = float(setup.machine.madng_model.twiss_elements.loc[ACD_ELEMENT.upper(), "s"])
     positions = [float(tws.loc[name, "s"]) for name in bpms]
     for index in range(len(bpms) - 1):
         if positions[index] <= acd_s < positions[index + 1]:
@@ -108,8 +107,10 @@ def _worst(diffs: dict[str, float]) -> tuple[str, float]:
 
 
 @pytest.mark.slow
+@pytest.mark.psb
+@pytest.mark.integration
 @pytest.mark.parametrize("with_orbit", [False, True], ids=["flat_orbit", "distorted_orbit"])
-def test_transport_round_trip_closes_on_every_ring_leg(with_orbit, data_dir) -> None:
+def test_transport_round_trip_closes_on_every_ring_leg(with_orbit, psb_model_dir) -> None:
     """``BPM_i -> BPM_i+1 -> BPM_i`` returns the original state, all the way round.
 
     Covers every leg of the ring including the one containing the AC dipole, so
@@ -118,14 +119,14 @@ def test_transport_round_trip_closes_on_every_ring_leg(with_orbit, data_dir) -> 
     ``t == 0`` on input, so the longitudinal coordinate cannot be fed back and is
     not part of the round trip.
     """
-    setup = _setup(data_dir, with_orbit=with_orbit)
-    model = setup["model"]
+    setup = _setup(psb_model_dir, with_orbit=with_orbit)
+    model = setup.machine.madng_model
     bpms = _ring_bpms(setup)
     worst_overall = ("", 0.0, "")
 
     for index in range(len(bpms) - 1):
         source, target = bpms[index], bpms[index + 1]
-        original = _states_at(setup["tracking_df"], source.upper())
+        original = _states_at(setup.measurement.data, source.upper())
         forward = model.track_particles(source, target, original, direction=+1)
         back = model.track_particles(target, source, forward[:, :4], direction=-1)
         diffs = _max_abs_diff(original, back[:, :4])
@@ -150,8 +151,10 @@ def test_transport_round_trip_closes_on_every_ring_leg(with_orbit, data_dir) -> 
 
 
 @pytest.mark.slow
+@pytest.mark.psb
+@pytest.mark.integration
 @pytest.mark.parametrize("with_orbit", [False, True], ids=["flat_orbit", "distorted_orbit"])
-def test_full_ring_chained_transport_closes(with_orbit, data_dir) -> None:
+def test_full_ring_chained_transport_closes(with_orbit, psb_model_dir) -> None:
     """Forward around the whole ring BPM by BPM, then all the way back, is the identity.
 
     The per-leg check above would pass even if every leg carried the same small
@@ -160,10 +163,10 @@ def test_full_ring_chained_transport_closes(with_orbit, data_dir) -> None:
     and the assertion is purely that MAD-NG's backward transport undoes its own
     forward transport over the entire lattice.
     """
-    setup = _setup(data_dir, with_orbit=with_orbit)
-    model = setup["model"]
+    setup = _setup(psb_model_dir, with_orbit=with_orbit)
+    model = setup.machine.madng_model
     bpms = _ring_bpms(setup)
-    original = _states_at(setup["tracking_df"], bpms[0].upper())
+    original = _states_at(setup.measurement.data, bpms[0].upper())
 
     state = original
     for index in range(len(bpms) - 1):
@@ -221,8 +224,10 @@ def _transfer_matrix(
 
 
 @pytest.mark.slow
+@pytest.mark.psb
+@pytest.mark.integration
 @pytest.mark.parametrize("with_orbit", [False, True], ids=["flat_orbit", "distorted_orbit"])
-def test_backward_transport_jacobian_inverts_the_forward_one(with_orbit, data_dir) -> None:
+def test_backward_transport_jacobian_inverts_the_forward_one(with_orbit, psb_model_dir) -> None:
     """The *derivative* of the backward map is the inverse of the forward derivative.
 
     Closing the round trip on a state is necessary but not sufficient: an
@@ -243,8 +248,8 @@ def test_backward_transport_jacobian_inverts_the_forward_one(with_orbit, data_di
     with a 5.5 mm closed orbit it produces a spurious ~6e-5 residual — an artefact
     of the probe, not of the backward map.
     """
-    setup = _setup(data_dir, with_orbit=with_orbit)
-    model = setup["model"]
+    setup = _setup(psb_model_dir, with_orbit=with_orbit)
+    model = setup.machine.madng_model
     bpms = _ring_bpms(setup)
     identity = np.eye(4)
     symplectic_form = np.array(
@@ -258,7 +263,7 @@ def test_backward_transport_jacobian_inverts_the_forward_one(with_orbit, data_di
         source, target = bpms[index], bpms[index + 1]
         # Expand about a real trajectory: the mean tracked state at the source,
         # and its forward image at the target.
-        reference = _states_at(setup["tracking_df"], source.upper()).mean(axis=0)
+        reference = _states_at(setup.measurement.data, source.upper()).mean(axis=0)
         image = model.track_particles(source, target, reference.reshape(1, 4), direction=+1)[0, :4]
         forward = _transfer_matrix(model, source, target, direction=+1, about=reference)
         backward = _transfer_matrix(model, target, source, direction=-1, about=image)

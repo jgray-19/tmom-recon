@@ -1,7 +1,6 @@
 """Estimate the momentum offset of a measurement from its closed orbit.
 
-The estimate is an *offset from the reference orbit*, never an absolute
-momentum; see :mod:`tmom_recon.reference`.
+The estimate is an offset from the measured orbit-zero frame.
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from tmom_recon.physics.closed_orbit import estimate_closed_orbit
 if TYPE_CHECKING:  # pragma: no cover - typing helpers only
     import pandas as pd
 
-    from tmom_recon.reference import MomentumReference
+    from tmom_recon.frame import ReconstructionFrame
 
 LOGGER = logging.getLogger(__name__)
 
@@ -52,22 +51,22 @@ def estimate_pt_from_model(
     data: pd.DataFrame,
     tws: pd.DataFrame,
     *,
-    reference: MomentumReference,
+    frame: ReconstructionFrame,
     info: bool = True,
 ) -> float:
     """
     Estimate MAD-NG pt from the closed orbit, using first- and second-order dispersion.
 
     Projects the measured closed orbit onto the model dispersion. If ``ddx`` is
-    available, solves the corresponding second-order quadratic. ``reference``
-    must contain the measured closed orbit used to define the momentum offset.
+    available, solves the corresponding second-order quadratic. The frame is
+    applied before the projection.
 
     Args:
         data: Tracking data with BPM readings. Must contain columns: ["name", "x"].
         tws: Twiss parameters DataFrame. Must have column "dx" and be indexed by BPM
             name. When "ddx" is present the second-order solution is used.
-        reference: The momentum origin (:class:`~tmom_recon.reference.MomentumReference`).
-            Its closed orbit must cover every BPM used for the estimate.
+        frame: The measured orbit-zero coordinate frame. Raw data is translated
+            in its dynamic planes before the dispersive projection.
         info: If True, log diagnostic information.
     Returns:
         The momentum offset of *data* from the reference orbit.
@@ -75,17 +74,18 @@ def estimate_pt_from_model(
         ValueError: If *reference* is missing or does not cover the BPMs selected
             for the estimate.
     """
-    if reference is None or not reference.measured:
-        raise ValueError(
-            "estimate_pt_from_model requires a `reference` MomentumReference built "
-            "from a measured closed orbit. Neither a model closed orbit nor the "
-            "pinned zero of a dynamic-part run is a valid substitute: dipole errors "
-            "are exactly degenerate with the dispersive orbit at a single momentum, "
-            "so a mismatched origin biases pt by tens of percent. This is the one "
-            "place the measured orbit is load-bearing, which is why the requirement "
-            "lives here rather than at an entry point that may never reach it."
-        )
-    reference_co = reference.closed_orbit
+    return _estimate_pt_from_prepared(frame.prepare_data(data), tws, frame=frame, info=info)
+
+
+def _estimate_pt_from_prepared(
+    data: pd.DataFrame,
+    tws: pd.DataFrame,
+    *,
+    frame: ReconstructionFrame,
+    info: bool = True,
+) -> float:
+    """Estimate pt from data already translated by ``frame.prepare_data``."""
+    reference_co = frame.closed_orbit
     data_bpms = set(data["name"].unique())
     tws_bpms = set(tws.index)
 
@@ -156,7 +156,7 @@ def estimate_pt_from_model(
             pt,
             numerator,
             denominator,
-            reference.pt,
+            0.0,
             len(filtered_tws),
         )
     return pt

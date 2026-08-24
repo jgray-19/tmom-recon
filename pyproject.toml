@@ -35,6 +35,7 @@ dev = [
 docs = [
     "sphinx>=8",
     "sphinx-rtd-theme>=3",
+    "myst-parser>=4",
 ]
 
 [tool.setuptools.packages.find]
@@ -50,13 +51,23 @@ pythonpath = ["src"]
 norecursedirs = ["tests/data", "tests/experimental", "tests/kalman"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "unit: marks tests that do not require a real accelerator model",
+    "integration: marks tests that exercise an accelerator model or external physics engine",
+    "diagnostic: marks one-hypothesis canonical reconstruction contracts",
+    "campaign: marks long tracking and OMC3 measurement-generation tests",
+    "regression: marks tests for previously observed failures",
+    "psb: marks PSB-specific tests",
+    "lhc: marks LHC-specific tests",
 ]
 addopts = [
+    "-p",
+    "no:xdist",
     "--log-cli-level=INFO",
     "--log-level=INFO",
     "--log-cli-format=%(levelname)s %(name)s %(message)s",
+    "--strict-markers",
     "-s",
-    "-n8",
+    # "-n6",
 ]
 
 [tool.ruff]

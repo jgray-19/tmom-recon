@@ -1,9 +1,12 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from tmom_recon.data.schema import PREV, SUFFIX_PREV
 from tmom_recon.physics.errors import compute_measurement_errors, compute_optics_errors
 from tmom_recon.physics.momenta import _compute_nominal_momenta, momenta_from_prev
+
+pytestmark = pytest.mark.unit
 
 
 def make_row_prev(*, with_optics_errs: bool) -> pd.DataFrame:
