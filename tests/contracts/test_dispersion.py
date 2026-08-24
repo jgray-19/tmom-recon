@@ -32,7 +32,7 @@ def test_dispersive_measurement_estimates_zero_pt_on_momentum(contract_scenario,
         contract_scenario.measurement_tws,
         tmp_path / "measurement-on-momentum",
         contract_scenario.nominal_details,
-        reference=contract_scenario.reference,
+        frame=contract_scenario.reference,
         barrier_s=contract_scenario.barrier_s,
     )
     estimate = float(result.attrs["PT_EST"])
@@ -48,7 +48,7 @@ def test_dispersive_measurement_estimates_pt(contract_scenario, tmp_path) -> Non
         contract_scenario.measurement_tws,
         tmp_path / "measurement",
         contract_scenario.nominal_details,
-        reference=contract_scenario.reference,
+        frame=contract_scenario.reference,
         barrier_s=contract_scenario.barrier_s,
     )
     estimate = float(result.attrs["PT_EST"])
@@ -73,8 +73,8 @@ def test_known_pt_dispersive_measurement_recovers_momentum(
         contract_scenario.measurement_tws,
         tmp_path / "measurement",
         contract_scenario.model_details,
-        reference=contract_scenario.reference,
-        measurement_pt=contract_scenario.pt,
+        frame=contract_scenario.reference,
+        measurement_pt_offset=contract_scenario.pt,
         barrier_s=contract_scenario.barrier_s,
         acd=contract_scenario.acd,
     )

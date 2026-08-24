@@ -50,7 +50,7 @@ def _reconstruct(tracking_df: pd.DataFrame, model, *, second_order: bool) -> pd.
             # pt=0: the model is built on momentum, so the reconstruction has to
             # recover the beam's momentum from the orbit rather than be told it.
             ModelDetails(accelerator=model.accelerator, pt=0.0),
-            reference=measured_zero_reference_for_simulation(tracking_df),
+            frame=measured_zero_reference_for_simulation(tracking_df),
             use_dispersion=True,
             barrier_s=acd_barrier_s(model, ACD_ELEMENT),
             info=False,

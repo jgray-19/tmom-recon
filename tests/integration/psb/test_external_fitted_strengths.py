@@ -71,8 +71,8 @@ def test_external_estimated_strengths_and_mixed_reference_recover_momenta(
     result = calculate_pz(
         bpm_data,
         reconstruction_details,
-        reference=reference,
-        measurement_pt=scenario.measurement.pt,
+        frame=reference,
+        measurement_pt_offset=scenario.measurement.pt,
         barrier_s=acd_barrier_s(scenario.machine.madng_model, ACD_ELEMENT),
         info=False,
     )

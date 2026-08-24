@@ -24,7 +24,7 @@ from tests.support.lhc import (
     lhc_model_details,
 )
 from tests.support.truth import model_details_for, simulated_mixed_reference_from_model
-from tmom_recon import ACDipoleConfig, ModelDetails, MomentumReference
+from tmom_recon import ACDipoleConfig, ModelDetails, ReconstructionFrame
 
 
 @dataclass(frozen=True)
@@ -41,7 +41,7 @@ class ContractScenario:
     measurement_tws: pd.DataFrame
     model_details: ModelDetails
     nominal_details: ModelDetails
-    reference: MomentumReference
+    reference: ReconstructionFrame
     barrier_s: float | None
     acd: ACDipoleConfig
 

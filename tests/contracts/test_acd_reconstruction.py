@@ -29,8 +29,8 @@ def test_acd_override_recovers_each_adjacent_bpm(contract_scenario, plane: str) 
     result = calculate_pz(
         data,
         contract_scenario.model_details,
-        reference=contract_scenario.reference,
-        measurement_pt=contract_scenario.pt,
+        frame=contract_scenario.reference,
+        measurement_pt_offset=contract_scenario.pt,
         barrier_s=contract_scenario.barrier_s,
         acd=contract_scenario.acd,
         info=False,

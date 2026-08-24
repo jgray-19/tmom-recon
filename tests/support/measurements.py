@@ -9,7 +9,7 @@ from omc3.scripts.fake_measurement_from_model import generate as generate_fake_m
 from pymadng_utils.madx import convert_tfs_to_madx
 
 from tests.support.assertions import rmse
-from tmom_recon import ACDipoleConfig, ModelDetails, MomentumReference, calculate_pz
+from tmom_recon import ACDipoleConfig, ModelDetails, ReconstructionFrame, calculate_pz
 
 
 def add_error_to_orbit_measurement(fldr):
@@ -27,7 +27,7 @@ def run_dispersive_measurement(
     meas_dir,
     model_details: ModelDetails,
     *,
-    reference: MomentumReference,
+    reference: ReconstructionFrame,
     barrier_s: float | None,
     acd: ACDipoleConfig | None = None,
     reverse_meas_tws: bool = False,
@@ -44,11 +44,11 @@ def run_dispersive_measurement(
     result = calculate_pz(
         tracking_df.copy(deep=True),
         model_details,
-        reference=reference,
+        frame=reference,
         use_dispersion=True,
         measurement_dir=str(meas_dir),
         reverse_meas_tws=reverse_meas_tws,
-        measurement_pt=measurement_pt,
+        measurement_pt_offset=measurement_pt,
         barrier_s=barrier_s,
         acd=acd,
         info=False,
@@ -64,7 +64,7 @@ def assert_dispersive_measurement_recovers_pt(
     expected_pt: float,
     model_details: ModelDetails,
     *,
-    reference: MomentumReference,
+    reference: ReconstructionFrame,
     barrier_s: float | None,
     acd: ACDipoleConfig | None = None,
     px_rmse_max: float,

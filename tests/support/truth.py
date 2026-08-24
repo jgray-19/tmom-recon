@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from tmom_recon import ModelDetails, MomentumReference
+from tmom_recon import ModelDetails, ReconstructionFrame
 from tmom_recon.model import resolve_model_details
 
 
@@ -15,7 +15,7 @@ def model_details_for(accelerator, *, pt: float) -> ModelDetails:
 
 def simulated_mixed_reference_from_model(
     model_details: ModelDetails, df: pd.DataFrame, *, include_angles: bool = True
-) -> MomentumReference:
+) -> ReconstructionFrame:
     """Build simulated measured positions with optional model-derived angles.
 
     This is a test-only compatibility helper. ``x``/``y`` represent the
@@ -43,8 +43,10 @@ def simulated_mixed_reference_from_model(
         orbit = orbit[["x", "y"]]
     elif not {"px", "py"}.issubset(orbit.columns):
         raise ValueError("Model twiss is missing closed-orbit angle columns px/py")
-    return MomentumReference(
-        orbit[[col for col in ("x", "y", "px", "py") if col in orbit]], pt=model_details.pt
+    return ReconstructionFrame(
+        orbit[["x", "y"]],
+        fitted_momenta=(orbit[["px", "py"]] if include_angles else None),
+        dynamic_planes=(("x", "y") if not include_angles else ()),
     )
 
 
@@ -52,7 +54,7 @@ def simulated_reference_from_tracking_positions_and_model_angles(
     nominal_tracking_data: pd.DataFrame,
     model_details: ModelDetails,
     reconstruction_data: pd.DataFrame,
-) -> MomentumReference:
+) -> ReconstructionFrame:
     """Build the simulated optimiser hand-off from independent inputs.
 
     The nominal orbit positions are the synthetic *measurement*, obtained from
@@ -76,4 +78,4 @@ def simulated_reference_from_tracking_positions_and_model_angles(
     ).closed_orbit
     positions["px"] = model_reference.loc[names, "px"].to_numpy(dtype=float)
     positions["py"] = model_reference.loc[names, "py"].to_numpy(dtype=float)
-    return MomentumReference(positions, pt=0.0)
+    return ReconstructionFrame(positions[["x", "y"]], fitted_momenta=positions[["px", "py"]])

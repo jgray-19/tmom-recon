@@ -17,10 +17,9 @@ The documentation is split into:
 
 - :doc:`installation` for environment setup and optional dependencies
 - :doc:`usage` for the main reconstruction entry points and expected inputs
+- :doc:`closed_orbit_handling` for the orbit-frame and momentum convention
 - :doc:`testing` for local validation and CI-oriented commands
 - :doc:`test_inventory` for the diagnostic test ladder and legacy-test roles
-- :doc:`branch_comparison` for recorded branch-acceptance evidence
-- :doc:`final_plan` for the acceptance criteria implemented on this branch
 - :doc:`api/index` for the generated module reference
 
 Most users only need the top-level functions re-exported from
@@ -33,8 +32,7 @@ them are implementation-oriented building blocks rather than stable public API.
 
    installation
    usage
+   closed_orbit_handling
    testing
    test_inventory
-   branch_comparison
-   final_plan
    api/index

@@ -18,8 +18,8 @@ def _plane_error(contract_scenario, data, plane: str) -> float:
     result = calculate_pz(
         data,
         contract_scenario.model_details,
-        reference=contract_scenario.reference,
-        measurement_pt=contract_scenario.pt,
+        frame=contract_scenario.reference,
+        measurement_pt_offset=contract_scenario.pt,
         use_dispersion=False,
         barrier_s=contract_scenario.barrier_s,
         acd=contract_scenario.acd,

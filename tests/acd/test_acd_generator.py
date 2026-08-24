@@ -56,7 +56,7 @@ def test_generator_update_matches_acd_only(data_dir, acd_tracking_setup) -> None
 
     generator = calculate_pz(
         tracking_df,
-        reference=measured_zero_reference_for_simulation(tracking_df),
+        frame=measured_zero_reference_for_simulation(tracking_df),
         model_details=model_details,
         acd=config,
         acd_only=True,
@@ -69,7 +69,7 @@ def test_generator_update_matches_acd_only(data_dir, acd_tracking_setup) -> None
     from_generator = generator.update()
     one_shot = calculate_pz(
         tracking_df,
-        reference=measured_zero_reference_for_simulation(tracking_df),
+        frame=measured_zero_reference_for_simulation(tracking_df),
         model_details=model_details,
         acd=config,
         acd_only=True,
@@ -90,7 +90,7 @@ def test_generator_repeated_update_is_deterministic(data_dir, acd_tracking_setup
 
     generator = calculate_pz(
         tracking_df,
-        reference=measured_zero_reference_for_simulation(tracking_df),
+        frame=measured_zero_reference_for_simulation(tracking_df),
         model_details=model_details,
         acd=config,
         acd_only=True,
@@ -114,7 +114,7 @@ def test_generator_pt_update_refreshes_acd_models(data_dir, acd_tracking_setup) 
 
     generator = calculate_pz(
         tracking_df,
-        reference=measured_zero_reference_for_simulation(tracking_df),
+        frame=measured_zero_reference_for_simulation(tracking_df),
         model_details=model_details,
         acd=config,
         acd_only=True,
@@ -123,10 +123,10 @@ def test_generator_pt_update_refreshes_acd_models(data_dir, acd_tracking_setup) 
     )
     assert isinstance(generator, ACDipolePzGenerator)
 
-    from_generator = generator.update(measurement_pt=updated_pt)
+    from_generator = generator.update(measurement_pt_offset=updated_pt)
     one_shot = calculate_pz(
         tracking_df,
-        reference=measured_zero_reference_for_simulation(tracking_df),
+        frame=measured_zero_reference_for_simulation(tracking_df),
         model_details=ModelDetails(
             accelerator=driver.accelerator,
             pt=updated_pt,

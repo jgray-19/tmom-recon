@@ -33,7 +33,7 @@ from tmom_recon.physics.momenta import (
     momenta_from_next,
     momenta_from_prev,
 )
-from tmom_recon.physics.pt_calculation import estimate_pt_from_model
+from tmom_recon.physics.pt_calculation import _estimate_pt_from_prepared
 
 if TYPE_CHECKING:
     from collections.abc import Collection
@@ -95,7 +95,7 @@ def reconstruct_momenta(
     orig_data: pd.DataFrame,
     optics: ResolvedOptics,
     *,
-    measurement_pt: float | None = None,
+    measurement_pt_offset: float | None = None,
     info: bool = True,
     barrier_s: float | None = None,
     bpm_names: Collection[str] | None = None,
@@ -106,12 +106,8 @@ def reconstruct_momenta(
         orig_data: Turn-by-turn BPM data with columns ``name, turn, x, y``
             and position variances ``var_x, var_y``.
         optics: Resolved optics bundle from :func:`tmom_recon.optics.resolve_optics`.
-        measurement_pt: The **absolute** MAD-NG ``pt`` the data was taken at,
-            when it is known independently (a deliberate RF setting, a momentum
-            scan). The offset actually used in the dispersive expansion is
-            ``measurement_pt - optics.reference.pt``; this function does that
-            subtraction, so never pass an offset here. Omit it to estimate the
-            offset from the orbit instead.
+        measurement_pt_offset: MAD-NG ``pt`` relative to the measured orbit-zero
+            frame. Omit it to estimate the offset from the transformed orbit.
         info: Whether to log diagnostics.
         barrier_s: Optional longitudinal position of a localised element (e.g.
             an AC dipole) that the neighbour-pair reconstruction must not
@@ -125,14 +121,9 @@ def reconstruct_momenta(
     # A measured nominal-RF closed orbit is required unconditionally, not only on
     # the dispersion path: it is the momentum reference the whole reconstruction
     # is expressed against, and there is no model that can stand in for it.
-    if optics.reference is None:
-        raise ValueError(
-            "ResolvedOptics.reference is required: pass a MomentumReference built "
-            "from a measured closed orbit to resolve_optics(reference=...). Dipole "
-            "errors are exactly degenerate with the dispersive orbit at a single "
-            "momentum, so a model closed orbit cannot substitute for a measured one."
-        )
-    reference = optics.reference
+    frame = optics.frame
+    if frame is None:
+        raise ValueError("ResolvedOptics has no ReconstructionFrame")
 
     features = validate_input(orig_data)
     data = orig_data.copy(deep=True)
@@ -149,22 +140,17 @@ def reconstruct_momenta(
     data = orig_data.copy(deep=True)
     tws = tws.loc[tws.index.isin(shared_bpm_names)]
 
-    # The reconstruction works entirely in deviations from the reference orbit,
-    # so every pt below is an *offset from* ``reference.pt``, never an absolute
-    # momentum. See :mod:`tmom_recon.reference`.
-    # pt is estimated *before* the closed orbit is removed: the estimator
-    # references the raw orbit to the measured nominal-RF orbit itself, so
-    # subtracting a model orbit first would double-subtract.
-    if measurement_pt is not None:
-        pt_est = reference.offset_from(measurement_pt)
+    # ``orig_data`` has already been translated into the frame by calculate_pz.
+    # Momentum estimation must happen from these coordinates, before the
+    # reconstruction reference is removed below.
+    if measurement_pt_offset is not None:
+        pt_est = float(measurement_pt_offset)
         LOGGER.info(
-            "Measurement pt %s against reference pt %s: using offset %s",
-            measurement_pt,
-            reference.pt,
+            "Using measurement pt offset %s from the orbit-zero frame",
             pt_est,
         )
     elif optics.use_dispersion:
-        pt_est = estimate_pt_from_model(data, tws, reference=reference, info=info)
+        pt_est = _estimate_pt_from_prepared(data, tws, frame=frame, info=info)
     else:
         pt_est = 0.0
 
@@ -172,7 +158,7 @@ def reconstruct_momenta(
     # model twiss: BPMs measure position, never angle. Using a model orbit for
     # both would subtract it while pt was referenced to the measured orbit,
     # leaving a reference-orbit residual unmodelled.
-    data = remove_closed_orbit(data, reference.closed_orbit)
+    data = remove_closed_orbit(data, frame.closed_orbit)
     complete_data = data
     if bpm_names is not None:
         requested = set(bpm_names)
@@ -212,10 +198,10 @@ def reconstruct_momenta(
     # position-only measurement remains supported, with the one operational
     # model twiss as an explicit fallback for the unmeasurable angles.
     momentum_co = tws
-    if {"px", "py"}.issubset(reference.closed_orbit.columns):
-        momentum_co = reference.closed_orbit
+    if {"px", "py"}.issubset(frame.closed_orbit.columns):
+        momentum_co = frame.closed_orbit
     data_avg = restore_closed_orbit_and_reference_momenta(
-        data_avg, reference.closed_orbit, momentum_co=momentum_co
+        data_avg, frame.closed_orbit, momentum_co=momentum_co
     )
 
     data_avg.attrs["PT_EST"] = pt_est

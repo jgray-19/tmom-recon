@@ -31,8 +31,8 @@ def test_clean_on_momentum_transverse_reconstruction(contract_scenario, plane: s
     result = calculate_pz(
         contract_scenario.data,
         contract_scenario.model_details,
-        reference=contract_scenario.reference,
-        measurement_pt=contract_scenario.pt,
+        frame=contract_scenario.reference,
+        measurement_pt_offset=contract_scenario.pt,
         use_dispersion=False,
         barrier_s=contract_scenario.barrier_s,
         acd=contract_scenario.acd,
@@ -58,8 +58,8 @@ def test_corrected_lhc_off_momentum_orbit_reconstructs(contract_scenario, plane:
     result = calculate_pz(
         contract_scenario.data,
         contract_scenario.model_details,
-        reference=contract_scenario.reference,
-        measurement_pt=contract_scenario.pt,
+        frame=contract_scenario.reference,
+        measurement_pt_offset=contract_scenario.pt,
         # Off-momentum corrected orbits require the dispersive model columns;
         # keep the full machine parametrization valid rather than excluding PSB.
         use_dispersion=True,

@@ -4,7 +4,7 @@ The user never supplies a twiss. They describe the *accelerator*, its **momentum
 (``pt``) and any **additional magnet strengths** missing from the base sequence;
 :func:`resolve_model_details` builds the MAD-NG model and returns one chromatic
 twiss. The closed-orbit reference is deliberately *not* another twiss: it is the
-measured (and, where available, fitted-angle) :class:`MomentumReference` supplied
+measured orbit-zero :class:`~tmom_recon.frame.ReconstructionFrame` supplied
 by the caller. Tunes are never matched here.
 """
 
@@ -37,7 +37,7 @@ class ModelDetails:
 
             This is also the seam for a *fitted* lattice. BPMs cannot measure
             the reference angle ``px``/``py``; an external fitting workflow can
-            use these strengths to derive it for a :class:`MomentumReference`.
+            use these strengths to derive fitted momenta for a reconstruction frame.
             The coupling is deliberately plain data -- a mapping of strengths
             -- so this package never imports or runs fitting code.
         tune_knobs: Optional tune-correction knobs, as name/value pairs or as a

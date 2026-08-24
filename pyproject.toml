@@ -35,6 +35,7 @@ dev = [
 docs = [
     "sphinx>=8",
     "sphinx-rtd-theme>=3",
+    "myst-parser>=4",
 ]
 
 [tool.setuptools.packages.find]

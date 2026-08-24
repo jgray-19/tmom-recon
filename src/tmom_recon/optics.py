@@ -42,8 +42,8 @@ from tmom_recon.data.columns import (
     ERROR_RENAME_MAPPING,
     MEASUREMENT_RENAME_MAPPING,
 )
+from tmom_recon.frame import ReconstructionFrame
 from tmom_recon.measurements.twiss_from_measurement import build_twiss_from_measurements
-from tmom_recon.reference import MomentumReference
 
 if TYPE_CHECKING:  # pragma: no cover - typing helpers only
     from collections.abc import Collection
@@ -109,15 +109,13 @@ class ResolvedOptics:
     Attributes:
         tws: Twiss DataFrame (tfs, lowercase columns/headers) with all optics
             and uncertainty columns, indexed by BPM name in ring order.
-        reference: The momentum origin: a **measured** closed orbit together
-            with the absolute ``pt`` it was taken at. Its positions are removed
-            from the data and its fitted angles, when present, are restored.
+        frame: The measured orbit-zero coordinate frame.
         sources: Resolved source per optics category.
         use_dispersion: Whether dispersion is available and enabled.
     """
 
     tws: pd.DataFrame
-    reference: MomentumReference | None
+    frame: ReconstructionFrame | None
     sources: dict[OpticsCategory, OpticsSource]
     use_dispersion: bool
 
@@ -305,7 +303,7 @@ def _synthesise_dispersion_errors(tws: pd.DataFrame, errors: ModelOpticsErrors) 
 def resolve_optics(
     *,
     optics_tws: tfs.TfsDataFrame | None = None,
-    reference: MomentumReference | None = None,
+    frame: ReconstructionFrame | None = None,
     measurement_dir: str | Path | None = None,
     model_optics: Collection[OpticsCategory] = (),
     use_dispersion: bool = True,
@@ -319,11 +317,7 @@ def resolve_optics(
     Args:
         optics_tws: Model twiss indexed by element name (lowercase optics
             columns ``beta11/alfa11/mu1/...`` and tune headers ``q1``/``q2``).
-        reference: The momentum origin -- a measured closed orbit and the
-            absolute ``pt`` it sits at (:class:`~tmom_recon.reference.MomentumReference`).
-            Required by the all-BPM reconstruction. A model closed orbit is not a
-            substitute -- dipole errors are exactly degenerate with the dispersive
-            orbit at a single momentum.
+        frame: The measured orbit-zero coordinate frame.
         measurement_dir: omc3 optics measurement directory.
         model_optics: Categories forced to come from the model. Categories not
             listed come from the measurement when available, model otherwise.
@@ -439,7 +433,7 @@ def resolve_optics(
 
     return ResolvedOptics(
         tws=tws,
-        reference=reference,
+        frame=frame,
         sources=sources,
         use_dispersion=dispersion_on,
     )

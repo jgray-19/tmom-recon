@@ -19,7 +19,7 @@ def transverse_calc(
     result = calculate_pz(
         df,
         model_details,
-        reference=reference,
+        frame=reference,
         use_dispersion=use_dispersion,
         acd=ac_dipole_config,
         barrier_s=barrier_s,
@@ -42,7 +42,7 @@ def dispersive_calc(
     result = calculate_pz(
         df,
         model_details,
-        reference=reference,
+        frame=reference,
         use_dispersion=True,
         acd=ac_dipole_config,
         barrier_s=barrier_s,

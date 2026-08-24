@@ -76,7 +76,7 @@ def test_nbpm_improves_noisy_local_window_over_two_bpm_baseline(seq_b1, tracking
     baseline = calculate_pz(
         noisy_df.copy(deep=True),
         lhc_model_details(seq_b1, delta_p=0.0),
-        reference=measured_zero_reference_for_simulation(noisy_df),
+        frame=measured_zero_reference_for_simulation(noisy_df),
         barrier_s=None,
         info=False,
     )

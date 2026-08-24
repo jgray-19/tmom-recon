@@ -26,7 +26,7 @@ from tests.support.external_strengths import (
 from tests.support.lhc import lhc_acd_barrier_s, setup_xsuite_simulation
 from tests.support.scenarios import MATCHED_BEND_AND_QUAD_ERRORS
 from tests.support.truth import simulated_reference_from_tracking_positions_and_model_angles
-from tmom_recon import ModelDetails, MomentumReference, calculate_pz
+from tmom_recon import ModelDetails, ReconstructionFrame, calculate_pz
 
 LOGGER = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class FittedStrengthCase:
     machine: str
     data: pd.DataFrame
     model_details: ModelDetails
-    reference: MomentumReference
+    reference: ReconstructionFrame
     barrier_s: float
     external: ExternalStrengthFixture
 
@@ -179,8 +179,8 @@ def test_external_fitted_strengths_recover_momentum(fitted_strength_case, plane:
     result = calculate_pz(
         fitted_strength_case.data,
         fitted_strength_case.model_details,
-        reference=fitted_strength_case.reference,
-        measurement_pt=fitted_strength_case.model_details.pt,
+        frame=fitted_strength_case.reference,
+        measurement_pt_offset=fitted_strength_case.model_details.pt,
         barrier_s=fitted_strength_case.barrier_s,
         info=False,
     )

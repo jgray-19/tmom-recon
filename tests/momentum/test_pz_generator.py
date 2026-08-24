@@ -28,7 +28,7 @@ def test_generator_update_matches_calculate_pz_and_accepts_bpm_subset(
     generator = calculate_pz(
         tracking_df,
         model_details,
-        reference=measured_zero_reference_for_simulation(tracking_df),
+        frame=measured_zero_reference_for_simulation(tracking_df),
         generator=True,
         barrier_s=barrier_s,
         info=False,
@@ -39,7 +39,7 @@ def test_generator_update_matches_calculate_pz_and_accepts_bpm_subset(
     one_shot = calculate_pz(
         tracking_df,
         model_details,
-        reference=measured_zero_reference_for_simulation(tracking_df),
+        frame=measured_zero_reference_for_simulation(tracking_df),
         barrier_s=barrier_s,
         info=False,
     )

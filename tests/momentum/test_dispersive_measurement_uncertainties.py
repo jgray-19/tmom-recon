@@ -91,7 +91,7 @@ def test_dispersive_measurement_with_uncertainties(
     result = calculate_pz(
         calc_df,
         lhc_model_details(seq_b1),
-        reference=measured_zero_reference_for_simulation(calc_df),
+        frame=measured_zero_reference_for_simulation(calc_df),
         measurement_dir=str(temp_dir),
         reverse_meas_tws=False,  # Always working with B4
         barrier_s=lhc_acd_barrier_s(lhc_model_details(seq_b1).accelerator, 0.0),

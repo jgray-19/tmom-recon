@@ -60,10 +60,10 @@ What is checked
    the orbit is removed from the data: it collapses, and therefore stops being a
    bend diagnostic. That is the cost of the mode, so it is pinned down.
 
-One closed-orbit mechanism appears below: ``psb_md``'s ``--orbit-mode dynamic``
-subtracts the orbit from the *input* data and never restores it, giving a purely
-dynamic state. That is the ``remove_planes`` argument of :func:`_run`; leaving it
-unset references the reconstruction to the (nominal) model twiss orbit instead.
+One closed-orbit mechanism appears below: a :class:`ReconstructionFrame` carries
+the separately measured setting-0 orbit. Dynamic planes subtract that common
+origin before momentum estimation and restore no non-dispersive orbit; dispersion
+remains enabled. That is the ``remove_planes`` argument of :func:`_run`.
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ import pytest
 
 from tests.psb_tracking import ACD_ELEMENT, DRIVEN_TUNES, build_psb_tracking_setup
 from tests.reference_co import measured_zero_reference_for_simulation
-from tmom_recon import ACDipoleConfig, ModelDetails, calculate_pz
+from tmom_recon import ACDipoleConfig, ModelDetails, ReconstructionFrame, calculate_pz
 from tmom_recon.physics.closed_orbit import estimate_closed_orbit
 
 from .acd_test_helpers import acd_state_marker_names
@@ -191,26 +191,26 @@ def _run(
     here is nominal — so the machine's orbit stays in the data and the output is
     an absolute state carrying it.
 
-    *remove_planes* is what ``psb_md`` does for ``--orbit-mode dynamic``: the
-    orbit is subtracted from the *input* data and never restored, so the output
-    is purely dynamic. Reproduced here exactly as
-    ``psb_md.orbit_frame.ClosedOrbitFrame.turn_mean(...).subtract_from`` does it
-    -- same ``estimate_closed_orbit`` estimator, dispersive ``pt*d`` preserved.
+    *remove_planes* builds the simulation equivalent of a separately measured
+    orbit-0 frame. tmom-recon owns the subtraction, momentum estimate, dispersive
+    reconstruction, and selective restoration.
     """
     model = setup.machine.madng_model
     before_marker, after_marker = acd_state_marker_names(model)
     bpm_df = setup.measurement.data
     bpm_df = bpm_df.loc[~bpm_df["name"].isin([before_marker, after_marker])].copy()
     effective_pt = model.pt if pt is None else pt
+    frame = measured_zero_reference_for_simulation(bpm_df)
     if remove_planes:
-        closed_orbit = estimate_closed_orbit(bpm_df, setup.machine.madng_twiss, pt_est=effective_pt)
-        for plane in remove_planes:
-            bpm_df[plane] = bpm_df[plane] - bpm_df["name"].map(closed_orbit[plane]).astype(
-                float
-            ).fillna(0.0)
+        # Simulation-only construction of the separately measured setting-0
+        # orbit. Production obtains this from the campaign's orbit-0 blanks.
+        closed_orbit = estimate_closed_orbit(
+            bpm_df, setup.machine.madng_twiss, pt_est=effective_pt
+        ).loc[bpm_df["name"].unique(), ["x", "y"]]
+        frame = ReconstructionFrame(closed_orbit, dynamic_planes=tuple(remove_planes))
     return calculate_pz(
         bpm_df,
-        reference=measured_zero_reference_for_simulation(bpm_df),
+        frame=frame,
         model_details=ModelDetails(accelerator=model.accelerator, pt=effective_pt),
         use_dispersion=True,
         acd=ACDipoleConfig(
@@ -545,7 +545,7 @@ def test_acd_kick_dc_offset_measures_the_unmodelled_closed_orbit(data_dir) -> No
         )
         result = calculate_pz(
             bpm_df,
-            reference=measured_zero_reference_for_simulation(bpm_df),
+            frame=measured_zero_reference_for_simulation(bpm_df),
             model_details=ModelDetails(
                 accelerator=model.accelerator, pt=model.pt, magnet_strengths=strengths
             ),
