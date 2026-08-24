@@ -75,6 +75,7 @@ import pytest
 
 from tests.psb_tracking import ACD_ELEMENT, DRIVEN_TUNES, build_psb_tracking_setup
 from tests.reference_co import measured_zero_reference_for_simulation
+from tests.support.truth import simulated_mixed_reference_from_model
 from tmom_recon import ACDipoleConfig, ModelDetails, ReconstructionFrame, calculate_pz
 from tmom_recon.physics.closed_orbit import estimate_closed_orbit
 
@@ -210,7 +211,15 @@ def _run(
         closed_orbit = estimate_closed_orbit(
             bpm_df, setup.machine.madng_twiss, pt_est=effective_pt
         ).loc[bpm_df["name"].unique(), ["x", "y"]]
-        frame = ReconstructionFrame(closed_orbit, dynamic_planes=tuple(remove_planes))
+        dynamic_planes = tuple(remove_planes)
+        retained_momenta = frame.fitted_momenta[
+            [f"p{plane}" for plane in ("x", "y") if plane not in dynamic_planes]
+        ]
+        frame = ReconstructionFrame(
+            closed_orbit,
+            dynamic_planes=dynamic_planes,
+            fitted_momenta=retained_momenta,
+        )
     return calculate_pz(
         bpm_df,
         frame=frame,
@@ -541,18 +550,30 @@ def test_acd_kick_dc_offset_measures_the_unmodelled_closed_orbit(data_dir) -> No
         tracking_df = setup.measurement.data
         before, after = acd_state_marker_names(model)
         bpm_df = tracking_df.loc[~tracking_df["name"].isin([before, after])].copy()
+        bpm_df = bpm_df.loc[bpm_df["name"].isin(setup.machine.madng_twiss.index)].copy()
         orbit = float(bpm_df.groupby("name", observed=True)["x"].mean().abs().max())
         strengths = (
             {f"{name.upper()}.k0": value for name, value in setup.bend_strengths.items()}
             if (setup.bend_strengths and match_model)
             else None
         )
+        frame = measured_zero_reference_for_simulation(bpm_df)
+        if match_model:
+            frame = simulated_mixed_reference_from_model(
+                ModelDetails(
+                    accelerator=model.accelerator,
+                    pt=0.0,
+                    magnet_strengths=strengths,
+                ),
+                bpm_df,
+            )
         result = calculate_pz(
             bpm_df,
-            frame=measured_zero_reference_for_simulation(bpm_df),
+            frame=frame,
             model_details=ModelDetails(
                 accelerator=model.accelerator, pt=model.pt, magnet_strengths=strengths
             ),
+            measurement_pt_offset=model.pt,
             acd=ACDipoleConfig(
                 ac_dipole_marker=ACD_ELEMENT,
                 driven_tunes=ACD_DRIVEN_TUNES,

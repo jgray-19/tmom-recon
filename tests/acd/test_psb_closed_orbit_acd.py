@@ -57,6 +57,7 @@ from __future__ import annotations
 import pytest
 
 from tests.psb_tracking import ACD_ELEMENT, DRIVEN_TUNES, build_psb_tracking_setup
+from tests.support.truth import simulated_mixed_reference_from_model
 from tmom_recon import ACDipoleConfig, ModelDetails, calculate_pz
 
 from .acd_test_helpers import acd_state_marker_names, assert_acd_momenta_match_truth
@@ -115,16 +116,26 @@ def test_psb_acd_reconstruction_with_dipole_closed_orbit(
     # `<acd>_after` marker rows are kept aside purely as truth.
     before_marker, after_marker = acd_state_marker_names(model)
     bpm_df = tracking_df.loc[~tracking_df["name"].isin([before_marker, after_marker])].copy()
+    bpm_df = bpm_df.loc[bpm_df["name"].isin(tws.index)].copy()
+
+    nominal_details = ModelDetails(
+        accelerator=model.accelerator,
+        pt=0.0,
+        magnet_strengths=magnet_strengths,
+    )
+    frame = simulated_mixed_reference_from_model(nominal_details, bpm_df)
 
     # ACD-only reconstruction removes the generated orbit at model.pt, performs
     # the betatron reconstruction in the pt=0 frame, then restores the full state.
     result = calculate_pz(
         bpm_df,
+        frame=frame,
         model_details=ModelDetails(
             accelerator=model.accelerator,
             pt=model.pt,
             magnet_strengths=magnet_strengths,
         ),
+        measurement_pt_offset=model.pt,
         use_dispersion=True,
         acd=ACDipoleConfig(
             ac_dipole_marker=ACD_ELEMENT,

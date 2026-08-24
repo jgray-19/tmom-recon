@@ -27,11 +27,11 @@ def run_dispersive_measurement(
     meas_dir,
     model_details: ModelDetails,
     *,
-    reference: ReconstructionFrame,
+    frame: ReconstructionFrame,
     barrier_s: float | None,
     acd: ACDipoleConfig | None = None,
     reverse_meas_tws: bool = False,
-    measurement_pt: float | None = None,
+    measurement_pt_offset: float | None = None,
 ):
     """Generate a fake dispersive measurement and reconstruct the momenta."""
     madx_tws = convert_tfs_to_madx(measurement_tws, remove_drifts=False)
@@ -44,11 +44,11 @@ def run_dispersive_measurement(
     result = calculate_pz(
         tracking_df.copy(deep=True),
         model_details,
-        frame=reference,
+        frame=frame,
         use_dispersion=True,
         measurement_dir=str(meas_dir),
         reverse_meas_tws=reverse_meas_tws,
-        measurement_pt_offset=measurement_pt,
+        measurement_pt_offset=measurement_pt_offset,
         barrier_s=barrier_s,
         acd=acd,
         info=False,
@@ -64,13 +64,13 @@ def assert_dispersive_measurement_recovers_pt(
     expected_pt: float,
     model_details: ModelDetails,
     *,
-    reference: ReconstructionFrame,
+    frame: ReconstructionFrame,
     barrier_s: float | None,
     acd: ACDipoleConfig | None = None,
     px_rmse_max: float,
     py_rmse_max: float,
     reverse_meas_tws: bool = False,
-    measurement_pt: float | None = None,
+    measurement_pt_offset: float | None = None,
 ):
     """Check estimated momentum and reconstructed transverse momentum."""
     result = run_dispersive_measurement(
@@ -78,9 +78,9 @@ def assert_dispersive_measurement_recovers_pt(
         measurement_tws,
         meas_dir,
         model_details,
-        reference=reference,
+        frame=frame,
         reverse_meas_tws=reverse_meas_tws,
-        measurement_pt=measurement_pt,
+        measurement_pt_offset=measurement_pt_offset,
         barrier_s=barrier_s,
         acd=acd,
     )

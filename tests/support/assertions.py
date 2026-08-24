@@ -53,14 +53,14 @@ def verify_pz_reconstruction(
     py_cleaned_max: float,
     rng_seed: int = 42,
     *,
-    reference,
+    frame,
     barrier_s: float | None = None,
 ):
     """Verify momentum reconstruction with noise and SVD cleaning."""
     no_noise_result = calculate_pz_func(
         tracking_df.copy(deep=True),
         model_details,
-        reference=reference,
+        frame=frame,
         barrier_s=barrier_s,
         info=True,
     ).rename(columns={"px": "px_calc", "py": "py_calc"})
@@ -71,7 +71,7 @@ def verify_pz_reconstruction(
     noisy_result = calculate_pz_func(
         noisy_df,
         model_details,
-        reference=reference,
+        frame=frame,
         barrier_s=barrier_s,
         info=True,
     ).rename(columns={"px": "px_calc", "py": "py_calc"})
@@ -80,7 +80,7 @@ def verify_pz_reconstruction(
     cleaned_noise_result = calculate_pz_func(
         cleaned_df,
         model_details,
-        reference=reference,
+        frame=frame,
         barrier_s=barrier_s,
         info=True,
     ).rename(columns={"px": "px_calc", "py": "py_calc"})
