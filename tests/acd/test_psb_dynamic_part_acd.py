@@ -199,6 +199,9 @@ def _run(
     before_marker, after_marker = acd_state_marker_names(model)
     bpm_df = setup.measurement.data
     bpm_df = bpm_df.loc[~bpm_df["name"].isin([before_marker, after_marker])].copy()
+    # Inserting the ACD replaces the colocated BPM observation with marker-side
+    # observations.  It is therefore not part of the reconstruction lattice.
+    bpm_df = bpm_df.loc[bpm_df["name"].isin(setup.machine.madng_twiss.index)].copy()
     effective_pt = model.pt if pt is None else pt
     frame = measured_zero_reference_for_simulation(bpm_df)
     if remove_planes:
@@ -212,6 +215,7 @@ def _run(
         bpm_df,
         frame=frame,
         model_details=ModelDetails(accelerator=model.accelerator, pt=effective_pt),
+        measurement_pt_offset=effective_pt,
         use_dispersion=True,
         acd=ACDipoleConfig(
             ac_dipole_marker=ACD_ELEMENT,

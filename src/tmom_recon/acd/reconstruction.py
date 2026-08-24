@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import tfs
 
+from tmom_recon.frame import ReconstructionFrame
 from tmom_recon.lattice.core import (
     remove_closed_orbit,
     validate_input,
@@ -781,8 +782,9 @@ def reconstruct_from_prepared(
     prepared: PreparedACDInputs,
     tws: pd.DataFrame,
     *,
-    closed_orbit_tws: pd.DataFrame,
-    dispersion_tws: pd.DataFrame | None = None,
+    frame: ReconstructionFrame,
+    tracking_orbit_tws: pd.DataFrame,
+    orbit_zero_model_tws: pd.DataFrame,
     resolved_tws: pd.DataFrame | None = None,
 ) -> tfs.TfsDataFrame:
     """Reconstruct AC-dipole kicks for a given model twiss from prepared inputs.
@@ -797,9 +799,13 @@ def reconstruct_from_prepared(
         prepared: Output of :func:`prepare_ac_dipole_inputs`.
         tws: Model twiss for this reconstruction (optics + tune headers ``q1`` /
             ``q2``). Used for model optics and state transport.
-        closed_orbit_tws: Undriven twiss carrying the state reference.
-        dispersion_tws: Optional explicit dispersion source; defaults to
-            ``closed_orbit_tws``.
+        frame: Measured orbit-zero frame. Its retained components are restored
+            after reconstruction; dynamic components remain zero.
+        tracking_orbit_tws: Model orbit at the physical momentum being
+            reconstructed.
+        orbit_zero_model_tws: Model orbit at the zero momentum setting. The
+            difference from ``tracking_orbit_tws`` is the dispersive state
+            added to the measured frame reference.
         resolved_tws: Optional resolved twiss from
             :func:`tmom_recon.optics.resolve_optics`. When provided, its optics,
             uncertainty and variance columns (and tune headers) override the
@@ -824,10 +830,22 @@ def reconstruct_from_prepared(
     # The closed-orbit reference already contains the model momentum offset.
     betatron_pt = 0.0
 
-    co_bpm = _normalise_observed_twiss(closed_orbit_tws).reindex(prepared.lattice_bpm_order)
-    disp_bpm = _normalise_observed_twiss(
-        dispersion_tws if dispersion_tws is not None else closed_orbit_tws
-    ).reindex(prepared.lattice_bpm_order)
+    tracking_bpm = _normalise_observed_twiss(tracking_orbit_tws).reindex(prepared.lattice_bpm_order)
+    disp_bpm = _normalise_observed_twiss(orbit_zero_model_tws).reindex(prepared.lattice_bpm_order)
+    frame_bpm = _normalise_observed_twiss(frame.closed_orbit).reindex(prepared.lattice_bpm_order)
+    if frame_bpm[["x", "px", "y", "py"]].isna().any().any():
+        missing = frame_bpm.index[frame_bpm[["x", "px", "y", "py"]].isna().any(axis=1)]
+        raise ValueError(f"Reconstruction frame is incomplete for ACD BPMs: {missing.tolist()}")
+
+    # ACD fitting needs the physical orbit at the selected BPMs, but its origin
+    # is the measured zero orbit, never the model orbit.  Add only the modelled
+    # change between zero and the physical momentum to the frame components
+    # retained by the selected reconstruction mode.
+    co_bpm = frame_bpm.copy(deep=True)
+    for coordinate in ("x", "px", "y", "py"):
+        if coordinate not in tracking_bpm or coordinate not in disp_bpm:
+            raise ValueError(f"ACD orbit models must both contain {coordinate!r}")
+        co_bpm[coordinate] += tracking_bpm[coordinate] - disp_bpm[coordinate]
 
     data = remove_closed_orbit(data, co_bpm)
 
@@ -996,8 +1014,9 @@ def calculate_ac_dipole_momentum(
     bpm_downstream: str | None = None,
     smooth_lambda: float = 1,
     use_immediate_neighbors_for_bpms: bool = False,
-    closed_orbit_tws: pd.DataFrame,
-    dispersion_tws: pd.DataFrame | None = None,
+    frame: ReconstructionFrame,
+    tracking_orbit_tws: pd.DataFrame,
+    orbit_zero_model_tws: pd.DataFrame,
     resolved_tws: pd.DataFrame | None = None,
 ) -> tfs.TfsDataFrame:
     """Reconstruct AC-dipole kicks and constrained BPM momenta in one pass.
@@ -1025,8 +1044,9 @@ def calculate_ac_dipole_momentum(
         use_immediate_neighbors_for_bpms: If ``True``, use immediate lattice
             neighbors instead of pi/2-phase neighbors for BPM momentum
             reconstruction.
-        closed_orbit_tws: Undriven twiss carrying the state reference.
-        dispersion_tws: Optional explicit dispersion source.
+        frame: Measured orbit-zero reconstruction frame.
+        tracking_orbit_tws: Model orbit at the reconstructed momentum.
+        orbit_zero_model_tws: Model orbit at the zero momentum setting.
         resolved_tws: Optional resolved twiss from
             :func:`tmom_recon.optics.resolve_optics`. When provided, its optics,
             uncertainty and variance columns (and tune headers) override the
@@ -1053,8 +1073,9 @@ def calculate_ac_dipole_momentum(
     return reconstruct_from_prepared(
         prepared,
         tws,
-        closed_orbit_tws=closed_orbit_tws,
-        dispersion_tws=dispersion_tws,
+        frame=frame,
+        tracking_orbit_tws=tracking_orbit_tws,
+        orbit_zero_model_tws=orbit_zero_model_tws,
         resolved_tws=resolved_tws,
     )
 

@@ -232,8 +232,9 @@ def calculate_pz(
             bpm_upstream=resolved_acd.config.bpm_upstream,
             bpm_downstream=resolved_acd.config.bpm_downstream,
             smooth_lambda=resolved_acd.config.smooth_lambda,
-            closed_orbit_tws=resolved_acd.tracking_tws,
-            dispersion_tws=resolved_acd.closed_orbit_tws,
+            frame=frame,
+            tracking_orbit_tws=resolved_acd.tracking_tws,
+            orbit_zero_model_tws=resolved_acd.closed_orbit_tws,
             resolved_tws=optics.tws,
         )
 
@@ -369,8 +370,10 @@ class ACDipolePzGenerator:
                 from the mutated model (see
                 :meth:`ACDipoleMadDriver.apply_strengths`). Tunes are *not*
                 re-matched, so the strength change is observed directly.
-            measurement_pt: New **absolute** MAD-NG ``pt`` for the tracked beam. When given, the driver's
-                energy coordinate is updated before reconstructing, so the
+            measurement_pt_offset: New MAD-NG ``pt`` offset from the orbit-zero
+                frame. Because that frame is defined as zero, this is also the
+                physical tracking ``pt``. When given, the driver's energy
+                coordinate is updated before reconstructing, so the
                 marker-state transport and BPM momenta re-track at this energy.
                 The reconstruction reads ``self.model.pt`` live, so no rebuild is
                 needed. When ``None`` the driver's current ``pt`` is kept.
@@ -417,8 +420,9 @@ class ACDipolePzGenerator:
         self.latest = reconstruct_from_prepared(
             self._prepared,
             self._optics_tws,
-            closed_orbit_tws=self._tracking_tws,
-            dispersion_tws=self._closed_orbit_tws,
+            frame=self._frame,
+            tracking_orbit_tws=self._tracking_tws,
+            orbit_zero_model_tws=self._closed_orbit_tws,
             resolved_tws=optics.tws,
         )
         return self.latest
@@ -521,10 +525,10 @@ class PzGenerator:
 
         When *magnet_strengths* is given they are applied to the persisted driver
         and the model optics are regenerated (a new closed orbit and new optics),
-        without re-matching the tunes. *measurement_pt* is the **absolute** pt of
-        the measurement (the offset from ``reference.pt`` is taken internally);
-        it overrides the build-time value for this call and all subsequent ones.
-        When ``None`` the build-time value is kept.
+        without re-matching the tunes. *measurement_pt_offset* is relative to
+        the orbit-zero frame (whose coordinate is exactly zero); it overrides
+        the build-time value for this call and all subsequent ones. When
+        ``None`` the build-time value is kept.
         """
         if measurement_pt_offset is not None:
             self._measurement_pt_offset = float(measurement_pt_offset)

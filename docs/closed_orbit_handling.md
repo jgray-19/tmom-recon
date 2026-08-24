@@ -84,10 +84,16 @@ disabled is rejected.
 ## AC-dipole reconstruction
 
 The coordinate-frame subtraction happens before both the all-BPM and AC-dipole
-paths. Inside the AC-dipole calculation the generated model's closed orbit is a
-different object: it contains the physical dispersive tracking orbit at the
-measurement momentum. That state is removed for betatron reconstruction and
-added back after the dynamic kick is calculated.
+paths. The ACD BPM reference is composed explicitly as
+
+```
+frame.closed_orbit + (tracking_orbit_model - orbit_zero_model)
+```
+
+The two model tables are mandatory. Their difference contains the physical
+dispersive change at the acquisition momentum without replacing the measured
+origin by a model orbit. This composed state is removed for betatron
+reconstruction and added back only after the dynamic kick is calculated.
 
 Thus a dynamic frame suppresses the non-dispersive orbit-0 state while retaining
 the dispersive position and momentum. In retained planes, fitted model strengths
