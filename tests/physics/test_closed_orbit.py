@@ -62,8 +62,9 @@ def test_uncertainty_shrinks_with_more_repeats():
 
 
 def test_pt_sigma_inflates_error_in_proportion_to_slope():
+    rng = np.random.default_rng(1)
     pts = [-2.0e-3, -1.0e-3, 0.0, 1.0e-3, 2.0e-3]
-    orbits_by_pt = _noiseless_orbits_by_pt(pts)
+    orbits_by_pt = {pt: [_orbit(pt, rng, 1.0e-6) for _ in range(5)] for pt in pts}
 
     tight = measure_dispersion(orbits_by_pt, dict.fromkeys(pts, 0.0), tws=TWISS)
     loose = measure_dispersion(orbits_by_pt, dict.fromkeys(pts, 1.0e-4), tws=TWISS)
@@ -71,7 +72,33 @@ def test_pt_sigma_inflates_error_in_proportion_to_slope():
     # BPM1 has a large dispersion slope: pt uncertainty should inflate its
     # reported error. BPM2's slope is ~0, so pt uncertainty barely matters.
     assert loose.loc["BPM1", "dx_err"] > tight.loc["BPM1", "dx_err"]
-    assert loose.loc["BPM2", "dx_err"] == pytest.approx(tight.loc["BPM2", "dx_err"], abs=1e-8)
+    assert loose.loc["BPM2", "dx_err"] == pytest.approx(tight.loc["BPM2", "dx_err"], rel=0.05)
+
+
+def test_no_repeat_scatter_reports_no_uncertainty():
+    """Without scatter the slope is still fitted, but its error has no scale."""
+    pts = [-1.0e-3, 0.0, 1.0e-3]
+    orbits_by_pt = {pt: [_orbit(pt, None)] for pt in pts}
+
+    result = measure_dispersion(orbits_by_pt, dict.fromkeys(pts, 1.0e-5), tws=TWISS)
+
+    assert result.loc["BPM1", "dx"] == pytest.approx(DX["BPM1"], abs=1e-9)
+    assert result["dx_err"].isna().all()
+
+
+def test_sem_counts_only_acquisitions_that_saw_the_bpm():
+    """A repeat that lost a BPM must not shrink that BPM's standard error."""
+    rng = np.random.default_rng(2)
+    pts = [-1.0e-3, 0.0, 1.0e-3]
+    sigma = 5.0e-5
+    full = {pt: [_orbit(pt, rng, sigma) for _ in range(3)] for pt in pts}
+    lossy = {pt: [*acqs, _orbit(pt, None).assign(x=np.nan, y=np.nan)] for pt, acqs in full.items()}
+    pt_sigma = dict.fromkeys(pts, 0.0)
+
+    expected = measure_dispersion(full, pt_sigma, tws=TWISS)
+    result = measure_dispersion(lossy, pt_sigma, tws=TWISS)
+
+    pd.testing.assert_frame_equal(result, expected)
 
 
 def test_fewer_than_two_pt_settings_gives_nan():

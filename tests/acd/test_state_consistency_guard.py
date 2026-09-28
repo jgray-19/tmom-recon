@@ -112,6 +112,26 @@ def test_a_dc_offset_alone_trips_the_guard() -> None:
         _check_bpm_state_consistency(_frame(state, x_error=3.0e-4), BPM, state)
 
 
+def test_a_zero_predicted_state_still_raises_the_typed_rejection() -> None:
+    """|state| = 0 must not turn the rejection into a ZeroDivisionError."""
+    state = _state(0.0)
+    with pytest.raises(ACDipoleStateConsistencyError, match=r"residual=inf of \|state\|"):
+        _check_bpm_state_consistency(_frame(state, x_error=2.0e-4), BPM, state)
+
+
+def test_the_relative_residual_is_formatted() -> None:
+    state = _state(7.145e-4)
+    with pytest.raises(ACDipoleStateConsistencyError, match=r"residual=\d+\.\d% of"):
+        _check_bpm_state_consistency(_frame(state, x_error=1.5e-4), BPM, state)
+
+
+def test_acd_config_rejects_by_default() -> None:
+    from tmom_recon.acd.integration import ACDipoleConfig
+
+    config = ACDipoleConfig(ac_dipole_marker="M", driven_tunes=(0.2, 0.3))
+    assert config.reject_inconsistent_state is True
+
+
 def test_missing_bpm_is_a_plain_value_error() -> None:
     """Not a rejection of the measurement -- a caller must not skip the file for it."""
     state = _state(7.145e-4)

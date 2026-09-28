@@ -187,9 +187,8 @@ def _calculate_acd(data, resolved_acd, reference, resolved_optics):
         bpm_upstream=config.bpm_upstream,
         bpm_downstream=config.bpm_downstream,
         smooth_lambda=config.smooth_lambda,
+        reject_inconsistent_state=config.reject_inconsistent_state,
         reference=reference,
-        tracking_orbit_tws=resolved_acd.tracking_tws,
-        orbit_zero_model_tws=resolved_acd.closed_orbit_tws,
         resolved_optics=resolved_optics,
     )
 
@@ -221,7 +220,6 @@ class ACDipolePzGenerator:
         self._prepared = prepared
         self._resolved_acd = resolved_acd
         self._optics_tws = resolved_acd.optics_tws
-        self._tracking_tws = resolved_acd.tracking_tws
         self._closed_orbit_tws = resolved_acd.closed_orbit_tws
         self._closed_orbit_at_zero = closed_orbit_at_zero.copy(deep=True)
         self._orbit_mode = orbit_mode
@@ -323,9 +321,6 @@ class ACDipolePzGenerator:
             self._closed_orbit_tws = self.model.run_twiss(
                 observe=1, coupling=True, chrom=True, deltap=0.0
             )
-            self._tracking_tws = self.model.run_twiss(
-                observe=1, coupling=True, chrom=True, pt=self.model.pt
-            )
             self._optics_tws = optics_model.run_twiss(
                 observe=1,
                 coupling=True,
@@ -351,8 +346,6 @@ class ACDipolePzGenerator:
             self._prepared,
             self._optics_tws,
             reference=reference,
-            tracking_orbit_tws=self._tracking_tws,
-            orbit_zero_model_tws=self._closed_orbit_tws,
             resolved_optics=resolved_optics,
         )
         return self.latest

@@ -525,7 +525,7 @@ def prepare_ac_dipole_inputs(
     bpm_downstream: str | None = None,
     smooth_lambda: float = 1,
     use_immediate_neighbors_for_bpms: bool = False,
-    reject_inconsistent_state: bool = False,
+    reject_inconsistent_state: bool = True,
 ) -> PreparedACDInputs:
     """Run the optics-independent half of the AC-dipole reconstruction once.
 
@@ -549,6 +549,10 @@ def prepare_ac_dipole_inputs(
         smooth_lambda: Second-difference regularisation strength.
         use_immediate_neighbors_for_bpms: Use immediate lattice neighbors instead
             of pi/2-phase neighbors for BPM momentum reconstruction.
+        reject_inconsistent_state: Raise :class:`ACDipoleStateConsistencyError`
+            when a reconstructed BPM state disagrees with the model. ``False``
+            only logs; the verdict is then in ``attrs["acd_state_consistency"]``
+            and the caller must check it.
 
     Returns:
         A :class:`PreparedACDInputs` bundle.
@@ -630,6 +634,7 @@ class ACDipoleStateConsistencyError(ValueError):
         state_amplitude: float,
         tolerance: float,
     ) -> None:
+        relative = f"{100 * max_residual / state_amplitude:.1f}%" if state_amplitude else "inf"
         branch = (
             "below the 1 mm relative-branch threshold"
             if state_amplitude < 1e-3
@@ -639,7 +644,7 @@ class ACDipoleStateConsistencyError(ValueError):
             f"Reconstructed {coord} at BPM {bpm_name} does not match the predicted "
             f"value within tolerance {tolerance:.1e} (max|residual|={max_residual:.3e}, "
             f"|state|={state_amplitude:.3e}, "
-            f"residual={100 * max_residual / state_amplitude}% of |state|; {branch})"
+            f"residual={relative} of |state|; {branch})"
         )
         super().__init__(message)
         self.bpm_name = bpm_name
@@ -733,8 +738,6 @@ def reconstruct_from_prepared(
     tws: pd.DataFrame,
     *,
     reference: OrbitReference,
-    tracking_orbit_tws: pd.DataFrame,
-    orbit_zero_model_tws: pd.DataFrame,
     resolved_optics: ResolvedOptics | None = None,
 ) -> tfs.TfsDataFrame:
     """Reconstruct AC-dipole kicks for a given model twiss from prepared inputs.
@@ -752,11 +755,6 @@ def reconstruct_from_prepared(
         reference: Measured setting-zero positions and optional fitted angles. The
             positions are removed before reconstruction and restored in the
             returned physical state.
-        tracking_orbit_tws: Model orbit at the physical momentum being
-            reconstructed.
-        orbit_zero_model_tws: Model orbit at the zero momentum setting. The
-            difference from ``tracking_orbit_tws`` is the dispersive state
-            added to the measured frame reference.
         resolved_optics: Optional resolved optics from
             :func:`tmom_recon.optics.resolve_optics`. When provided, its optics,
             uncertainty and variance columns (and tune headers) override the
@@ -939,9 +937,8 @@ def _calculate_ac_dipole_momentum(
     bpm_downstream: str | None = None,
     smooth_lambda: float = 1,
     use_immediate_neighbors_for_bpms: bool = False,
+    reject_inconsistent_state: bool = True,
     reference: OrbitReference,
-    tracking_orbit_tws: pd.DataFrame,
-    orbit_zero_model_tws: pd.DataFrame,
     resolved_optics: ResolvedOptics | None = None,
 ) -> tfs.TfsDataFrame:
     """Reconstruct AC-dipole kicks and constrained BPM momenta in one pass.
@@ -969,9 +966,8 @@ def _calculate_ac_dipole_momentum(
         use_immediate_neighbors_for_bpms: If ``True``, use immediate lattice
             neighbors instead of pi/2-phase neighbors for BPM momentum
             reconstruction.
+        reject_inconsistent_state: See :func:`prepare_ac_dipole_inputs`.
         reference: Measured orbit-zero reconstruction frame.
-        tracking_orbit_tws: Model orbit at the reconstructed momentum.
-        orbit_zero_model_tws: Model orbit at the zero momentum setting.
         resolved_optics: Optional resolved optics from
             :func:`tmom_recon.optics.resolve_optics`. When provided, its optics,
             uncertainty and variance columns (and tune headers) override the
@@ -994,13 +990,12 @@ def _calculate_ac_dipole_momentum(
         bpm_downstream=bpm_downstream,
         smooth_lambda=smooth_lambda,
         use_immediate_neighbors_for_bpms=use_immediate_neighbors_for_bpms,
+        reject_inconsistent_state=reject_inconsistent_state,
     )
     return reconstruct_from_prepared(
         prepared,
         tws,
         reference=reference,
-        tracking_orbit_tws=tracking_orbit_tws,
-        orbit_zero_model_tws=orbit_zero_model_tws,
         resolved_optics=resolved_optics,
     )
 

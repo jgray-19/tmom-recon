@@ -74,8 +74,7 @@ def measure_dispersion(
     Unlike :func:`fit_dispersion`, which fits a single noiseless value per
     ``pt`` (e.g. a model prediction), this fits repeated *measurements*: the
     scatter across repeat acquisitions at each ``pt`` gives the orbit's own
-    uncertainty, and ``pt_sigma`` -- typically the chromaticity scan's
-    ``Dp/p`` uncertainty -- gives the momentum's. Both enter the fitted
+    uncertainty, and ``pt_sigma`` gives the momentum's. Both enter the fitted
     slope's error through the standard both-axis (effective-variance) method.
 
     Args:
@@ -85,8 +84,11 @@ def measure_dispersion(
             :func:`estimate_closed_orbit` produces. Repeats of one ``pt`` are
             averaged and their spread taken as that point's uncertainty; a
             ``pt`` with only one acquisition contributes no scatter estimate.
-        pt_sigma: One-sigma uncertainty on each ``pt`` setting. Must have an
-            entry for every key of ``orbits_by_pt``.
+        pt_sigma: One-sigma uncertainty on each ``pt`` setting, **in pt**, not
+            ``dp/p``: a chromaticity scan's ``Dp/p`` uncertainty must first be
+            converted with ``accelerator.dp2pt`` (at PSB injection pt is about
+            half of ``dp/p``). Must have an entry for every key of
+            ``orbits_by_pt``.
         tws: Model twiss at ``pt = 0``, indexed by BPM name, computed with
             MAD-NG ``chrom`` so it carries the second-order dispersion columns
             ``ddx``/``ddy``; other columns are ignored. The orbit is
@@ -99,7 +101,9 @@ def measure_dispersion(
     Returns:
         One row per BPM name, with ``dx``, ``dx_err``, ``dy``, ``dy_err``:
         the fitted dispersion and its 1-sigma uncertainty. ``NaN`` where fewer
-        than two ``pt`` settings survive for that BPM.
+        than two ``pt`` settings survive for that BPM. The uncertainty is also
+        ``NaN`` when no ``pt`` has repeat scatter at that BPM: nothing then
+        sets its scale.
 
     Raises:
         KeyError: If *tws* lacks ``ddx``/``ddy`` or a measured BPM.
@@ -117,15 +121,12 @@ def measure_dispersion(
             axis=1,
             keys=range(len(acquisitions)),
         )
-        n = len(acquisitions)
         for coord in ("x", "y"):
             values = stacked.xs(coord, axis=1, level=1)
             mean = values.mean(axis=1)
-            sem = (
-                values.std(axis=1, ddof=1) / np.sqrt(n)
-                if n > 1
-                else pd.Series(np.nan, index=mean.index)
-            )
+            # Per-BPM count: an acquisition that lost a BPM does not count there.
+            # std is NaN below two finite repeats, so so is the SEM.
+            sem = values.std(axis=1, ddof=1) / np.sqrt(values.count(axis=1))
             points.append(
                 pd.DataFrame(
                     {
@@ -166,17 +167,22 @@ def measure_dispersion(
             pt = subset["pt"].to_numpy()
             y = subset["mean"].to_numpy()
             y_sigma = subset["sem"].to_numpy()
+            pt_sig = np.array([pt_sigma[p] for p in subset["pt"]])
             known = np.isfinite(y_sigma) & (y_sigma > 0)
             if not known.any():
+                # Without orbit scatter nothing sets the error's scale; an
+                # unweighted fit's "error" would be an artefact of the weights.
                 logger.warning(
-                    "No repeat acquisitions at any pt for BPM %s (%s); fitting unweighted.",
+                    "No repeat acquisitions at any pt for BPM %s (%s); fitting unweighted "
+                    "and reporting no uncertainty.",
                     name,
                     coord,
                 )
-                y_sigma = np.ones_like(y)
-            elif not known.all():
+                row[value_col] = float(np.polyfit(pt, y, 1)[0])
+                row[error_col] = np.nan
+                continue
+            if not known.all():
                 y_sigma = np.where(known, y_sigma, y_sigma[known].mean())
-            pt_sig = np.array([pt_sigma[p] for p in subset["pt"]])
             slope, slope_error = _slope_with_pt_error(pt, y, y_sigma, pt_sig)
             row[value_col] = slope
             row[error_col] = slope_error
