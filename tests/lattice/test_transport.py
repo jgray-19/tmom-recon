@@ -1,265 +1,121 @@
-"""Unit tests for tmom_recon.lattice.transport."""
+"""Tests for tmom_recon.lattice.transport."""
 
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 import pytest
+from pymadng_utils.accelerators import PSB
+from pymadng_utils.mad import AcceleratorMadInterface
 
-from tmom_recon.lattice.transport import (
-    PlaneTransportMatrix,
-    solve_kick_4d_least_squares,
-    solve_kick_from_positions,
-    transport_matrix_4d_from_twiss,
-    transport_matrix_from_twiss,
-)
+from tmom_recon.lattice.transport import kick_response_from_twiss
 
-
-@pytest.fixture()
-def simple_twiss() -> pd.DataFrame:
-    """Two-element Twiss table at a quarter-wave waist in both planes.
-
-    Both elements sit at beta=1.0, alpha=0.0.  The phase advance from
-    ``"kicker"`` to ``"BPM1"`` is exactly 0.25 fractional tune units (π/2
-    radians) in both planes, producing the Courant-Snyder matrix
-
-    .. code-block:: text
-
-        R = [[0, 1], [-1, 0]]
-
-    which corresponds to R11=0, R12=β₀=1, R21=-1/β₀=-1, R22=0.
-    """
-    data = {
-        "beta11": [1.0, 1.0],
-        "alfa11": [0.0, 0.0],
-        "mu1": [0.0, 0.25],
-        "beta22": [1.0, 1.0],
-        "alfa22": [0.0, 0.0],
-        "mu2": [0.0, 0.25],
-        "s": [0.0, 10.0],
-    }
-    index = pd.Index(["kicker", "BPM1"], name="name")
-    return pd.DataFrame(data, index=index)
+#: PSB ring-3 skew quadrupole knobs for the coupled test: about 6% beta mixing
+#: between the planes at the BPMs. Ten times this makes MAD-NG's coupled twiss fail.
+SKEW_KNOBS = {"kbr3qsk210l3": 0.003, "kbr3qskh0": -0.003}
 
 
-# ---------------------------------------------------------------------------
-# transport_matrix_from_twiss
-# ---------------------------------------------------------------------------
+def _uncoupled(beta0: float, beta1: float, delta_mu: float) -> pd.DataFrame:
+    """A two-element uncoupled Twiss with the same optics in both planes."""
+    return pd.DataFrame(
+        {
+            "beta11": [beta0, beta1],
+            "beta12": 0.0,
+            "beta21": 0.0,
+            "beta22": [beta0, beta1],
+            "mu1": [0.0, delta_mu],
+            "mu2": [0.0, delta_mu],
+            "ev1": 1.0,
+            "ev2": 1.0,
+        },
+        index=pd.Index(["kicker", "BPM1"], name="name"),
+    )
 
 
-def test_quarter_wave_waist_horizontal(simple_twiss: pd.DataFrame) -> None:
-    """At a quarter-wave waist with beta=1 and alpha=0, the 2x2 matrix is the
-    symplectic rotation [[0, 1], [-1, 0]]."""
-    m = transport_matrix_from_twiss(simple_twiss, source="kicker", target="BPM1", plane="x")
-    assert isinstance(m, PlaneTransportMatrix)
-    assert abs(m.r11) < 1e-12
-    assert abs(m.r12 - 1.0) < 1e-12
-    assert abs(m.r21 + 1.0) < 1e-12
-    assert abs(m.r22) < 1e-12
-
-
-def test_quarter_wave_waist_vertical(simple_twiss: pd.DataFrame) -> None:
-    """The vertical plane should give the same result as horizontal for the
-    symmetric quarter-wave fixture."""
-    m = transport_matrix_from_twiss(simple_twiss, source="kicker", target="BPM1", plane="y")
-    assert abs(m.r11) < 1e-12
-    assert abs(m.r12 - 1.0) < 1e-12
-    assert abs(m.r21 + 1.0) < 1e-12
-    assert abs(m.r22) < 1e-12
-
-
+@pytest.mark.unit
 @pytest.mark.parametrize(
-    "beta0,alpha0,beta1,alpha1,delta_mu_frac",
-    [
-        (1.0, 0.0, 1.0, 0.0, 0.25),
-        (2.5, 0.5, 1.8, -0.3, 0.13),
-        (10.0, 1.2, 4.0, 0.8, 0.37),
-    ],
+    ("beta0", "beta1", "delta_mu"), [(1.0, 1.0, 0.25), (2.5, 1.8, 0.13), (10.0, 4.0, 0.37)]
 )
-def test_symplecticity(
-    beta0: float, alpha0: float, beta1: float, alpha1: float, delta_mu_frac: float
-) -> None:
-    """det(R) = 1 for any valid Courant-Snyder parameters (symplectic map)."""
-    data = {
-        "beta11": [beta0, beta1],
-        "alfa11": [alpha0, alpha1],
-        "mu1": [0.0, delta_mu_frac],
-        "beta22": [beta0, beta1],
-        "alfa22": [alpha0, alpha1],
-        "mu2": [0.0, delta_mu_frac],
-        "s": [0.0, 10.0],
-    }
-    twiss = pd.DataFrame(data, index=pd.Index(["src", "tgt"], name="name"))
-    m = transport_matrix_from_twiss(twiss, source="src", target="tgt", plane="x")
-    det = m.r11 * m.r22 - m.r12 * m.r21
-    assert abs(det - 1.0) < 1e-10, f"det(R) = {det} (expected 1)"
-
-
-def test_unknown_plane_raises(simple_twiss: pd.DataFrame) -> None:
-    """Passing an unsupported plane string must raise ValueError."""
-    with pytest.raises(ValueError, match="Unsupported plane"):
-        transport_matrix_from_twiss(simple_twiss, source="kicker", target="BPM1", plane="z")
-
-
-def test_missing_source_element_raises(simple_twiss: pd.DataFrame) -> None:
-    """Referencing an element not in the Twiss index must raise KeyError."""
-    with pytest.raises(KeyError, match="not found"):
-        transport_matrix_from_twiss(simple_twiss, source="NOSUCH", target="BPM1", plane="x")
-
-
-def test_missing_target_element_raises(simple_twiss: pd.DataFrame) -> None:
-    """Referencing a target element not in the Twiss index must raise KeyError."""
-    with pytest.raises(KeyError, match="not found"):
-        transport_matrix_from_twiss(simple_twiss, source="kicker", target="NOSUCH", plane="x")
-
-
-# ---------------------------------------------------------------------------
-# transport_matrix_4d_from_twiss
-# ---------------------------------------------------------------------------
-
-
-def test_4d_matrix_block_diagonal(simple_twiss: pd.DataFrame) -> None:
-    """The assembled 4x4 matrix must have zero off-diagonal 2x2 blocks."""
-    mat = transport_matrix_4d_from_twiss(simple_twiss, source="kicker", target="BPM1")
-    assert mat.shape == (4, 4)
-    # Top-right block (rows 0-1, cols 2-3) must be zero
-    assert np.allclose(mat[:2, 2:], 0.0)
-    # Bottom-left block (rows 2-3, cols 0-1) must be zero
-    assert np.allclose(mat[2:, :2], 0.0)
-
-
-def test_4d_matrix_diagonals_match_planes(simple_twiss: pd.DataFrame) -> None:
-    """The top-left and bottom-right 2x2 blocks must match the individual
-    plane matrices returned by transport_matrix_from_twiss."""
-    mat = transport_matrix_4d_from_twiss(simple_twiss, source="kicker", target="BPM1")
-    mx = transport_matrix_from_twiss(simple_twiss, source="kicker", target="BPM1", plane="x")
-    my = transport_matrix_from_twiss(simple_twiss, source="kicker", target="BPM1", plane="y")
-
-    assert abs(mat[0, 0] - mx.r11) < 1e-15
-    assert abs(mat[0, 1] - mx.r12) < 1e-15
-    assert abs(mat[1, 0] - mx.r21) < 1e-15
-    assert abs(mat[1, 1] - mx.r22) < 1e-15
-
-    assert abs(mat[2, 2] - my.r11) < 1e-15
-    assert abs(mat[2, 3] - my.r12) < 1e-15
-    assert abs(mat[3, 2] - my.r21) < 1e-15
-    assert abs(mat[3, 3] - my.r22) < 1e-15
-
-
-# ---------------------------------------------------------------------------
-# solve_kick_from_positions
-# ---------------------------------------------------------------------------
-
-
-def test_solve_kick_horizontal_only(simple_twiss: pd.DataFrame) -> None:
-    """A purely horizontal kick (y_source=y_target=0) gives py=0 exactly and
-    px equal to x_target/R12 (since R11=0 at quarter-wave waist)."""
-    px_true = 3.7e-6
-    x_target = 1.0 * px_true  # R12 = 1 at quarter-wave waist
-    px, py = solve_kick_from_positions(
-        simple_twiss,
-        source="kicker",
-        target="BPM1",
-        x_source=0.0,
-        y_source=0.0,
-        x_target=x_target,
-        y_target=0.0,
+def test_uncoupled_response_is_courant_snyder_r12(beta0, beta1, delta_mu) -> None:
+    response = kick_response_from_twiss(
+        _uncoupled(beta0, beta1, delta_mu), source="kicker", target="BPM1"
     )
-    assert abs(px - px_true) < 1e-15
-    assert py == 0.0
+    r12 = np.sqrt(beta0 * beta1) * np.sin(2.0 * np.pi * delta_mu)
+    assert response == pytest.approx(np.diag([r12, r12]), abs=1e-14)
 
 
-def test_solve_kick_singular_raises() -> None:
-    """When R12=0 (delta_mu=0, i.e. source==target), the solve must raise."""
-    data = {
-        "beta11": [1.0, 1.0],
-        "alfa11": [0.0, 0.0],
-        "mu1": [0.0, 0.0],
-        "beta22": [1.0, 1.0],
-        "alfa22": [0.0, 0.0],
-        "mu2": [0.0, 0.0],
-        "s": [0.0, 0.0],
-    }
-    twiss = pd.DataFrame(data, index=pd.Index(["A", "B"], name="name"))
-    with pytest.raises(ValueError, match="singular"):
-        solve_kick_from_positions(
-            twiss, source="A", target="B", x_source=0.0, y_source=0.0, x_target=1.0, y_target=0.0
-        )
-
-
-# ---------------------------------------------------------------------------
-# solve_kick_4d_least_squares
-# ---------------------------------------------------------------------------
-
-
-def test_4d_least_squares_uncoupled_exact(simple_twiss: pd.DataFrame) -> None:
-    """Single-BPM block-diagonal matrix: exact recovery of (px, py)."""
-    mat = transport_matrix_4d_from_twiss(simple_twiss, source="kicker", target="BPM1")
-
-    px_true = 5.0e-6
-    py_true = -2.3e-6
-    state = mat @ np.array([0.0, px_true, 0.0, py_true])
-    x_meas = {"BPM1": float(state[0])}
-    y_meas = {"BPM1": float(state[2])}
-
-    px_rec, py_rec = solve_kick_4d_least_squares({"BPM1": mat}, x_meas, y_meas)
-    assert abs(px_rec - px_true) < 1e-14
-    assert abs(py_rec - py_true) < 1e-14
-
-
-def test_4d_least_squares_coupled_matrix() -> None:
-    """Non-trivial coupled 4x4 matrix: solver recovers (px, py) from synthetic
-    measurements constructed by applying the matrix to a known kick state."""
-    m = np.eye(4)
-    m[0, 1] = 2.1
-    m[0, 3] = 0.4
-    m[2, 1] = 0.3
-    m[2, 3] = 1.8
-
-    px_true = 1.2e-5
-    py_true = -3.4e-6
-    state = m @ np.array([0.0, px_true, 0.0, py_true])
-    x_meas = {"BPM_C": float(state[0])}
-    y_meas = {"BPM_C": float(state[2])}
-
-    px_rec, py_rec = solve_kick_4d_least_squares({"BPM_C": m}, x_meas, y_meas)
-    assert abs(px_rec - px_true) < 1e-13
-    assert abs(py_rec - py_true) < 1e-13
-
-
-# ---------------------------------------------------------------------------
-# ring wrap
-# ---------------------------------------------------------------------------
-
-
-def test_upstream_target_wraps_by_the_tune(simple_twiss: pd.DataFrame) -> None:
-    """Transporting forward to an upstream element goes round the ring.
-
-    Reversing source and target on the quarter-wave pair leaves a raw phase
-    difference of -0.25. With a tune of 1.0 the forward advance is 0.75, whose
-    matrix is the inverse rotation [[0, -1], [1, 0]]. Without the wrap the raw
-    -0.25 would give the backwards map, whose r12 has the opposite sign.
-    """
-    m = transport_matrix_from_twiss(
-        simple_twiss, source="BPM1", target="kicker", plane="x", tune=1.0
+@pytest.mark.unit
+def test_upstream_target_wraps_by_the_tune() -> None:
+    """Reversing a quarter-wave pair with tune 1 leaves a forward advance of 0.75."""
+    response = kick_response_from_twiss(
+        _uncoupled(1.0, 1.0, 0.25), source="BPM1", target="kicker", tunes=(1.0, 1.0)
     )
-    assert abs(m.r11) < 1e-12
-    assert abs(m.r12 + 1.0) < 1e-12
-    assert abs(m.r21 - 1.0) < 1e-12
-    assert abs(m.r22) < 1e-12
+    assert response == pytest.approx(-np.eye(2), abs=1e-12)
 
 
-def test_upstream_target_without_tune_raises(simple_twiss: pd.DataFrame) -> None:
+@pytest.mark.unit
+def test_upstream_target_without_tune_raises() -> None:
     """A line has no wrap, so an upstream target is an error, not a sign flip."""
     with pytest.raises(ValueError, match="upstream"):
-        transport_matrix_from_twiss(simple_twiss, source="BPM1", target="kicker", plane="x")
+        kick_response_from_twiss(_uncoupled(1.0, 1.0, 0.25), source="BPM1", target="kicker")
 
 
-def test_4d_wrap_uses_the_per_plane_tune(simple_twiss: pd.DataFrame) -> None:
-    """The 4x4 assembly wraps each plane with its own tune."""
-    mat = transport_matrix_4d_from_twiss(
-        simple_twiss, source="BPM1", target="kicker", tunes=(1.0, 1.0)
+_MAPS_LUA = """
+local track, damap, matrix in MAD
+local mtbl = track{sequence=loaded_sequence, X0=damap{nv=6, mo=1}, observe=0, savemap=true, method=6}
+py:send(#mtbl)
+for i = 1, #mtbl do
+  local m, M = mtbl.__map[i], matrix(6, 6)
+  for k = 1, 6 do for j = 1, 6 do M:set(k, j, m[k]:get(j + 1)) end end
+  py:send(M)
+end
+"""
+
+
+@pytest.fixture(scope="module")
+def coupled_psb(seq_psb3):
+    """Coupled PSB ring-3 Twiss and MAD-NG's exact linear map from the start to every element."""
+    interface = AcceleratorMadInterface(
+        PSB(sequence_file=str(seq_psb3), ring=3, kinetic_energy=0.16)
     )
-    expected = np.array([[0.0, -1.0], [1.0, 0.0]])
-    assert np.allclose(mat[:2, :2], expected)
-    assert np.allclose(mat[2:, 2:], expected)
+    try:
+        interface.set_madx_variables(**SKEW_KNOBS)
+        twiss = interface.run_twiss(observe=0, coupling=True)
+        interface.mad.send(_MAPS_LUA)
+        maps = np.array([np.asarray(interface.mad.recv()) for _ in range(interface.mad.recv())])
+    finally:
+        interface.close()
+    twiss.index = twiss.index.astype(str).str.upper()
+    return twiss, maps
+
+
+@pytest.mark.integration
+@pytest.mark.psb
+def test_coupled_response_matches_the_mad_ng_transfer_map(coupled_psb) -> None:
+    """Every BPM's response to a kick matches MAD-NG's own map, cross-plane terms included.
+
+    Sources are elements half-way between BPMs around the ring, so both the
+    direct and the tune-wrapped (upstream) BPMs are checked.
+    """
+    twiss, maps = coupled_psb
+    tunes = (float(twiss.headers["q1"]), float(twiss.headers["q2"]))
+    names = list(twiss.index)
+    s = twiss["s"].to_numpy(float)
+    bpms = [i for i, name in enumerate(names) if ".BPM" in name]
+    cross = direct = 0.0
+    sources = [
+        int(np.argmin(abs(s - (s[bpms[k]] + s[bpms[k + 1]]) / 2)))
+        for k in (0, len(bpms) // 2, len(bpms) - 2)
+    ]
+    for source in sources:
+        for target in bpms:
+            one_pass = maps[target] if target > source else maps[target] @ maps[-1]
+            exact = (one_pass @ np.linalg.inv(maps[source]))[np.ix_([0, 2], [1, 3])]
+            response = kick_response_from_twiss(
+                twiss, source=names[source], target=names[target], tunes=tunes
+            )
+            assert response == pytest.approx(exact, abs=1e-10 * np.abs(exact).max())
+            cross = max(cross, np.abs(exact[[0, 1], [1, 0]]).max())
+            direct = max(direct, np.abs(exact[[0, 1], [0, 1]]).max())
+    # The skew knobs must couple the planes, or this test proves nothing about coupling.
+    assert cross > 0.05 * direct

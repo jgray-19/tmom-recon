@@ -36,13 +36,49 @@ class TestSvdCleanMeasurements:
                 )
         meas_df = pd.DataFrame(data)
 
-        result = svd_clean_measurements(meas_df, bpm_list=bpms, rank=2)
+        result = svd_clean_measurements(meas_df, bpm_list=bpms, rank=2, fix_zero_columns=True)
 
         # Check shape and columns
         assert len(result) == len(meas_df)
         assert set(result.columns) == set(meas_df.columns)
         assert result["turn"].equals(meas_df["turn"])
         assert result["name"].equals(meas_df["name"])
+        assert np.isfinite(result[["x", "y"]].to_numpy()).all()
+        np.testing.assert_allclose(
+            result[["x", "y"]].to_numpy(),
+            meas_df[["x", "y"]].to_numpy(),
+            atol=1e-12,
+        )
+
+    def test_exact_zero_marks_only_affected_bpm_as_dead(self) -> None:
+        """The default exact-zero policy invalidates only affected BPM columns."""
+        turns = np.arange(6)
+        bpms = ["BPM1", "BPM2"]
+        rows = []
+        for turn in turns:
+            rows.extend(
+                [
+                    {
+                        "turn": turn,
+                        "name": "BPM1",
+                        "x": 0.0 if turn == 2 else turn + 1.0,
+                        "y": 0.0 if turn == 3 else 2.0 * turn + 1.0,
+                    },
+                    {
+                        "turn": turn,
+                        "name": "BPM2",
+                        "x": turn + 2.0,
+                        "y": 2.0 * turn + 2.0,
+                    },
+                ]
+            )
+        meas_df = pd.DataFrame(rows)
+
+        result = svd_clean_measurements(meas_df, bpm_list=bpms, rank=1)
+
+        dead_bpm = result["name"] == "BPM1"
+        assert result.loc[dead_bpm, ["x", "y"]].isna().all().all()
+        assert np.isfinite(result.loc[~dead_bpm, ["x", "y"]].to_numpy()).all()
 
     def test_with_nans(self) -> None:
         """Test handling of NaN values."""
@@ -63,12 +99,12 @@ class TestSvdCleanMeasurements:
                 )
         meas_df = pd.DataFrame(data)
 
-        result = svd_clean_measurements(meas_df, bpm_list=bpms, rank=2)
+        result = svd_clean_measurements(meas_df, bpm_list=bpms, rank=2, fix_zero_columns=True)
 
-        # Check that NaN is preserved
-        nan_row = result[(result["turn"] == 5)]
-        assert pd.isna(nan_row["x"].iloc[0])
-        assert pd.isna(nan_row["y"].iloc[0])
+        # Check that every original NaN is preserved and all other values are finite.
+        nan_rows = result["turn"] == 5
+        assert result.loc[nan_rows, ["x", "y"]].isna().all().all()
+        assert np.isfinite(result.loc[~nan_rows, ["x", "y"]].to_numpy()).all()
 
     def test_centering_options(self) -> None:
         """Test different centering options."""
@@ -139,8 +175,9 @@ class TestSvdCleanMeasurements:
             )
         meas_df = pd.DataFrame(data)
 
-        result = svd_clean_measurements(meas_df, bpm_list=bpms, rank=rank)
+        result = svd_clean_measurements(meas_df, bpm_list=bpms, rank=rank, fix_zero_columns=True)
         assert len(result) == len(meas_df)
+        assert np.isfinite(result[["x", "y"]].to_numpy()).all()
 
     def test_noise_reduction(self) -> None:
         """Test that SVD cleaning reduces added noise."""

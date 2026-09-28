@@ -12,6 +12,7 @@ author = "tmom-recon contributors"
 project_copyright = "2026, tmom-recon contributors"
 
 extensions = [
+    "myst_parser",
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",

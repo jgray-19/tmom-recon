@@ -5,17 +5,13 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import logging
-import os
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 import tfs
 
-from tmom_recon.lattice.core import (
-    remove_closed_orbit,
-    validate_input,
-)
+from tmom_recon.data.checks import validate_input
 from tmom_recon.lattice.names import normalise_measurement_names
 from tmom_recon.optics import (
     ALPHA_COLUMNS,
@@ -23,7 +19,9 @@ from tmom_recon.optics import (
     DISPERSION_COLUMNS,
     PHASE_COLUMNS,
     SECOND_ORDER_DISPERSION_COLUMNS,
+    ResolvedOptics,
 )
+from tmom_recon.orbit_reference import OrbitReference
 
 from .bpm_reconstruction import (
     _normalise_supplied_tune,
@@ -61,14 +59,6 @@ ACD_TWISS_OVERRIDE_COLUMNS = frozenset(
     + DISPERSION_COLUMNS
     + SECOND_ORDER_DISPERSION_COLUMNS
 )
-
-
-def _normalise_observed_twiss(tws: pd.DataFrame) -> pd.DataFrame:
-    """Return an observed twiss with upper-case string element names."""
-    out = tws.copy(deep=True)
-    out.index = out.index.astype(str).str.upper()
-    return out
-
 
 # ---------------------------------------------------------------------------
 # Logging helpers
@@ -154,13 +144,12 @@ def _log_harmonic_fit_parameters(
     """
     LOGGER.info(
         "AC-dipole %s harmonic fit: reference tune=%.6f, fitted tune=%.6f, "
-        "amplitude=%.3e rad, phase=%.6f rad, offset=%.3e rad",
+        "amplitude=%.3e rad, phase=%.6f rad",
         label,
         reference_tune,
         fit.tune,
         fit.amplitude,
         fit.phase,
-        fit.offset,
     )
 
 
@@ -337,11 +326,9 @@ def _build_output_metadata(
         "dpx_tune": dpx_fit.tune,
         "dpx_amplitude": dpx_fit.amplitude,
         "dpx_phase": dpx_fit.phase,
-        "dpx_offset": dpx_fit.offset,
         "dpy_tune": dpy_fit.tune,
         "dpy_amplitude": dpy_fit.amplitude,
         "dpy_phase": dpy_fit.phase,
-        "dpy_offset": dpy_fit.offset,
         "pt_used": pt_used,
         "kick_model_type": "constant_envelope",
     }
@@ -365,8 +352,8 @@ def _assemble_result_dataframe(
     """
     result["dpx_rad"] = fit.dpx_raw
     result["dpy_rad"] = fit.dpy_raw
-    result["dpx_fit_rad"] = fit.dpx_fit.fitted - fit.dpx_fit.offset
-    result["dpy_fit_rad"] = fit.dpy_fit.fitted - fit.dpy_fit.offset
+    result["dpx_fit_rad"] = fit.dpx_fit.fitted
+    result["dpy_fit_rad"] = fit.dpy_fit.fitted
     result["pt_used"] = pt_est
     return result
 
@@ -523,6 +510,7 @@ class PreparedACDInputs:
     dpy_tune_frac: float
     smooth_lambda: float
     use_immediate_neighbors: bool
+    reject_inconsistent_state: bool
 
 
 def prepare_ac_dipole_inputs(
@@ -537,6 +525,7 @@ def prepare_ac_dipole_inputs(
     bpm_downstream: str | None = None,
     smooth_lambda: float = 1,
     use_immediate_neighbors_for_bpms: bool = False,
+    reject_inconsistent_state: bool = True,
 ) -> PreparedACDInputs:
     """Run the optics-independent half of the AC-dipole reconstruction once.
 
@@ -560,6 +549,10 @@ def prepare_ac_dipole_inputs(
         smooth_lambda: Second-difference regularisation strength.
         use_immediate_neighbors_for_bpms: Use immediate lattice neighbors instead
             of pi/2-phase neighbors for BPM momentum reconstruction.
+        reject_inconsistent_state: Raise :class:`ACDipoleStateConsistencyError`
+            when a reconstructed BPM state disagrees with the model. ``False``
+            only logs; the verdict is then in ``attrs["acd_state_consistency"]``
+            and the caller must check it.
 
     Returns:
         A :class:`PreparedACDInputs` bundle.
@@ -573,7 +566,8 @@ def prepare_ac_dipole_inputs(
     marker_name = resolve_name(ac_dipole_marker, lattice_names)
     data = normalise_measurement_names(data, lattice_names)
 
-    tws = _normalise_observed_twiss(tws)
+    tws = tws.copy(deep=True)
+    tws.index = tws.index.astype(str).str.upper()
     measured_bpm_names = [str(name) for name in data["name"].unique()]
     available_bpm_names = [name for name in measured_bpm_names if name in set(tws.index)]
     window = select_ac_dipole_bpm_window(
@@ -607,6 +601,7 @@ def prepare_ac_dipole_inputs(
         dpy_tune_frac=_normalise_supplied_tune("dpy", float(dpy_tune)),
         smooth_lambda=smooth_lambda,
         use_immediate_neighbors=use_immediate_neighbors_for_bpms,
+        reject_inconsistent_state=reject_inconsistent_state,
     )
 
 
@@ -614,7 +609,7 @@ class ACDipoleStateConsistencyError(ValueError):
     """The reconstructed BPM state disagrees with the model's prediction.
 
     Its own type, so a batch caller can act on *this* verdict -- excluding the
-    acquisition it came from -- without catching unrelated ``ValueError``s or
+    acquisition it came from -- without catching unrelated ``ValueError`` or
     matching on the message. It is a rejection of one measurement, not a bug:
     the usual cause is an acquisition whose driven amplitude is too close to the
     BPM noise floor, and the correct response is to drop that file, never to
@@ -633,14 +628,24 @@ class ACDipoleStateConsistencyError(ValueError):
 
     def __init__(
         self,
-        message: str,
-        *,
         bpm_name: str,
         coord: str,
         max_residual: float,
         state_amplitude: float,
         tolerance: float,
     ) -> None:
+        relative = f"{100 * max_residual / state_amplitude:.1f}%" if state_amplitude else "inf"
+        branch = (
+            "below the 1 mm relative-branch threshold"
+            if state_amplitude < 1e-3
+            else "on the 10% relative branch"
+        )
+        message = (
+            f"Reconstructed {coord} at BPM {bpm_name} does not match the predicted "
+            f"value within tolerance {tolerance:.1e} (max|residual|={max_residual:.3e}, "
+            f"|state|={state_amplitude:.3e}, "
+            f"residual={relative} of |state|; {branch})"
+        )
         super().__init__(message)
         self.bpm_name = bpm_name
         self.coord = coord
@@ -651,7 +656,11 @@ class ACDipoleStateConsistencyError(ValueError):
 
 
 def _check_bpm_state_consistency(
-    frame: pd.DataFrame, bpm_name: str, predicted_state: ACDipoleStateSeries
+    frame: pd.DataFrame,
+    bpm_name: str,
+    predicted_state: ACDipoleStateSeries,
+    *,
+    reject: bool = True,
 ) -> list[dict[str, object]]:
     """Check that the reconstructed BPM state is consistent with the predicted state.
 
@@ -676,44 +685,14 @@ def _check_bpm_state_consistency(
     if bpm_frame.empty:
         raise ValueError(f"No data for BPM {bpm_name} in the reconstructed frame.")
 
-    # Check that the reconstructed state matches the predicted state. The states
-    # oscillate through zero, so a per-turn relative error is meaningless near the
-    # zero-crossings; compare max absolute residuals against a tolerance. On
-    # momentum a fixed 1e-4 m floor is comfortable: on the PSB ring-3 0 mm file the
-    # measured guard residual is 5.8e-5 m in x (2.5e-5 in px). It is also
-    # noise-robust -- injecting Gaussian reading noise at the realistic BPM floor
-    # (static PSB table, sigma_x ~= 6e-5 m; no blank_acquisitions co-located) leaves
-    # the x residual at 5.9e-5, and even 3x that noise (2e-4) only reaches 6.1e-5,
-    # because the SVD cleaning and turn-averaging over the flat-top suppress
-    # per-turn noise. So the floor's headroom is set by the model, not by noise.
-    #
-    # Off momentum the fixed 1e-4 m floor is over-tight. Studied on the three PSB
-    # ring-3 files (0 / +6 mm / -6 mm radial steering): the driven state at the
-    # primary BPM has amplitude ~4.6-7.0 mm, and the (already off-momentum-fitted)
-    # closed-orbit model reproduces its mean off-momentum orbit only to a residual
-    # of 1.0e-4 m (+6 mm) / 2.1e-4 m (-6 mm) in x -- a known, small model-vs-machine
-    # orbit imperfection, not a bad reconstruction (px residual stays <=9e-6). The
-    # -6 mm x residual therefore tripped the 1e-4 floor. Once the state amplitude
-    # exceeds 1 mm, switch to a relative tolerance so the check scales with the
-    # signal. 5% was initially chosen but left only 8% margin at -6 mm, and a
-    # later run measured 2.318e-4 against the 2.30e-4 tolerance -- the model's
-    # off-momentum orbit fidelity (~0.2 mm) genuinely sits that close to it. At
-    # 10% the tolerance is 4.6-7.0e-4 m, which keeps ~2x headroom over the model
-    # floor while still bounding gross reconstruction errors to <10% of the
-    # driven amplitude.
-    abs_floor = 1e-4  # Absolute tolerance floor for state consistency check
     rel_tolerance = 0.10  # Relative tolerance used once |state| exceeds 1 mm
-    amplitude_threshold = 1e-3  # State amplitude above which the check goes relative
     records: list[dict[str, object]] = []
     for coord in ("x", "px"):
         reconstructed_value = bpm_frame[coord].values
         predicted_value = getattr(predicted_state, coord)
         max_residual = np.max(np.abs(reconstructed_value - predicted_value))
         state_amplitude = np.max(np.abs(predicted_value))
-        if state_amplitude > amplitude_threshold:
-            tolerance = max(abs_floor, rel_tolerance * state_amplitude)
-        else:
-            tolerance = abs_floor
+        tol = 1e-4 if state_amplitude < 1e-3 else rel_tolerance * state_amplitude
         records.append(
             {
                 "bpm": bpm_name,
@@ -723,52 +702,29 @@ def _check_bpm_state_consistency(
                     np.sqrt(np.mean((reconstructed_value - predicted_value) ** 2))
                 ),
                 "state_amplitude": float(state_amplitude),
-                "tolerance": float(tolerance),
-                "passed": bool(max_residual <= tolerance),
+                "tolerance": float(tol),
+                "passed": bool(max_residual <= tol),
             }
         )
-        if max_residual > tolerance:
-            # Report the residual as a fraction of the state as well as in metres.
-            # The absolute number alone is unreadable: below the 1 mm threshold the
-            # floor is a *looser* test than the relative branch (at |state|=7e-4 the
-            # 1e-4 floor is 14%, not 10%), so tripping it means the reconstruction is
-            # genuinely worse than 10% of the driven signal -- not that the tolerance
-            # is too tight. Note the fraction is frame-dependent: with the closed
-            # orbit removed from the data (dynamic-part reconstruction) |state| is the
-            # driven amplitude alone, so the same residual reads several times larger
-            # than it would against an absolute state carrying the orbit.
-            # DIAGNOSTIC ESCAPE HATCH. Set TMOM_RECON_IGNORE_ACD_STATE_GUARD=1 to
-            # log the verdict instead of raising it. This exists so a *known
-            # failing* reconstruction can still be plotted and looked at while
-            # comparing cleaning methods -- it is never a way to obtain a
-            # physics result. The guard's answer does not change; only whether
-            # the acquisition is dropped.
-            if os.environ.get("TMOM_RECON_IGNORE_ACD_STATE_GUARD") == "1":
+        if max_residual > tol:
+            if not reject:
                 LOGGER.warning(
-                    "ACD state-consistency guard IGNORED (diagnostic mode): %s at BPM %s "
+                    "ACD state-consistency verdict recorded without rejection: %s at BPM %s "
                     "max|residual|=%.3e vs tolerance %.1e (%.1f%% of |state|=%.3e)",
                     coord,
                     bpm_name,
                     max_residual,
-                    tolerance,
+                    tol,
                     100 * max_residual / state_amplitude if state_amplitude else float("inf"),
                     state_amplitude,
                 )
                 continue
             error = ACDipoleStateConsistencyError(
-                f"Reconstructed {coord} at BPM {bpm_name} does not match the predicted "
-                f"value within tolerance {tolerance:.1e} (max|residual|={max_residual:.3e}, "
-                f"|state|={state_amplitude:.3e}, "
-                f"residual={100 * max_residual / state_amplitude if state_amplitude else float('inf'):.1f}% of |state|"
-                f"{', below the 1 mm relative-branch threshold' if state_amplitude <= amplitude_threshold else ''})."
-                " This rejects the acquisition, most often because its driven"
-                " amplitude is too close to the BPM noise floor; drop the file"
-                " rather than widening the tolerance.",
                 bpm_name=bpm_name,
                 coord=coord,
                 max_residual=float(max_residual),
                 state_amplitude=float(state_amplitude),
-                tolerance=float(tolerance),
+                tolerance=float(tol),
             )
             # The records travel with the rejection so a batch caller can build
             # the same table for rejected acquisitions as for accepted ones.
@@ -781,9 +737,8 @@ def reconstruct_from_prepared(
     prepared: PreparedACDInputs,
     tws: pd.DataFrame,
     *,
-    closed_orbit_tws: pd.DataFrame,
-    dispersion_tws: pd.DataFrame | None = None,
-    resolved_tws: pd.DataFrame | None = None,
+    reference: OrbitReference,
+    resolved_optics: ResolvedOptics | None = None,
 ) -> tfs.TfsDataFrame:
     """Reconstruct AC-dipole kicks for a given model twiss from prepared inputs.
 
@@ -797,16 +752,14 @@ def reconstruct_from_prepared(
         prepared: Output of :func:`prepare_ac_dipole_inputs`.
         tws: Model twiss for this reconstruction (optics + tune headers ``q1`` /
             ``q2``). Used for model optics and state transport.
-        resolved_tws: Optional resolved twiss from
+        reference: Measured setting-zero positions and optional fitted angles. The
+            positions are removed before reconstruction and restored in the
+            returned physical state.
+        resolved_optics: Optional resolved optics from
             :func:`tmom_recon.optics.resolve_optics`. When provided, its optics,
             uncertainty and variance columns (and tune headers) override the
             model values for BPM-pair selection and the initial ``px``/``py``
             estimate.
-        closed_orbit_tws: Twiss carrying the generated closed orbit at
-            ``model.pt``.
-        dispersion_tws: Optional twiss carrying the dispersion columns to use for
-            off-momentum BPM reconstruction. If omitted, ``closed_orbit_tws`` is
-            used.
 
     Returns:
         A :class:`tfs.TfsDataFrame` with four long-form state row groups
@@ -821,39 +774,20 @@ def reconstruct_from_prepared(
     dpy_tune_frac = prepared.dpy_tune_frac
 
     data = prepared.data.copy(deep=True)
-    tws_bpm = _normalise_observed_twiss(tws).reindex(prepared.lattice_bpm_order)
-
-    # The closed-orbit reference already contains the model momentum offset.
-    betatron_pt = 0.0
-
-    co_bpm = _normalise_observed_twiss(closed_orbit_tws).reindex(prepared.lattice_bpm_order)
-    disp_bpm = _normalise_observed_twiss(
-        dispersion_tws if dispersion_tws is not None else closed_orbit_tws
-    ).reindex(prepared.lattice_bpm_order)
-
-    data = remove_closed_orbit(data, co_bpm)
-
-    if resolved_tws is not None:
-        resolved = _normalise_observed_twiss(resolved_tws)
+    tws = tws.copy(deep=True)
+    tws.index = tws.index.astype(str).str.upper()
+    tws_bpm = tws.reindex(prepared.lattice_bpm_order)
+    if resolved_optics is not None:
+        resolved = resolved_optics.tws.copy(deep=True)
+        resolved.index = resolved.index.astype(str).str.upper()
         common = tws_bpm.index.intersection(resolved.index)
-        override_cols = [
-            col
-            for col in resolved.columns
-            if col in ACD_TWISS_OVERRIDE_COLUMNS or col.endswith("_err") or col.endswith("_var")
-        ]
-        for col in override_cols:
-            tws_bpm.loc[common, col] = resolved.loc[common, col]
-        resolved_headers = dict(getattr(resolved, "headers", {}) or {})
-        headers = getattr(tws_bpm, "headers", None)
-        if isinstance(headers, dict):
-            for key in ("q1", "q2", "mu1_total_var", "mu2_total_var"):
-                if key in resolved_headers:
-                    headers[key] = resolved_headers[key]
-
-    common = tws_bpm.index.intersection(disp_bpm.index)
-    for col in DISPERSION_COLUMNS + SECOND_ORDER_DISPERSION_COLUMNS:
-        if col in tws_bpm.columns and col in disp_bpm.columns:
-            tws_bpm.loc[common, col] = disp_bpm.loc[common, col].to_numpy(dtype=float)
+        for column in resolved.columns:
+            if column in ACD_TWISS_OVERRIDE_COLUMNS or column.endswith(("_err", "_var")):
+                tws_bpm.loc[common, column] = resolved.loc[common, column]
+        for key in ("q1", "q2", "mu1_total_var", "mu2_total_var"):
+            if key in getattr(resolved, "headers", {}):
+                tws_bpm.headers[key] = resolved.headers[key]
+    data = reference.subtract(data)
 
     bpm_order = [str(name) for name in tws_bpm.index]
     bpm_index = {name: idx for idx, name in enumerate(bpm_order)}
@@ -862,7 +796,7 @@ def reconstruct_from_prepared(
         tws_bpm,
         window=window,
         bpm_index=bpm_index,
-        pt_est=betatron_pt,
+        pt_est=model.pt,
         use_immediate_neighbors=prepared.use_immediate_neighbors,
     )
     upstream_side = ACDipoleSide("upstream", "before", +1, upstream_frames)
@@ -871,11 +805,11 @@ def reconstruct_from_prepared(
     LOGGER.info(
         "Adding closed orbit back to reconstructed BPM momenta before tracking and fitting ACD"
     )
+    restored = reference.restored
     for side in (upstream_side, downstream_side):
-        for bpm_name, frame in side.bpm_frames.items():
+        for bpm_name, bpm_frame in side.bpm_frames.items():
             for plane in ("x", "px", "y", "py"):
-                if plane in frame and plane in co_bpm.columns:
-                    frame[plane] += co_bpm.loc[bpm_name, plane]
+                bpm_frame[plane] += restored.loc[bpm_name, plane]
 
     fit = _fit_ac_dipole_from_frames(
         upstream_side=upstream_side,
@@ -907,7 +841,12 @@ def reconstruct_from_prepared(
             direction=-side.direction,
         )
         consistency_records.extend(
-            _check_bpm_state_consistency(side.primary_frame, side.primary, bpm_state)
+            _check_bpm_state_consistency(
+                side.primary_frame,
+                side.primary,
+                bpm_state,
+                reject=prepared.reject_inconsistent_state,
+            )
         )
         cleaned_bpm_states[side.label] = bpm_state
         result[f"px_bpm_{side.label}_cleaned"] = bpm_state.px
@@ -986,7 +925,7 @@ def reconstruct_from_prepared(
     return result_out
 
 
-def calculate_ac_dipole_momentum(
+def _calculate_ac_dipole_momentum(
     orig_data: pd.DataFrame,
     tws: pd.DataFrame,
     *,
@@ -998,9 +937,9 @@ def calculate_ac_dipole_momentum(
     bpm_downstream: str | None = None,
     smooth_lambda: float = 1,
     use_immediate_neighbors_for_bpms: bool = False,
-    closed_orbit_tws: pd.DataFrame,
-    dispersion_tws: pd.DataFrame | None = None,
-    resolved_tws: pd.DataFrame | None = None,
+    reject_inconsistent_state: bool = True,
+    reference: OrbitReference,
+    resolved_optics: ResolvedOptics | None = None,
 ) -> tfs.TfsDataFrame:
     """Reconstruct AC-dipole kicks and constrained BPM momenta in one pass.
 
@@ -1027,13 +966,13 @@ def calculate_ac_dipole_momentum(
         use_immediate_neighbors_for_bpms: If ``True``, use immediate lattice
             neighbors instead of pi/2-phase neighbors for BPM momentum
             reconstruction.
-        resolved_tws: Optional resolved twiss from
+        reject_inconsistent_state: See :func:`prepare_ac_dipole_inputs`.
+        reference: Measured orbit-zero reconstruction frame.
+        resolved_optics: Optional resolved optics from
             :func:`tmom_recon.optics.resolve_optics`. When provided, its optics,
             uncertainty and variance columns (and tune headers) override the
             model values for BPM-pair selection and the initial ``px``/``py``
             estimate.
-        closed_orbit_tws: Generated closed orbit at ``model.pt``.
-        dispersion_tws: Optional explicit dispersion source.
 
     Returns:
         A :class:`tfs.TfsDataFrame` with four long-form state row groups:
@@ -1051,19 +990,18 @@ def calculate_ac_dipole_momentum(
         bpm_downstream=bpm_downstream,
         smooth_lambda=smooth_lambda,
         use_immediate_neighbors_for_bpms=use_immediate_neighbors_for_bpms,
+        reject_inconsistent_state=reject_inconsistent_state,
     )
     return reconstruct_from_prepared(
         prepared,
         tws,
-        closed_orbit_tws=closed_orbit_tws,
-        dispersion_tws=dispersion_tws,
-        resolved_tws=resolved_tws,
+        reference=reference,
+        resolved_optics=resolved_optics,
     )
 
 
 __all__ = [
     "PreparedACDInputs",
-    "calculate_ac_dipole_momentum",
     "prepare_ac_dipole_inputs",
     "reconstruct_from_prepared",
 ]

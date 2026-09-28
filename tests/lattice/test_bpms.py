@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from tmom_recon.lattice.bpms import find_common_bpms
+
+pytestmark = pytest.mark.unit
 
 
 def test_find_common_bpms_preserves_first_table_order() -> None:

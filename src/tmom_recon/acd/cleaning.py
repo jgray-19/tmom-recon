@@ -223,15 +223,9 @@ def _combine_marker_transverse_positions(
 
 
 def _build_harmonic_design(turns: np.ndarray, tune: float) -> np.ndarray:
-    """Build the three-column harmonic design matrix ``[sin, cos, 1]``."""
+    """Build the two-column harmonic design matrix ``[sin, cos]``."""
     omega_turn = 2.0 * np.pi * float(tune)
-    return np.column_stack(
-        [
-            np.sin(omega_turn * turns),
-            np.cos(omega_turn * turns),
-            np.ones_like(turns),
-        ]
-    )
+    return np.column_stack([np.sin(omega_turn * turns), np.cos(omega_turn * turns)])
 
 
 def _build_raw_kick_series(
@@ -297,7 +291,7 @@ def _solve_harmonic_series_fit(
     residual = weighted_design @ solution - weighted_rhs
     weighted_rss = float(np.dot(residual, residual))
 
-    sin_coeff, cos_coeff, offset = solution
+    sin_coeff, cos_coeff = solution
     fitted = design @ solution
 
     return (
@@ -305,7 +299,6 @@ def _solve_harmonic_series_fit(
             tune=float(tune),
             amplitude=float(np.hypot(sin_coeff, cos_coeff)),
             phase=float(np.arctan2(cos_coeff, sin_coeff)),
-            offset=float(offset),
             fitted=fitted,
         ),
         weighted_rss,
@@ -325,10 +318,10 @@ def _fit_harmonic_series_with_tune(
 
     The fitted model is::
 
-        k(t) = a sin(2πQt) + b cos(2πQt) + c
+        k(t) = a sin(2πQt) + b cos(2πQt)
 
-    The fitted parameters are ``a``, ``b``, ``c`` and ``Q``.  The supplied tune
-    enters as a Gaussian prior, not as a hard search window::
+    The fitted parameters are ``a``, ``b`` and ``Q``; there is no constant offset.
+    The supplied tune enters as a Gaussian prior, not as a hard search window::
 
         χ² = Σ ((yᵢ - kᵢ) / σᵢ)² + ((Q - Q₀) / σ_Q)²
     """
@@ -384,10 +377,9 @@ def _fit_harmonic_series_with_tune(
 
     sin0 = _best_fit.amplitude * np.cos(_best_fit.phase)
     cos0 = _best_fit.amplitude * np.sin(_best_fit.phase)
-    p0 = np.array([sin0, cos0, _best_fit.offset, _best_tune], dtype=float)
+    p0 = np.array([sin0, cos0, _best_tune], dtype=float)
 
     amp_scale = max(float(_best_fit.amplitude), 1.0)
-    offset_scale = max(abs(float(_best_fit.offset)), amp_scale, 1.0)
 
     # The Gaussian prior on tune is intentionally omitted here: the grid search
     # above already starts the optimizer near the data-driven minimum, so no
@@ -397,23 +389,19 @@ def _fit_harmonic_series_with_tune(
     tune_scale = 1.0 / max(len(t_valid), 1)  # Rayleigh resolution
 
     def residual(params: np.ndarray) -> np.ndarray:
-        sin_coeff, cos_coeff, offset, tune = params
+        sin_coeff, cos_coeff, tune = params
         omega_turn = 2.0 * np.pi * tune
-        model = (
-            sin_coeff * np.sin(omega_turn * t_valid)
-            + cos_coeff * np.cos(omega_turn * t_valid)
-            + offset
-        )
+        model = sin_coeff * np.sin(omega_turn * t_valid) + cos_coeff * np.cos(omega_turn * t_valid)
         return (model - y_valid) * inv_sigma
 
     result = least_squares(
         residual,
         p0,
         bounds=(
-            [-np.inf, -np.inf, -np.inf, _MIN_TUNE],
-            [np.inf, np.inf, np.inf, _MAX_TUNE],
+            [-np.inf, -np.inf, _MIN_TUNE],
+            [np.inf, np.inf, _MAX_TUNE],
         ),
-        x_scale=[amp_scale, amp_scale, offset_scale, tune_scale],
+        x_scale=[amp_scale, amp_scale, tune_scale],
         loss="linear",
         ftol=1.0e-12,
         xtol=1.0e-12,
@@ -428,9 +416,9 @@ def _fit_harmonic_series_with_tune(
             result.message,
         )
 
-    sin_coeff, cos_coeff, offset, tune = result.x
+    sin_coeff, cos_coeff, tune = result.x
     design = _build_harmonic_design(turns, float(tune))
-    fitted = design @ np.array([sin_coeff, cos_coeff, offset], dtype=float)
+    fitted = design @ np.array([sin_coeff, cos_coeff], dtype=float)
 
     weighted_rss_final = float(np.dot(result.fun, result.fun))
 
@@ -449,7 +437,6 @@ def _fit_harmonic_series_with_tune(
         tune=float(tune),
         amplitude=float(np.hypot(sin_coeff, cos_coeff)),
         phase=float(np.arctan2(cos_coeff, sin_coeff)),
-        offset=float(offset),
         fitted=fitted,
     )
 

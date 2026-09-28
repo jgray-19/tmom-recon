@@ -1,12 +1,10 @@
-"""Generate MAD-NG model optics from an accelerator description.
+"""Generate the model twiss used by momentum reconstruction.
 
 The user never supplies a twiss. They describe the *accelerator*, its **momentum**
 (``pt``) and any **additional magnet strengths** missing from the base sequence;
-:func:`resolve_model_details` builds the MAD-NG model and returns the off-momentum
-optics twiss. Tunes are never matched here: the lattice the caller describes is
-taken to already sit on the machine's tunes at ``pt``. The AC-dipole layer
-(:mod:`tmom_recon.acd.integration`) builds on this to add the undriven closed-orbit
-reference and the driven optics.
+:func:`resolve_model_details` builds the MAD-NG model and returns both the active
+chromatic twiss and its generated zero-momentum reference. Callers supply only
+measured zero-orbit positions. Tunes are never matched here.
 """
 
 from __future__ import annotations
@@ -36,15 +34,11 @@ class ModelDetails:
             here rematches tunes: the supplied lattice is taken to already sit on
             the machine's tunes at *pt*.
 
-            This is also the seam for a *fitted* lattice. The closed-orbit angle
-            ``px``/``py`` cannot be measured, so it comes from
-            ``closed_orbit_tws``; with a nominal model that angle is simply
-            wrong, and on PSB ring 3 its error equals the entire true angle.
-            Passing magnet strengths fitted to a measured closed orbit and phase
-            (``aba_optimiser.momentum_reference`` in the sgd-magnet-tuner
-            project does this) cut that error ~20x in simulation. The coupling
-            is deliberately plain data -- a mapping of strengths -- so this
-            package never imports the fitting code.
+            This is also the seam for a *fitted* lattice. BPMs cannot measure
+            the reference angle ``px``/``py``; an external fitting workflow can
+            use these strengths to derive fitted momenta for a reconstruction frame.
+            The coupling is deliberately plain data -- a mapping of strengths
+            -- so this package never imports or runs fitting code.
         tune_knobs: Optional tune-correction knobs, as name/value pairs or as a
             knobs file to read.
         corrector_knobs: Optional orbit-corrector settings, as name/value pairs,
@@ -60,11 +54,11 @@ class ModelDetails:
 
 @dataclass(frozen=True)
 class ResolvedModel:
-    """A generated, tune-matched model and its separate twiss frames."""
+    """A generated model with active- and zero-momentum Twiss tables."""
 
     model: ACDipoleMadDriver
-    optics_tws: pd.DataFrame
-    closed_orbit_tws: pd.DataFrame
+    tws: pd.DataFrame
+    zero_tws: pd.DataFrame
 
 
 def resolve_model_details(
@@ -73,7 +67,7 @@ def resolve_model_details(
     observed_elements: str | list[str] | None = None,
     install_ac_dipole_markers: bool = False,
 ) -> ResolvedModel:
-    """Generate a tune-matched model and its off-momentum optics twiss.
+    """Generate a model and its active and zero-momentum reconstruction twisses.
 
     The AC-dipole before/after markers are only inserted when
     *install_ac_dipole_markers* is set, so a plain reconstruction is not coupled
@@ -88,13 +82,13 @@ def resolve_model_details(
         tune_knobs=details.tune_knobs,
         corrector_knobs=details.corrector_knobs,
     )
-    # `chrom=True` adds the second-order dispersion columns ddx/ddpx/ddy/ddpy,
-    # which the pt estimate and the dispersive momentum term both use. They are
-    # optional downstream, so a twiss without them still works -- just to first
-    # order in pt.
-    closed_orbit_tws = model.run_twiss(observe=1, coupling=True, chrom=True, deltap=0.0)
-    optics_tws = model.run_twiss(observe=1, coupling=True, chrom=True, pt=model.pt)
-    return ResolvedModel(model=model, optics_tws=optics_tws, closed_orbit_tws=closed_orbit_tws)
+    zero_tws = model.run_twiss(observe=1, coupling=True, chrom=True, deltap=0.0)
+    tws = (
+        zero_tws
+        if model.pt == 0.0
+        else model.run_twiss(observe=1, coupling=True, chrom=True, pt=model.pt)
+    )
+    return ResolvedModel(model=model, tws=tws, zero_tws=zero_tws)
 
 
 __all__ = [

@@ -37,7 +37,6 @@ def prepare_neighbor_views(
     tws: pd.DataFrame,
     *,
     complete_data: pd.DataFrame | None = None,
-    include_dispersion: bool = False,
     include_errors: bool = False,
     barrier_s: float | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, int], LatticeMaps]:
@@ -50,7 +49,7 @@ def prepare_neighbor_views(
     complete_data = data if complete_data is None else complete_data
     bpm_list = complete_data["name"].unique().tolist()
     tws = tws[tws.index.isin(bpm_list)]
-    maps = build_lattice_maps(tws, include_dispersion=include_dispersion)
+    maps = build_lattice_maps(tws)
 
     prev_x_df, prev_y_df, next_x_df, next_y_df = build_lattice_neighbor_tables(
         tws, include_errors, barrier_s=barrier_s
@@ -70,22 +69,21 @@ def prepare_neighbor_views(
     data_n["sqrt_betax_n"] = data_n[NEXT.bpm_x].map(maps.sqrt_betax)
     data_n["sqrt_betay_n"] = data_n[NEXT.bpm_y].map(maps.sqrt_betay)
 
-    if include_dispersion:
-        if maps.dx is None or maps.dpx is None or maps.dy is None or maps.dpy is None:
-            raise RuntimeError("Dispersion maps were not initialised correctly")
-        data_p[PREV.dx] = data_p[PREV.bpm_x].map(maps.dx)
-        data_p[PREV.dy] = data_p[PREV.bpm_y].map(maps.dy)
-        data_n[NEXT.dx] = data_n[NEXT.bpm_x].map(maps.dx)
-        data_n[NEXT.dy] = data_n[NEXT.bpm_y].map(maps.dy)
-        # Second-order dispersion is optional: only the neighbour *positions*
-        # need it, since the momentum reconstruction uses ddpx/ddpy at the
-        # current BPM only (already attached by `attach_lattice_columns`).
-        if maps.ddx is not None:
-            data_p[PREV.ddx] = data_p[PREV.bpm_x].map(maps.ddx)
-            data_n[NEXT.ddx] = data_n[NEXT.bpm_x].map(maps.ddx)
-        if maps.ddy is not None:
-            data_p[PREV.ddy] = data_p[PREV.bpm_y].map(maps.ddy)
-            data_n[NEXT.ddy] = data_n[NEXT.bpm_y].map(maps.ddy)
+    if maps.dx is None or maps.dpx is None or maps.dy is None or maps.dpy is None:
+        raise RuntimeError("Dispersion maps were not initialised correctly")
+    data_p[PREV.dx] = data_p[PREV.bpm_x].map(maps.dx)
+    data_p[PREV.dy] = data_p[PREV.bpm_y].map(maps.dy)
+    data_n[NEXT.dx] = data_n[NEXT.bpm_x].map(maps.dx)
+    data_n[NEXT.dy] = data_n[NEXT.bpm_y].map(maps.dy)
+    # Second-order dispersion is optional: only the neighbour *positions*
+    # need it, since the momentum reconstruction uses ddpx/ddpy at the
+    # current BPM only (already attached by `attach_lattice_columns`).
+    if maps.ddx is not None:
+        data_p[PREV.ddx] = data_p[PREV.bpm_x].map(maps.ddx)
+        data_n[NEXT.ddx] = data_n[NEXT.bpm_x].map(maps.ddx)
+    if maps.ddy is not None:
+        data_p[PREV.ddy] = data_p[PREV.bpm_y].map(maps.ddy)
+        data_n[NEXT.ddy] = data_n[NEXT.bpm_y].map(maps.ddy)
 
     return data_p, data_n, bpm_index, maps
 

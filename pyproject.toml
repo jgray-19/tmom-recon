@@ -18,6 +18,7 @@ dependencies = [
     "scipy",
     "tfs-pandas",
     "omc3",
+    "pymadng-utils",
 ]
 
 [project.optional-dependencies]
@@ -35,7 +36,13 @@ dev = [
 docs = [
     "sphinx>=8",
     "sphinx-rtd-theme>=3",
+    "myst-parser>=4",
 ]
+
+[tool.uv.sources]
+# Not on PyPI: installed from GitHub (CI and `uv pip install .`).
+pymadng-utils = { git = "https://github.com/jgray-19/pymadng-utils.git" }
+xtrack-tools = { git = "https://github.com/jgray-19/xtrack_tools.git" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -50,13 +57,23 @@ pythonpath = ["src"]
 norecursedirs = ["tests/data", "tests/experimental", "tests/kalman"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "unit: marks tests that do not require a real accelerator model",
+    "integration: marks tests that exercise an accelerator model or external physics engine",
+    "diagnostic: marks one-hypothesis canonical reconstruction contracts",
+    "campaign: marks long tracking and OMC3 measurement-generation tests",
+    "regression: marks tests for previously observed failures",
+    "psb: marks PSB-specific tests",
+    "lhc: marks LHC-specific tests",
 ]
 addopts = [
+    "-p",
+    "no:xdist",
     "--log-cli-level=INFO",
     "--log-level=INFO",
     "--log-cli-format=%(levelname)s %(name)s %(message)s",
+    "--strict-markers",
     "-s",
-    "-n8",
+    # "-n6",
 ]
 
 [tool.ruff]
@@ -71,6 +88,7 @@ exclude = [
   "tests/kalman",
 ]
 
+src = ["src"]
 target-version = "py311"
 
 line-length = 100
@@ -109,3 +127,7 @@ unfixable = []
 
 [tool.ruff.lint.per-file-ignores]
 "study/0*.py" = ["N999"]
+
+[tool.ruff.lint.flake8-bugbear]
+# Frozen dataclass: safe as an argument default.
+extend-immutable-calls = ["tmom_recon.optics.OpticsInput"]

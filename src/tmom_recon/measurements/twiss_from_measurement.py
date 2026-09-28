@@ -224,12 +224,14 @@ def _add_dispersion_columns(
 ) -> tfs.TfsDataFrame:
     """Add dispersion columns to twiss dataframe."""
     dispersion_map_x = {
-        f"{DISPERSION}X": (measurements["disp_x"], f"{DISPERSION}X"),
-        f"{MOMENTUM_DISPERSION}X": (measurements["disp_x"], f"{MOMENTUM_DISPERSION}X"),
+        column: (measurements["disp_x"], column)
+        for column in (f"{DISPERSION}X", f"{MOMENTUM_DISPERSION}X")
+        if column in measurements["disp_x"]
     }
     dispersion_map_y = {
-        f"{DISPERSION}Y": (measurements["disp_y"], f"{DISPERSION}Y"),
-        f"{MOMENTUM_DISPERSION}Y": (measurements["disp_y"], f"{MOMENTUM_DISPERSION}Y"),
+        column: (measurements["disp_y"], column)
+        for column in (f"{DISPERSION}Y", f"{MOMENTUM_DISPERSION}Y")
+        if column in measurements["disp_y"]
     }
     out = _add_columns(twiss_df, dispersion_map_x, bpm_index, negate=negate)
     return _add_columns(out, dispersion_map_y, bpm_index)
@@ -288,24 +290,16 @@ def _add_dispersion_error_columns(
 
     Only called when dispersion data is available.
     """
+    candidates = (
+        (f"{ERR}{DISPERSION}X", measurements["disp_x"]),
+        (f"{ERR}{DISPERSION}Y", measurements["disp_y"]),
+        (f"{ERR}{MOMENTUM_DISPERSION}X", measurements["disp_x"]),
+        (f"{ERR}{MOMENTUM_DISPERSION}Y", measurements["disp_y"]),
+    )
     dispersion_error_map = {
-        f"{ERR}{DISPERSION}X": (measurements["disp_x"], f"{ERR}{DISPERSION}X"),
-        f"{ERR}{DISPERSION}Y": (measurements["disp_y"], f"{ERR}{DISPERSION}Y"),
-        f"{ERR}{MOMENTUM_DISPERSION}X": (measurements["disp_x"], f"{ERR}{MOMENTUM_DISPERSION}X"),
-        f"{ERR}{MOMENTUM_DISPERSION}Y": (measurements["disp_y"], f"{ERR}{MOMENTUM_DISPERSION}Y"),
+        column: (frame, column) for column, frame in candidates if column in frame
     }
-    try:
-        return _add_columns(twiss_df, dispersion_error_map, bpm_index)
-    except KeyError:
-        missing_cols = [
-            col
-            for (col, (df, src_col)) in dispersion_error_map.items()
-            if src_col not in df.columns
-        ]
-        LOGGER.warning(
-            f"Dispersion error columns missing: {missing_cols}. Proceeding without dispersion errors."
-        )
-        return twiss_df.copy(deep=True)
+    return _add_columns(twiss_df, dispersion_error_map, bpm_index)
 
 
 class PhaseData:
