@@ -39,6 +39,7 @@ class ACDipoleConfig:
     bpm_upstream: str | None = None
     bpm_downstream: str | None = None
     smooth_lambda: float = 1.0
+    reject_inconsistent_state: bool = False
 
 
 @dataclass(frozen=True)

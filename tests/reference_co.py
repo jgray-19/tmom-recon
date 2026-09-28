@@ -15,36 +15,22 @@ from __future__ import annotations
 
 import pandas as pd
 
-from tmom_recon import ReconstructionFrame
 
-
-def measured_zero_reference_for_simulation(
-    data: pd.DataFrame, *, pt: float = 0.0
-) -> ReconstructionFrame:
+def measured_zero_reference_for_simulation(data: pd.DataFrame, *, pt: float = 0.0) -> pd.DataFrame:
     """Measured zero orbit for a simulated machine without orbit errors."""
     names = pd.Index(pd.unique(data["name"]), name="name")
-    origin = pd.DataFrame({"x": 0.0, "y": 0.0}, index=names)
-    momenta = pd.DataFrame({"px": 0.0, "py": 0.0}, index=names)
-    return ReconstructionFrame(origin, fitted_momenta=momenta)
+    return pd.DataFrame({"x": 0.0, "y": 0.0}, index=names)
 
 
-def position_only_reference_from_twiss(
-    tws: pd.DataFrame, *, pt: float = 0.0
-) -> ReconstructionFrame:
+def position_only_reference_from_twiss(tws: pd.DataFrame, *, pt: float = 0.0) -> pd.DataFrame:
     """Position-only reference from a Twiss table matching the simulated machine.
 
     Only valid when the model provably carries the machine's errors -- i.e. the
     test applied them to both sides.
     """
-    return ReconstructionFrame(
-        pd.DataFrame({"x": tws["x"].astype(float), "y": tws["y"].astype(float)}),
-        fitted_momenta=tws[["px", "py"]],
-    )
+    return pd.DataFrame({"x": tws["x"].astype(float), "y": tws["y"].astype(float)})
 
 
-def full_state_reference_from_twiss(tws: pd.DataFrame, *, pt: float = 0.0) -> ReconstructionFrame:
+def full_state_reference_from_twiss(tws: pd.DataFrame, *, pt: float = 0.0) -> pd.DataFrame:
     """Full transverse-state reference from a matching Twiss table."""
-    return ReconstructionFrame(
-        tws[["x", "y"]].astype(float).copy(),
-        fitted_momenta=tws[["px", "py"]].astype(float).copy(),
-    )
+    return tws[["x", "y"]].astype(float).copy()

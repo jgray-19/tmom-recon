@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from pymadng_utils.accelerators import PSB
-
 from tests.psb_tracking import ACD_ELEMENT, KINETIC_ENERGY_GEV, RING, SEQ_FILE
+
 from tmom_recon.acd.madng_driver import ACDipoleMadDriver
 
 DELTA = 3.0e-3
@@ -28,7 +28,7 @@ def test_madng_second_order_dispersion_is_per_pt_with_half_folded_in(psb_model_d
     assert len(bpms) > 4
 
     pt = accelerator.dp2pt(DELTA)
-    tw_pt = model.run_twiss(observe=0, pt=pt)
+    tw_pt = model.run_twiss(observe=0, pt=pt, chrom=True)
 
     for coord, first, second in (("x", "dx", "ddx"), ("px", "dpx", "ddpx")):
         ref = tw0.loc[bpms, coord].to_numpy(float)
@@ -46,4 +46,17 @@ def test_madng_second_order_dispersion_is_per_pt_with_half_folded_in(psb_model_d
         res_2nd = np.abs(ref + pt * d1 + pt**2 * d2 - exact).max()
         assert res_2nd < res_1st / 10.0, (
             f"{coord}: second order ({res_2nd:.3e}) did not improve on first order ({res_1st:.3e})"
+        )
+
+        # The reconstruction twiss is generated *at* pt, so its own columns are
+        # derivatives about pt and the step back to the origin changes sign.
+        # This is the form used by
+        # `tmom_recon.physics.momenta._compute_nominal_momenta`.
+        d1_pt = tw_pt.loc[bpms, first].to_numpy(float)
+        d2_pt = tw_pt.loc[bpms, second].to_numpy(float)
+        res_back = np.abs(exact - pt * d1_pt + pt**2 * d2_pt - ref).max()
+        res_forward_sign = np.abs(exact - pt * d1_pt - pt**2 * d2_pt - ref).max()
+        assert res_back < res_forward_sign / 10.0, (
+            f"{coord}: at pt the backward sign ({res_back:.3e}) must beat the "
+            f"forward one ({res_forward_sign:.3e})"
         )

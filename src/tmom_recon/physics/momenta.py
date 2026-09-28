@@ -15,6 +15,7 @@ from tmom_recon.data.schema import (
 )
 from tmom_recon.lattice.core import neighbour_plane_factors
 from tmom_recon.physics.errors import (
+    column_or_zeros,
     compute_measurement_errors,
     compute_optics_errors,
 )
@@ -23,12 +24,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing helpers only
     import pandas as pd
 
 LOGGER = logging.getLogger(__name__)
-
-
-def _column_or_zeros(frame, column: str, template: np.ndarray) -> np.ndarray:
-    if column in frame.columns:
-        return frame[column].to_numpy()
-    return np.zeros_like(template, dtype=float)
 
 
 def _require_columns(frame, cols: set[str], context: str) -> None:
@@ -132,6 +127,17 @@ def _compute_nominal_momenta(
     where :math:`p_t` is the MAD-NG longitudinal energy coordinate. MAD-NG
     dispersion columns are derivatives with respect to ``pt``, not ``dp/p``.
 
+    All dispersion columns are an expansion about the ``pt = 0`` closed orbit
+    (:func:`tmom_recon.optics.resolve_optics` takes them from the ``dp/p = 0``
+    twiss, or from a momentum scan, which measures them there):
+
+    .. math::
+
+       x(p_t) - x(0) = p_t D_x + p_t^2 D_x^{(2)},
+
+    with :math:`D^{(2)}` MAD-NG's ``chrom`` column (half the second
+    derivative). Only the betatron optics are taken at :math:`p_t`.
+
     The branch signs are :math:`(s, a)=(-1,+1)` for the previous neighbor and
     :math:`(+1,-1)` for the next neighbor. The reconstructed momenta are
 
@@ -157,8 +163,7 @@ def _compute_nominal_momenta(
         names: Neighbor column names.
         neighbor_suffix: Suffix for neighbor columns ('p' or 'n').
         is_prev: Whether this is previous neighbor calculation.
-        pt_est: Momentum offset from the reference orbit (see
-            :mod:`tmom_recon.reference`) -- never an absolute pt.
+        pt_est: Momentum offset represented by the reconstruction model.
 
     Returns:
         Tuple of (px, py) arrays.
@@ -176,28 +181,28 @@ def _compute_nominal_momenta(
     alpha_x = data["alfax"].to_numpy()
     alpha_y = data["alfay"].to_numpy()
 
-    dx_current = _column_or_zeros(data, "dx", x_current)
-    dx_neighbor = _column_or_zeros(data, names.dx, x_neighbor)
-    dpx_current = _column_or_zeros(data, "dpx", x_current)
-    dy_current = _column_or_zeros(data, "dy", y_current)
-    dy_neighbor = _column_or_zeros(data, names.dy, y_neighbor)
-    dpy_current = _column_or_zeros(data, "dpy", y_current)
+    dx_current = column_or_zeros(data, "dx", x_current)
+    dx_neighbor = column_or_zeros(data, names.dx, x_neighbor)
+    dpx_current = column_or_zeros(data, "dpx", x_current)
+    dy_current = column_or_zeros(data, "dy", y_current)
+    dy_neighbor = column_or_zeros(data, names.dy, y_neighbor)
+    dpy_current = column_or_zeros(data, "dpy", y_current)
 
     # Second-order dispersion, zero when the twiss carries no `chrom` columns.
-    ddx_current = _column_or_zeros(data, "ddx", x_current)
-    ddx_neighbor = _column_or_zeros(data, names.ddx, x_neighbor)
-    ddpx_current = _column_or_zeros(data, "ddpx", x_current)
-    ddy_current = _column_or_zeros(data, "ddy", y_current)
-    ddy_neighbor = _column_or_zeros(data, names.ddy, y_neighbor)
-    ddpy_current = _column_or_zeros(data, "ddpy", y_current)
+    ddx_current = column_or_zeros(data, "ddx", x_current)
+    ddx_neighbor = column_or_zeros(data, names.ddx, x_neighbor)
+    ddpx_current = column_or_zeros(data, "ddpx", x_current)
+    ddy_current = column_or_zeros(data, "ddy", y_current)
+    ddy_neighbor = column_or_zeros(data, names.ddy, y_neighbor)
+    ddpy_current = column_or_zeros(data, "ddpy", y_current)
 
     phi_x = data[names.delta_x].to_numpy() * 2 * np.pi
     phi_y = data[names.delta_y].to_numpy() * 2 * np.pi
 
-    sign_x, alpha_sign_x, cos_phi_x, tan_phi_x, sec_phi_x = neighbour_plane_factors(
+    sign_x, alpha_sign_x, _cos_phi_x, tan_phi_x, sec_phi_x = neighbour_plane_factors(
         phi_x, is_prev=is_prev
     )
-    sign_y, alpha_sign_y, cos_phi_y, tan_phi_y, sec_phi_y = neighbour_plane_factors(
+    sign_y, alpha_sign_y, _cos_phi_y, tan_phi_y, sec_phi_y = neighbour_plane_factors(
         phi_y, is_prev=is_prev
     )
 

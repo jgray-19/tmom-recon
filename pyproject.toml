@@ -18,6 +18,7 @@ dependencies = [
     "scipy",
     "tfs-pandas",
     "omc3",
+    "pymadng-utils",
 ]
 
 [project.optional-dependencies]
@@ -82,6 +83,7 @@ exclude = [
   "tests/kalman",
 ]
 
+src = ["src"]
 target-version = "py311"
 
 line-length = 100
@@ -120,3 +122,7 @@ unfixable = []
 
 [tool.ruff.lint.per-file-ignores]
 "study/0*.py" = ["N999"]
+
+[tool.ruff.lint.flake8-bugbear]
+# Frozen dataclass: safe as an argument default.
+extend-immutable-calls = ["tmom_recon.optics.OpticsInput"]

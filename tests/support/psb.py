@@ -10,10 +10,9 @@ from tmom_recon.acd.madng_driver import ACDipoleMadDriver
 
 @dataclass(frozen=True)
 class SimulatedMachine:
-    """The accelerator objects and optics used to create or reconstruct data."""
+    """Lightweight accelerator objects used to reconstruct tracked data."""
 
     accelerator: Any
-    xsuite_line: Any
     madng_model: ACDipoleMadDriver
     madng_twiss: Any
 
@@ -42,7 +41,6 @@ class PSBScenario:
         return PSBScenario(
             machine=SimulatedMachine(
                 accelerator=self.machine.accelerator,
-                xsuite_line=self.machine.xsuite_line,
                 madng_model=self.machine.madng_model,
                 madng_twiss=self.machine.madng_twiss.copy(deep=True),
             ),

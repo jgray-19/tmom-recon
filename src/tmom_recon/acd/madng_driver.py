@@ -121,7 +121,9 @@ class ACDipoleMadDriver(KnobMadInterface):
             self.set_corrector_strengths(corrector_knobs)
         self.observe(self.accelerator.bpm_pattern)
         for element in _normalise_element_list(observed_elements):
-            self.observe(element, unobserve_first=False)
+            # Exact-name selection: observe() would take the name as a Lua
+            # pattern, in which '.' is a wildcard that also selects neighbours.
+            self.observe_element(element)
         self.acd_before: str | None = None
         self.acd_after: str | None = None
         if install_ac_dipole_markers:

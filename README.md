@@ -4,9 +4,8 @@
 
 Momentum reconstruction utilities for turn-by-turn BPM data.
 
-The package now bundles the core two-BPM reconstruction formulae together with
-higher-level workflows for dispersive momentum estimation, n-BPM BLUE
-combination, AC-dipole reconstruction, lattice helpers, and accelerator
+The package bundles the reconstruction formulae behind focused all-BPM,
+AC-dipole, and kicker workflows, together with lattice helpers and accelerator
 descriptors used by the MAD-NG drivers.
 
 ## Requirements
@@ -50,12 +49,12 @@ The top-level package re-exports the main entry points:
 ```python
 from tmom_recon import (
     ACDipoleConfig,
+    OpticsInput,
+    ModelDetails,
     build_twiss_from_measurements,
-    calculate_ac_dipole_momentum,
-    calculate_dispersive_pz,
-    calculate_pz_measurement,
-    calculate_transverse_pz,
-    calculate_transverse_pz_nbpm,
+    calculate_acd_pz,
+    calculate_kicker_pz,
+    calculate_pz,
     inject_noise_xy,
 )
 ```
@@ -64,93 +63,122 @@ Main modules:
 
 - `tmom_recon.physics`: two-BPM transverse and dispersive momentum formulae.
 - `tmom_recon.measurements`: measured `delta p / p` and Twiss reconstruction helpers.
-- `tmom_recon.nbpm`: n-BPM transverse reconstruction.
 - `tmom_recon.acd`: AC-dipole reconstruction, BPM override, and MAD-NG integration helpers.
 - `tmom_recon.kicker`: single-kick reconstruction helpers based on kicker-to-BPM transport.
-- `tmom_recon.kalman`: Kalman-based reconstruction utilities.
 - `tmom_recon.lattice`: neighbor, lattice, and transport-matrix helper functions.
 
 ## Usage
 
-Two-BPM transverse reconstruction:
+All-BPM reconstruction starts from raw BPM positions and an explicit measured
+setting-zero orbit:
 
 ```python
-from tmom_recon import calculate_transverse_pz
+from tmom_recon import ModelDetails, calculate_pz
 
-result = calculate_transverse_pz(
+result = calculate_pz(
     tracking_df,
-    twiss_df,
+    ModelDetails(accelerator=accelerator, pt=pt_offset),
+    closed_orbit_at_zero=measured_orbit_zero[["x", "y"]],
+    orbit_mode="dynamic",
+    barrier_s=None,
 )
 ```
 
-`tracking_df` is expected to contain turn-by-turn BPM rows with at least
-`name`, `turn`, `x`, `y`, `var_x`, and `var_y`. The Twiss frame is expected to
-be indexed by BPM element name.
+`ModelDetails.pt` must contain the caller's momentum estimate. `tracking_df` is expected to contain turn-by-turn BPM rows with at least
+`name`, `turn`, `x`, `y`, `var_x`, and `var_y`. `calculate_pz` generates the
+model optics.
+```
 
-Dispersive momentum reconstruction:
+AC-dipole workflow is separate from all-BPM reconstruction:
 
 ```python
-from tmom_recon import calculate_dispersive_pz
+from tmom_recon import ACDipoleConfig, ModelDetails, calculate_acd_pz
 
-dp_over_p = calculate_dispersive_pz(
+acd_result = calculate_acd_pz(
     tracking_df,
-    twiss_df,
+    ModelDetails(accelerator=accelerator, pt=pt_offset),
+    ACDipoleConfig(
+        ac_dipole_marker="MKQA.6L4.B1",
+        driven_tunes=(0.27, 0.322),
+    ),
+    closed_orbit_at_zero=measured_orbit_zero[["x", "y"]],
+    orbit_mode="dynamic",
 )
 ```
 
-n-BPM combination:
+Both required orbit inputs are explicit. ``dynamic`` restores the complete
+generated model state at zero momentum; ``absolute`` restores measured ``x/y``
+and generated zero-momentum model ``px/py``. Reference Twiss tables are never
+accepted from callers.
 
-```python
-from tmom_recon import calculate_transverse_pz_nbpm
-
-nbpm_result = calculate_transverse_pz_nbpm(
-    tracking_df,
-    twiss_df,
-)
-```
-
-AC-dipole workflow:
-
-```python
-from tmom_recon import ACDipoleConfig, calculate_ac_dipole_momentum
-
-acd_result = calculate_ac_dipole_momentum(
-    tracking_df,
-    twiss_df,
-    ac_dipole_marker="MKQA.6L4.B1",
-    model=acd_model,
-    dpx_tune=0.27,
-    dpy_tune=0.322,
-)
-```
-
-The `model` object must provide the MAD-NG tracking interface used by
-`tmom_recon.acd.madng_driver.ACDipoleMadDriver`. If you are integrating the
-result back into transverse or n-BPM reconstruction, use `ACDipoleConfig`
-through the higher-level APIs rather than wiring the BPM overrides yourself.
+That `orbit_zero` must be the on-momentum **closed orbit**. A turn mean of
+driven data is a biased estimate of it: over 100 driven turns of LHC B1 the mean
+sits 5.3e-5 m rms from the closed orbit, which reaches the reconstructed angles
+as a static 1.5e-6 rad per-BPM bias.
 
 The ACD workflow fits `dpx` and `dpy` at the marker itself, treats the marker
 position `x/y` as shared across the kick for the same turn, and then
 transports the cleaned pre-/post-kick marker states back to the selected
 adjacent BPMs.
 
-Kicker-based single-turn reconstruction:
+Measured optics are selected explicitly. Requested measurement categories must
+exist; they never silently fall back to model values:
 
 ```python
-from tmom_recon.kicker.core import reconstruct_momentum_kick
-
-kicker_result = reconstruct_momentum_kick(
-    tracking_df,
-    twiss_df,
-    n_turns_free=1000,
-    n_turns_after_kick=3,
+optics = OpticsInput(
+    measurement_dir="path/to/omc3",
+    sources={"phase": "measurement", "beta": "measurement"},
 )
 ```
 
-This lower-level helper is intended for datasets with a single clear kicker
-excitation. It removes the closed orbit, identifies the kick turn, and solves
-the kicker-to-BPM transport equation using the Twiss-parameterized transfer
-matrix between the kicker and the first downstream BPM response.
+Kicker-based single-kick reconstruction:
+
+```python
+from tmom_recon import KickerConfig, calculate_kicker_pz
+
+kick = calculate_kicker_pz(
+    tracking_df,
+    ModelDetails(accelerator=accelerator, pt=pt_offset),
+    KickerConfig(kicker="KICKER", n_turns_free=1000),
+    closed_orbit_at_zero=measured_orbit_zero[["x", "y"]],
+    orbit_mode="dynamic",
+)
+```
+
+This workflow is for datasets with a single clear kicker excitation. It removes
+the frame's measured orbit zero *and* the closed orbit the beam rides at its own
+momentum, detects the turn the kicker fired, and solves
+
+```text
+x_i = R12_i * dpx,   y_i = R34_i * dpy
+```
+
+in the inverse-variance-weighted least-squares sense over *every* BPM of the
+first beam pass after the kick — those downstream of the kicker on the kick turn
+plus those upstream of it on the next turn, reached by wrapping the phase advance
+by the tune.
+
+The result is a one-row frame holding the kicker state on the kick turn, in
+frame coordinates: the closed orbit at the kicker plus the kick. On momentum
+that is a zero position and the bare kick; at `dp/p = 1e-3` in the PSB the
+dispersive angle at the kicker is 43× the kick itself, so it is not optional.
+That orbit is taken as the exact difference of two MAD-NG twisses, at `pt` and
+at zero — **not** as `pt*D + pt²*D''`, because the reconstruction twiss is
+generated *at* `pt`, so its dispersion columns are derivatives about `pt` and
+re-expanding from them double-counts. `attrs["kick"]` carries the fit
+diagnostics, including the position residual.
+
+The optics must be those *at the kick point*. MAD-NG puts a Twiss row at each
+element's exit, while a thick element deflects the beam at its centre, so a
+thick kicker needs a marker at its centre in the model. Against PSB tracking a
+thin corrector reconstructs the kick to 6.5e-12 rad; a 1.23 m quadrupole, whose
+row sits 0.017 turns of phase past the kick point, degrades that to 1.8e-9 and
+shows a 6% residual.
+
+Unlike the other two workflows this one takes no `OpticsInput`: the transport it
+needs starts *at the kicker*, and an omc3 measurement only provides BPM-to-BPM
+phases with an arbitrary origin. Supply a better lattice through
+`ModelDetails.magnet_strengths` instead.
 
 Accelerator descriptors for driver setup:
 
@@ -197,17 +225,22 @@ Define the phase advances
 the normalized coordinates
 
 \[
-\tilde x = \frac{x - \delta D_x}{\sqrt{\beta_x}},
+\tilde x = \frac{x - p_t D_x + p_t^2 D_x^{(2)}}{\sqrt{\beta_x}},
 \qquad
-\tilde x_n = \frac{x_n - \delta D_{x,n}}{\sqrt{\beta_{x,n}}},
+\tilde x_n = \frac{x_n - p_t D_{x,n} + p_t^2 D_{x,n}^{(2)}}{\sqrt{\beta_{x,n}}},
 \]
 \[
-\tilde y = \frac{y - \delta D_y}{\sqrt{\beta_y}},
+\tilde y = \frac{y - p_t D_y + p_t^2 D_y^{(2)}}{\sqrt{\beta_y}},
 \qquad
-\tilde y_n = \frac{y_n - \delta D_{y,n}}{\sqrt{\beta_{y,n}}},
+\tilde y_n = \frac{y_n - p_t D_{y,n} + p_t^2 D_{y,n}^{(2)}}{\sqrt{\beta_{y,n}}},
 \]
 
-with `\delta = \Delta p / p`, and the sign convention
+with `p_t` the MAD-NG longitudinal energy coordinate — the dispersion columns
+are derivatives with respect to `pt`, never `dp/p`. The second-order sign is
+subtracted from the orbit, not added: the reconstruction twiss is generated *at*
+`pt`, so `x(pt) - x(0) = pt D - pt^2 D^{(2)}`, and the forward sign is worse
+than dropping the term (6.0e-6 m against 3.0e-6 m and 5.5e-8 m for LHC B1 at
+`dp/p = 4e-4`). Then the sign convention
 
 ```text
 s = -1 for previous neighbor
@@ -222,11 +255,11 @@ The nominal reconstructed momenta are
 ```text
 p_x =
 s * (x~_n sec(\phi_x) + x~ (tan(\phi_x) + a \alpha_x)) / sqrt(\beta_x)
-+ D_x' \delta
++ D_x' p_t - D_x^{(2)}' p_t^2
 
 p_y =
 s * (y~_n sec(\phi_y) + y~ (tan(\phi_y) + a \alpha_y)) / sqrt(\beta_y)
-+ D_y' \delta
++ D_y' p_t - D_y^{(2)}' p_t^2
 ```
 
 The measurement-only variances are

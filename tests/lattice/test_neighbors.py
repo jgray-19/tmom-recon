@@ -13,10 +13,10 @@ def _ring_twiss(*, include_s: bool = True):
     names = ["A", "B", "C", "D", "E", "F"]
     mu = np.array([0.0, 0.25, 0.5, 0.75, 1.0, 1.25])
     columns = {
-        "beta11": 1.0,
-        "beta22": 1.0,
-        "alfa11": 0.0,
-        "alfa22": 0.0,
+        "betx": 1.0,
+        "bety": 1.0,
+        "alfx": 0.0,
+        "alfy": 0.0,
         "mu1": mu,
         "mu2": mu,
     }

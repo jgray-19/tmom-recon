@@ -11,11 +11,6 @@ tmom_recon.physics
    :undoc-members:
    :show-inheritance:
 
-.. automodule:: tmom_recon.physics.dispersive
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
 .. automodule:: tmom_recon.physics.momenta
    :members:
    :undoc-members:

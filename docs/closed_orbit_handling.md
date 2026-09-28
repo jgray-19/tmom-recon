@@ -1,112 +1,47 @@
-# Orbit frames, momentum, and dispersion
+# Closed-orbit handling
 
-This page is the canonical contract for closed-orbit handling in tmom-recon.
+Every reconstruction API requires `closed_orbit_at_zero`, containing measured
+BPM `x/y` at `dp=0`, and `orbit_mode`, exactly `"dynamic"` or `"absolute"`.
+Names are matched case-insensitively and must be unique, finite, and cover every
+reconstructed BPM. Extra `px/py` columns are ignored.
 
-## The coordinate origin
+The package subtracts measured zero-momentum positions before reconstruction and
+generates every reference Twiss internally from `ModelDetails` and the active
+strengths. The mode controls the state restored afterwards:
 
-The measured orbit at the campaign's setting **0** is coordinate zero. Every
-measurement, supplied momentum, and reconstructed state is expressed relative to
-that one orbit. It is not legitimate to replace it with a model orbit or with the
-turn mean of the file currently being reconstructed.
+- `dynamic`: generated zero-momentum model `x/px/y/py`;
+- `absolute`: measured zero-momentum `x/y` and generated model `px/py`.
 
-There are three distinct physical quantities:
+Off-momentum displacement remains in the subtracted data, preserving dispersive
+motion relative to the zero baseline. The same state is restored before ACD
+fitting and transport and in kicker reconstruction. Strength updates regenerate
+the model zero reference; momentum-only updates may reuse it.
 
-1. the non-dispersive machine orbit at setting 0;
-2. the dispersive displacement and momentum at the acquisition's momentum;
-3. the driven/betatron motion.
+`estimate_closed_orbit_pt` takes `closed_orbit_at_zero` directly because the
+subtraction is identical in both modes.
 
-Changing the coordinate frame may remove (1). It must never remove or disable
-(2), and it must preserve (3).
+## Migration
 
-## Required ordering
+`Frame`, `DynamicFrame`, and `AbsoluteFrame` were removed without compatibility
+aliases. Replace, for example:
 
-For every acquisition tmom-recon performs the following sequence:
-
-1. Start from raw BPM positions.
-2. Subtract the same measured orbit-0 positions in dynamic planes.
-3. Estimate `pt`, when it was not supplied, from these transformed coordinates.
-4. Reconstruct transverse momenta with first- and available second-order
-   dispersion.
-5. Restore the state selected by the frame.
-
-The ordering is load-bearing. Estimating momentum from raw coordinates leaks an
-unknown dipole-error orbit into `pt`. Subtracting each file's own turn mean gives
-each momentum setting its own zero and erases the dispersive signal.
-
-## Frame behavior
-
-`ReconstructionFrame` owns the transformation:
-
-| frame | input transformation | restored state |
-| --- | --- | --- |
-| absolute | none | measured orbit-0 `x/y` and fitted `px/py` |
-| dynamic | subtract orbit-0 in x and y | zero non-dispersive state |
-| horizontal retained | subtract orbit-0 in y | measured x and fitted px; zero y/py |
-
-The generic API represents these choices through `dynamic_planes`; mode names
-belong to applications. A retained plane requires an explicit fitted angle.
-There is deliberately no implicit zero-angle or model-angle fallback.
-
-When dipolar components or quadrupole `dy` are fitted, their strengths belong in
-`ModelDetails` and their BPM angles belong in `fitted_momenta`. Fitted strengths
-must not be applied in a dynamic plane, because that would put a non-dispersive
-orbit back into a frame from which it was removed.
-
-## Momentum convention
-
-The orbit-zero frame has `pt = 0` by definition. `measurement_pt_offset` is the
-MAD-NG `pt` offset from it, never a machine-absolute value. If it is omitted,
-tmom-recon estimates the same offset after applying the frame transformation.
-There is no second reference-momentum subtraction.
-
-`estimate_pt_from_model` follows the same contract when called directly: it
-accepts raw data and a `ReconstructionFrame`, applies the frame, and projects the
-remaining orbit onto `D`. If `DD` is available it solves the second-order
-quadratic as well.
-
-## Dispersion is independent of the frame
-
-Dynamic does **not** mean non-dispersive. The reconstructed physical state uses
-
-```
-x_beta  = x - pt*D_x  - pt**2*DD_x
-px      = px_beta + pt*D_px + pt**2*DD_px
+```python
+calculate_pz(data, details, frame=DynamicFrame(closed_orbit, reference), barrier_s=None)
 ```
 
-and the analogous vertical expressions. Model or measured dispersion may be
-selected, but `D` and `D'` must come from the same source. Second-order
-dispersion comes from a chromatic model when available.
+with:
 
-`use_dispersion=False` is only valid for an explicitly pure transverse,
-zero-offset calculation. A nonzero `measurement_pt_offset` with dispersion
-disabled is rejected.
-
-## AC-dipole reconstruction
-
-The coordinate-frame subtraction happens before both the all-BPM and AC-dipole
-paths. The ACD BPM reference is composed explicitly as
-
-```
-frame.closed_orbit + (tracking_orbit_model - orbit_zero_model)
+```python
+calculate_pz(
+    data,
+    details,
+    closed_orbit_at_zero=closed_orbit,
+    orbit_mode="dynamic",
+    barrier_s=None,
+)
 ```
 
-The two model tables are mandatory. Their difference contains the physical
-dispersive change at the acquisition momentum without replacing the measured
-origin by a model orbit. This composed state is removed for betatron
-reconstruction and added back only after the dynamic kick is calculated.
-
-Thus a dynamic frame suppresses the non-dispersive orbit-0 state while retaining
-the dispersive position and momentum. In retained planes, fitted model strengths
-provide the tracking orbit and the frame restores measured BPM positions with
-fitted BPM angles.
-
-## Failure modes that must remain impossible
-
-- deriving dispersion enablement from dynamic/absolute mode;
-- estimating `pt` before orbit-0 subtraction in a dynamic plane;
-- subtracting a per-file mean or an independently estimated orbit per momentum;
-- passing machine-absolute `pt` as an offset, or subtracting the origin twice;
-- using a model orbit in place of measured orbit-zero positions;
-- restoring fitted dipole or quad-`dy` state in a dynamic plane;
-- silently supplying zero/model angles for a retained plane;
-- mixing measured `D` with model `D'`.
+Use `orbit_mode="absolute"` for the former absolute workflow and remove the old
+reference/estimated Twiss entirely. Both `psb_md` and `sgd-magnet-tuner` must
+migrate reconstruction, estimator, ACD, kicker, and generator calls; those
+repositories are intentionally not changed here.

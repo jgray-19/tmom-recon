@@ -171,8 +171,6 @@ def _build_local_reconstruction_rows(
     data: pd.DataFrame,
     tws_bpm: pd.DataFrame,
     bpm_name: str,
-    *,
-    pt_est: float,
 ) -> tuple[pd.DataFrame, LatticeMaps]:
     """Extract rows for a single BPM and attach lattice map columns.
 
@@ -180,13 +178,11 @@ def _build_local_reconstruction_rows(
         data: Full measurement DataFrame.
         tws_bpm: Twiss DataFrame restricted to BPMs.
         bpm_name: Name of the BPM to extract.
-        pt_est: Estimated MAD-NG pt used to decide whether to include dispersion.
-
     Returns:
         ``(rows, maps)`` where *rows* is the filtered DataFrame with lattice
         columns attached and *maps* is the lattice-map object.
     """
-    maps = build_lattice_maps(tws_bpm, include_dispersion=not np.isclose(pt_est, 0.0))
+    maps = build_lattice_maps(tws_bpm)
     rows = data.loc[data["name"] == bpm_name, ["name", "turn", "x", "y", "var_x", "var_y"]].copy(
         deep=True
     )
@@ -284,7 +280,7 @@ def _prepare_prev_reconstruction(
     Returns:
         DataFrame with reconstructed ``px``/``py`` and associated variances.
     """
-    rows, maps = _build_local_reconstruction_rows(data, tws_bpm, bpm_name, pt_est=pt_est)
+    rows, maps = _build_local_reconstruction_rows(data, tws_bpm, bpm_name)
     rows[PREV.bpm_x] = _require_neighbor_name(
         prev_x.at[bpm_name, PREV.bpm_x], bpm_name, "x", "previous"
     )
@@ -298,6 +294,10 @@ def _prepare_prev_reconstruction(
     if maps.dx is not None and maps.dy is not None:
         rows[PREV.dx] = rows[PREV.bpm_x].map(maps.dx)
         rows[PREV.dy] = rows[PREV.bpm_y].map(maps.dy)
+    if maps.ddx is not None:
+        rows[PREV.ddx] = rows[PREV.bpm_x].map(maps.ddx)
+    if maps.ddy is not None:
+        rows[PREV.ddy] = rows[PREV.bpm_y].map(maps.ddy)
     rows = _merge_prev_neighbor_data(rows, data, bpm_index)
     return momenta_from_prev(rows, pt_est, include_optics_errors=True)
 
@@ -326,7 +326,7 @@ def _prepare_next_reconstruction(
     Returns:
         DataFrame with reconstructed ``px``/``py`` and associated variances.
     """
-    rows, maps = _build_local_reconstruction_rows(data, tws_bpm, bpm_name, pt_est=pt_est)
+    rows, maps = _build_local_reconstruction_rows(data, tws_bpm, bpm_name)
     rows[NEXT.bpm_x] = _require_neighbor_name(
         next_x.at[bpm_name, NEXT.bpm_x], bpm_name, "x", "next"
     )
@@ -340,6 +340,10 @@ def _prepare_next_reconstruction(
     if maps.dx is not None and maps.dy is not None:
         rows[NEXT.dx] = rows[NEXT.bpm_x].map(maps.dx)
         rows[NEXT.dy] = rows[NEXT.bpm_y].map(maps.dy)
+    if maps.ddx is not None:
+        rows[NEXT.ddx] = rows[NEXT.bpm_x].map(maps.ddx)
+    if maps.ddy is not None:
+        rows[NEXT.ddy] = rows[NEXT.bpm_y].map(maps.ddy)
     rows = _merge_next_neighbor_data(rows, data, bpm_index)
     return momenta_from_next(rows, pt_est, include_optics_errors=True)
 

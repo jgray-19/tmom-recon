@@ -17,7 +17,6 @@ from xtrack_tools.env import initialise_env
 from xtrack_tools.monitors import process_tracking_data
 
 from tests.support.acd_barrier import acd_barrier_s
-from tests.support.truth import model_details_for
 from tmom_recon import ModelDetails
 from tmom_recon.acd.madng_driver import ACDipoleMadDriver
 
@@ -71,13 +70,13 @@ def get_twiss(sequence_file: Path, deltap: float) -> pd.DataFrame:
     """Return the twiss DataFrame for a given sequence and delta_p."""
     acciface = create_loaded_mad_interface(sequence_file)
     acciface.observe()
-    return acciface.run_twiss(coupling=True, deltap=deltap)
+    return acciface.run_twiss(coupling=True, chrom=True, deltap=deltap)
 
 
 def lhc_model_details(sequence_file: Path, *, delta_p: float = 0.0) -> ModelDetails:
     """Build LHC model details at the tracked absolute momentum."""
     accelerator = LHC(beam=1, sequence_file=sequence_file, kinetic_energy=6800)
-    return model_details_for(accelerator, pt=accelerator.dp2pt(delta_p))
+    return ModelDetails(accelerator, pt=accelerator.dp2pt(delta_p))
 
 
 def tracking_artifacts_loader(xsuite_json_path):
@@ -118,7 +117,7 @@ def tracking_artifacts_loader(xsuite_json_path):
             state_markers,
         )
         if key not in data_cache or include_line:
-            tracking_df, tws_xsuite, baseline_line = run_acd_track(
+            tracking_df, _tws_xsuite, baseline_line = run_acd_track(
                 sequence_file=seq_path,
                 acd_marker=acd_marker,
                 sequence_name=sequence_name,

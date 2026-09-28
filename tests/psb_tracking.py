@@ -21,8 +21,10 @@ from pymadng_utils.madx.make_sequence import make_madx_sequence
 from xtrack_tools.acd import run_ac_dipole_tracking
 from xtrack_tools.env import create_xsuite_environment
 from xtrack_tools.errors import (
+    apply_quad_tilt,
     apply_relative_bend_field_errors,
     apply_vertical_quad_misalignment,
+    correct_closed_orbit,
 )
 from xtrack_tools.monitors import process_tracking_data
 
@@ -55,6 +57,10 @@ VERTICAL_EXCITATION = 2 * 0.042 / 177.0**0.5
 MAIN_BEND_PREFIX = "br.bhz"
 # PSB ring quadrupoles are ``br.qde*`` / ``br.qfo*``.
 QUAD_PREFIX = "br.q"
+# Orbit-correction element families (see ``correct_orbit``).
+BPM_PREFIX = f"br{RING}.bpm"
+H_CORRECTOR_PREFIX = f"br{RING}.dhz"
+V_CORRECTOR_PREFIX = f"br{RING}.dvt"
 # Chromaticity sextupoles, thin multipoles carrying their strength in ``knl[2]``.
 # All zero in the saved sequence, matching the no-multipole PSB campaign.
 SEXTUPOLE_PREFIX = "br3.xno"
@@ -176,6 +182,9 @@ def build_psb_tracking_setup(
     apply_bend_errors_to_model: bool = True,
     quad_misalign_y_rms: float = 0.0,
     quad_misalign_seed: int = 0,
+    quad_tilt_rms: float = 0.0,
+    quad_tilt_seed: int = 0,
+    correct_orbit: bool = False,
     quad_error_rms: float = 0.0,
     quad_error_seed: int = 0,
     apply_quad_errors_to_model: bool = True,
@@ -199,6 +208,21 @@ def build_psb_tracking_setup(
     When ``quad_misalign_y_rms > 0`` a seeded vertical misalignment of that RMS
     (metres) is applied to the tracking line's quadrupoles only, distorting the
     vertical closed orbit of the data while the MAD-NG model stays nominal.
+
+    When ``quad_tilt_rms > 0`` a seeded roll about ``s`` of that RMS (radians) is
+    applied to the tracking line's quadrupoles only, while the MAD-NG model stays
+    nominal. A rolled quadrupole is a skew component ``~ 2*theta*k1l``, so it
+    couples the horizontal dispersion into the vertical and gives the tracked
+    machine a genuine ``Dy`` that the model has as identically zero -- the real
+    PSB situation, where the measured ``DY`` is ~0.29 m against a model ``DY`` of
+    exactly 0.
+
+    When ``correct_orbit`` is set, the tracking line's closed orbit is steered flat
+    with its own DHZ/DVT correctors *after* every error family has been applied.
+    An uncorrected error seed leaves ~10 mm of orbit, which no real machine would
+    be measured with; the campaign data sits at a few mm. Note the correctors are
+    dipoles, so a corrected orbit still carries their **dispersion** -- which is
+    exactly why this matters off momentum.
 
     When ``quad_error_rms > 0`` a seeded relative gradient error of that RMS is
     applied to the tracking line's ring quadrupoles, and (when
@@ -246,6 +270,15 @@ def build_psb_tracking_setup(
     if quad_misalign_y_rms > 0.0:
         apply_vertical_quad_misalignment(
             line, rms=quad_misalign_y_rms, seed=quad_misalign_seed, name_prefix=QUAD_PREFIX
+        )
+    if quad_tilt_rms > 0.0:
+        apply_quad_tilt(line, rms=quad_tilt_rms, seed=quad_tilt_seed, name_prefix=QUAD_PREFIX)
+    if correct_orbit:
+        correct_closed_orbit(
+            line,
+            monitor_prefix=BPM_PREFIX,
+            corrector_prefix_x=H_CORRECTOR_PREFIX,
+            corrector_prefix_y=V_CORRECTOR_PREFIX,
         )
 
     # Use explicit on- and off-momentum natural tunes: reconstruction optics are
@@ -316,7 +349,6 @@ def build_psb_tracking_setup(
     return PSBScenario(
         machine=SimulatedMachine(
             accelerator=accelerator,
-            xsuite_line=monitored_line,
             madng_model=model,
             madng_twiss=tws,
         ),

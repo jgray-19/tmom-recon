@@ -1,35 +1,38 @@
-"""Momentum reconstruction utilities.
-
-:func:`calculate_pz` is the single entry point for momentum reconstruction
-from model and/or measured optics, with optional AC-dipole refinement.
-"""
+"""Focused all-BPM, AC-dipole, and kicker momentum reconstruction."""
 
 from __future__ import annotations
 
-from .frame import ReconstructionFrame
+from .kicker.core import Kick, KickerConfig, KickerPzGenerator, calculate_kicker_pz
 from .lattice.core import inject_noise_xy
 from .measurements.twiss_from_measurement import build_twiss_from_measurements
 from .model import ModelDetails
-from .nbpm import calculate_transverse_pz_nbpm
-from .optics import ModelOpticsErrors, ResolvedOptics, resolve_optics
+from .optics import ModelOpticsErrors, OpticsInput, ResolvedOptics, resolve_optics
+from .physics.pt_calculation import estimate_closed_orbit_pt, estimate_pt_from_orbit
 from .reconstruction import (
     ACDipoleConfig,
     ACDipolePzGenerator,
     PzGenerator,
+    calculate_acd_pz,
     calculate_pz,
 )
 
 __all__ = [
     "ACDipoleConfig",
     "ACDipolePzGenerator",
+    "Kick",
+    "KickerConfig",
+    "KickerPzGenerator",
     "ModelDetails",
     "ModelOpticsErrors",
-    "ReconstructionFrame",
+    "OpticsInput",
     "PzGenerator",
     "ResolvedOptics",
     "build_twiss_from_measurements",
+    "calculate_acd_pz",
+    "calculate_kicker_pz",
     "calculate_pz",
-    "calculate_transverse_pz_nbpm",
+    "estimate_closed_orbit_pt",
+    "estimate_pt_from_orbit",
     "inject_noise_xy",
     "resolve_optics",
 ]

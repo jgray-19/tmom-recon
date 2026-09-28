@@ -154,3 +154,12 @@ class TestTheVerdictIsRecorded:
         records = excinfo.value.records
         assert [record["coord"] for record in records] == ["x"]
         assert records[0]["passed"] is False
+
+    def test_non_rejecting_mode_keeps_the_failed_verdict(self) -> None:
+        state = _state(7e-4)
+        records = _check_bpm_state_consistency(
+            _frame(state, x_error=1.5e-4), BPM, state, reject=False
+        )
+        assert [record["coord"] for record in records] == ["x", "px"]
+        assert records[0]["passed"] is False
+        assert records[1]["passed"] is True

@@ -1,7 +1,7 @@
 """Integration tests for :class:`tmom_recon.reconstruction.ACDipolePzGenerator`.
 
 The generator must give *exactly* the same result as a one-shot
-``calculate_pz(..., acd_only=True)`` for the same optics (it shares the same
+``calculate_acd_pz`` call for the same optics (it shares the same
 ``reconstruct_from_prepared`` code path), must freeze the input data so repeated
 updates are deterministic, and must track changes to the model optics.
 
@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 
 from tests.reference_co import measured_zero_reference_for_simulation
-from tmom_recon import ACDipoleConfig, ACDipolePzGenerator, ModelDetails, calculate_pz
+from tmom_recon import ACDipoleConfig, ACDipolePzGenerator, ModelDetails, calculate_acd_pz
 from tmom_recon.acd.madng_driver import ACDipoleMadDriver
 
 from .acd_test_helpers import AC_DIPOLE_ELEMENT, _ac_dipole_segment_around_element, _get_driver
@@ -49,31 +49,28 @@ def _setup(data_dir, acd_tracking_setup) -> tuple[pd.DataFrame, ACDipoleMadDrive
 
 @pytest.mark.slow
 def test_generator_update_matches_acd_only(data_dir, acd_tracking_setup) -> None:
-    """gen.update() is identical to a one-shot calculate_pz(acd_only=True)."""
+    """The ACD generator is identical to the one-shot ACD workflow."""
     tracking_df, driver, bpm_up, bpm_dn = _setup(data_dir, acd_tracking_setup)
     model_details = ModelDetails(accelerator=driver.accelerator, pt=driver.pt)
     config = _config(bpm_upstream=bpm_up, bpm_downstream=bpm_dn)
 
-    generator = calculate_pz(
-        tracking_df,
-        frame=measured_zero_reference_for_simulation(tracking_df),
+    generator = ACDipolePzGenerator.build(
+        data=tracking_df,
+        closed_orbit_at_zero=measured_zero_reference_for_simulation(tracking_df),
+        orbit_mode="dynamic",
         model_details=model_details,
-        acd=config,
-        acd_only=True,
-        generator=True,
-        barrier_s=None,
+        config=config,
     )
     assert isinstance(generator, ACDipolePzGenerator)
     assert generator.model.accelerator is driver.accelerator
 
     from_generator = generator.update()
-    one_shot = calculate_pz(
+    one_shot = calculate_acd_pz(
         tracking_df,
-        frame=measured_zero_reference_for_simulation(tracking_df),
-        model_details=model_details,
-        acd=config,
-        acd_only=True,
-        barrier_s=None,
+        model_details,
+        config,
+        closed_orbit_at_zero=measured_zero_reference_for_simulation(tracking_df),
+        orbit_mode="dynamic",
     )
 
     pd.testing.assert_frame_equal(from_generator, one_shot)
@@ -88,14 +85,12 @@ def test_generator_repeated_update_is_deterministic(data_dir, acd_tracking_setup
     model_details = ModelDetails(accelerator=driver.accelerator, pt=driver.pt)
     config = _config(bpm_upstream=bpm_up, bpm_downstream=bpm_dn)
 
-    generator = calculate_pz(
-        tracking_df,
-        frame=measured_zero_reference_for_simulation(tracking_df),
+    generator = ACDipolePzGenerator.build(
+        data=tracking_df,
+        closed_orbit_at_zero=measured_zero_reference_for_simulation(tracking_df),
+        orbit_mode="dynamic",
         model_details=model_details,
-        acd=config,
-        acd_only=True,
-        generator=True,
-        barrier_s=None,
+        config=config,
     )
     assert isinstance(generator, ACDipolePzGenerator)
     first = generator.update()
@@ -106,34 +101,38 @@ def test_generator_repeated_update_is_deterministic(data_dir, acd_tracking_setup
 
 @pytest.mark.slow
 def test_generator_pt_update_refreshes_acd_models(data_dir, acd_tracking_setup) -> None:
-    """Updating pt refreshes both transport and driven optics inputs."""
+    """Updating pt refreshes both transport and driven optics inputs.
+
+    The one-shot comparison receives the same explicit ``pt`` value.
+    ``ModelDetails.pt`` is only the model probe coordinate; when the measurement
+    offset is omitted, :func:`calculate_pz` estimates it from the data and then
+    regenerates the model at that estimate. Supplying both values ensures the
+    generator and one-shot paths reconstruct the same physical momentum.
+    """
     tracking_df, driver, bpm_up, bpm_dn = _setup(data_dir, acd_tracking_setup)
     model_details = ModelDetails(accelerator=driver.accelerator, pt=driver.pt)
     config = _config(bpm_upstream=bpm_up, bpm_downstream=bpm_dn)
     updated_pt = 1.0e-3
 
-    generator = calculate_pz(
-        tracking_df,
-        frame=measured_zero_reference_for_simulation(tracking_df),
+    generator = ACDipolePzGenerator.build(
+        data=tracking_df,
+        closed_orbit_at_zero=measured_zero_reference_for_simulation(tracking_df),
+        orbit_mode="dynamic",
         model_details=model_details,
-        acd=config,
-        acd_only=True,
-        generator=True,
-        barrier_s=None,
+        config=config,
     )
     assert isinstance(generator, ACDipolePzGenerator)
 
-    from_generator = generator.update(measurement_pt_offset=updated_pt)
-    one_shot = calculate_pz(
+    from_generator = generator.update(pt=updated_pt)
+    one_shot = calculate_acd_pz(
         tracking_df,
-        frame=measured_zero_reference_for_simulation(tracking_df),
-        model_details=ModelDetails(
+        ModelDetails(
             accelerator=driver.accelerator,
             pt=updated_pt,
         ),
-        acd=config,
-        acd_only=True,
-        barrier_s=None,
+        config,
+        closed_orbit_at_zero=measured_zero_reference_for_simulation(tracking_df),
+        orbit_mode="dynamic",
     )
 
     pd.testing.assert_frame_equal(from_generator, one_shot)

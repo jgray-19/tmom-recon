@@ -2,10 +2,9 @@
 
 The user never supplies a twiss. They describe the *accelerator*, its **momentum**
 (``pt``) and any **additional magnet strengths** missing from the base sequence;
-:func:`resolve_model_details` builds the MAD-NG model and returns one chromatic
-twiss. The closed-orbit reference is deliberately *not* another twiss: it is the
-measured orbit-zero :class:`~tmom_recon.frame.ReconstructionFrame` supplied
-by the caller. Tunes are never matched here.
+:func:`resolve_model_details` builds the MAD-NG model and returns both the active
+chromatic twiss and its generated zero-momentum reference. Callers supply only
+measured zero-orbit positions. Tunes are never matched here.
 """
 
 from __future__ import annotations
@@ -55,10 +54,11 @@ class ModelDetails:
 
 @dataclass(frozen=True)
 class ResolvedModel:
-    """A generated model and the single twiss used by ordinary reconstruction."""
+    """A generated model with active- and zero-momentum Twiss tables."""
 
     model: ACDipoleMadDriver
     tws: pd.DataFrame
+    zero_tws: pd.DataFrame
 
 
 def resolve_model_details(
@@ -67,7 +67,7 @@ def resolve_model_details(
     observed_elements: str | list[str] | None = None,
     install_ac_dipole_markers: bool = False,
 ) -> ResolvedModel:
-    """Generate a model and its single chromatic reconstruction twiss.
+    """Generate a model and its active and zero-momentum reconstruction twisses.
 
     The AC-dipole before/after markers are only inserted when
     *install_ac_dipole_markers* is set, so a plain reconstruction is not coupled
@@ -82,12 +82,13 @@ def resolve_model_details(
         tune_knobs=details.tune_knobs,
         corrector_knobs=details.corrector_knobs,
     )
-    # `chrom=True` adds the second-order dispersion columns ddx/ddpx/ddy/ddpy,
-    # which the pt estimate and the dispersive momentum term both use. They are
-    # optional downstream, so a twiss without them still works -- just to first
-    # order in pt.
-    tws = model.run_twiss(observe=1, coupling=True, chrom=True, pt=model.pt)
-    return ResolvedModel(model=model, tws=tws)
+    zero_tws = model.run_twiss(observe=1, coupling=True, chrom=True, deltap=0.0)
+    tws = (
+        zero_tws
+        if model.pt == 0.0
+        else model.run_twiss(observe=1, coupling=True, chrom=True, pt=model.pt)
+    )
+    return ResolvedModel(model=model, tws=tws, zero_tws=zero_tws)
 
 
 __all__ = [

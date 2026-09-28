@@ -1,94 +1,33 @@
 Usage
 =====
 
-``calculate_pz`` is the public momentum-reconstruction entry point. It accepts
-raw turn-by-turn BPM data, generated model details, and an explicit measured
-orbit-zero frame.
-
-Input data
-----------
-
-The BPM frame contains ``name``, ``turn``, ``x``, ``y`` and normally
-``var_x``/``var_y``. Names must be covered by the frame and the resolved optics.
-
-Constructing the frame
-----------------------
-
-Dynamic reconstruction removes the same measured orbit zero in both planes::
-
-   from tmom_recon import ReconstructionFrame
-
-   frame = ReconstructionFrame(
-       orbit_zero=measured_orbit_zero[["x", "y"]],
-       dynamic_planes=("x", "y"),
-   )
-
-Absolute reconstruction retains both planes and therefore requires fitted
-closed-orbit angles::
-
-   frame = ReconstructionFrame(
-       orbit_zero=measured_orbit_zero[["x", "y"]],
-       fitted_momenta=fitted_orbit[["px", "py"]],
-   )
-
-A horizontal-only retained frame is explicit too::
-
-   frame = ReconstructionFrame(
-       orbit_zero=measured_orbit_zero[["x", "y"]],
-       dynamic_planes=("y",),
-       fitted_momenta=fitted_orbit[["px"]],
-   )
-
-Reconstruction
---------------
-
-Pass raw data. Do not subtract the orbit in application code::
-
-   from tmom_recon import ModelDetails, calculate_pz
+All reconstruction entry points accept raw BPM data plus two required orbit
+inputs: ``closed_orbit_at_zero`` (measured ``x/y`` at ``dp=0``) and
+``orbit_mode`` (``"dynamic"`` or ``"absolute"``). For example::
 
    result = calculate_pz(
        raw_bpm_data,
        ModelDetails(accelerator=accelerator, pt=pt_offset),
-       frame=frame,
-       measurement_pt_offset=pt_offset,
-       use_dispersion=True,
+       closed_orbit_at_zero=measured_orbit_zero[["x", "y"]],
+       orbit_mode="dynamic",
        barrier_s=None,
    )
 
-Omit ``measurement_pt_offset`` to estimate it after the frame transformation.
-The result records the applied/estimated value in ``attrs["PT_EST"]``.
+The package generates all reference Twiss tables. Dynamic mode restores the
+generated zero-momentum model ``x/px/y/py``; absolute mode restores measured
+``x/y`` and generated model ``px/py``. Callers must not supply or pre-apply a
+reference Twiss.
 
-Optics sources
---------------
+``calculate_acd_pz`` and ``calculate_kicker_pz`` use the same orbit contract.
+``estimate_closed_orbit_pt`` takes ``closed_orbit_at_zero`` directly and has no
+mode because subtraction is identical in both modes.
 
-``measurement_dir`` supplies measured optics. Categories listed in
-``model_optics`` are forced to the model; other categories use measurements when
-available. Dispersion position and momentum columns are resolved as one category.
+Use ``OpticsInput`` to select measured optics categories. Categories default to
+the generated model; requested measurement categories never silently fall back.
 
-AC-dipole reconstruction
-------------------------
+``PzGenerator.build``, ``ACDipolePzGenerator.build``, and
+``KickerPzGenerator.build`` freeze the measured zero orbit and mode. A strength
+update refreshes the generated zero-momentum reference as well as active optics.
 
-Supply ``ACDipoleConfig`` to refine the bracketing BPMs, or set
-``acd_only=True`` for marker/BPM states only. The same ``frame`` is mandatory on
-both paths, so all-BPM and ACD reconstruction cannot use different coordinate
-origins.
-
-Generators
-----------
-
-``generator=True`` freezes raw data and its frame. Generator updates accept
-``measurement_pt_offset`` and updated strengths; they cannot change the orbit
-origin underneath an optimization.
-
-Closed-orbit details
---------------------
-
-See :doc:`closed_orbit_handling` for the complete ordering, dispersion, fitted
-orbit, and failure-mode contract.
-
-Building the docs
------------------
-
-.. code-block:: bash
-
-   sphinx-build -b html docs docs/_build/html
+See :doc:`closed_orbit_handling` for migration guidance, including the required
+changes in ``psb_md`` and ``sgd-magnet-tuner``.

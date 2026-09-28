@@ -25,11 +25,11 @@ def test_generator_update_matches_calculate_pz_and_accepts_bpm_subset(
     model_details = lhc_model_details(seq_b1, delta_p=0.0)
     barrier_s = lhc_acd_barrier_s(model_details.accelerator, model_details.pt)
 
-    generator = calculate_pz(
-        tracking_df,
-        model_details,
-        frame=measured_zero_reference_for_simulation(tracking_df),
-        generator=True,
+    generator = PzGenerator.build(
+        data=tracking_df,
+        model_details=model_details,
+        closed_orbit_at_zero=measured_zero_reference_for_simulation(tracking_df),
+        orbit_mode="dynamic",
         barrier_s=barrier_s,
         info=False,
     )
@@ -39,7 +39,8 @@ def test_generator_update_matches_calculate_pz_and_accepts_bpm_subset(
     one_shot = calculate_pz(
         tracking_df,
         model_details,
-        frame=measured_zero_reference_for_simulation(tracking_df),
+        closed_orbit_at_zero=measured_zero_reference_for_simulation(tracking_df),
+        orbit_mode="dynamic",
         barrier_s=barrier_s,
         info=False,
     )
