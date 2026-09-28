@@ -39,6 +39,11 @@ docs = [
     "myst-parser>=4",
 ]
 
+[tool.uv.sources]
+# Not on PyPI: installed from GitHub (CI and `uv pip install .`).
+pymadng-utils = { git = "https://github.com/jgray-19/pymadng-utils.git" }
+xtrack-tools = { git = "https://github.com/jgray-19/xtrack_tools.git" }
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["tmom_recon*"]

@@ -61,14 +61,9 @@ jobs:
       - name: Ensure pip, setuptools and wheel
         run: uv pip install --upgrade pip setuptools wheel
 
+      # pymadng-utils comes from GitHub via [tool.uv.sources]; xtrack-tools is test-only.
       - name: Install package
-        run: uv pip install '.[test]'
-
-      - name: Install dependencies from GitHub
-        run: |
-          uv pip install \
-            git+https://github.com/jgray-19/xtrack_tools.git \
-            git+https://github.com/jgray-19/pymadng-utils.git
+        run: uv pip install '.[test]' 'xtrack-tools @ git+https://github.com/jgray-19/xtrack_tools.git'
 
       - name: Run ${{ matrix.shard }} tests
         run: |
