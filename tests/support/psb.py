@@ -35,6 +35,8 @@ class PSBScenario:
     measurement: SimulatedMeasurement
     bend_strengths: dict[str, float]
     quad_strengths: dict[str, float]
+    # Tracking-line quad rolls {name: rot_s_rad} (= MAD-NG ``tilt``); never applied to the model.
+    quad_tilts: dict[str, float]
 
     def copy(self) -> PSBScenario:
         """Copy mutable tabular data while retaining expensive model objects."""
@@ -51,5 +53,6 @@ class PSBScenario:
                 bpm_names=self.measurement.bpm_names,
             ),
             bend_strengths=dict(self.bend_strengths),
+            quad_tilts=dict(self.quad_tilts),
             quad_strengths=dict(self.quad_strengths),
         )

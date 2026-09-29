@@ -38,11 +38,6 @@ class ACDipoleConfig:
     acquisition whose reconstructed BPM state disagrees with the model -- drop
     that acquisition rather than widen the tolerance. ``False`` only logs, and
     the caller must then check ``attrs["acd_state_consistency"]`` itself.
-
-    ``lens_natural_tunes`` sets the natural tunes the driven-optics lens is
-    built with (its strength follows from natural vs driven tune). ``None``
-    uses the model's own natural tunes; pass the measured tunes to pin the
-    lens when the model's tune may differ from the machine's.
     """
 
     ac_dipole_marker: str
@@ -51,7 +46,6 @@ class ACDipoleConfig:
     bpm_downstream: str | None = None
     smooth_lambda: float = 1.0
     reject_inconsistent_state: bool = True
-    lens_natural_tunes: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -105,11 +99,8 @@ def resolve_ac_dipole_config(
         observed_elements=config.ac_dipole_marker,
         install_ac_dipole_markers=True,
     )
-    if config.lens_natural_tunes is None:
-        natural = optics.model.run_twiss(observe=0, coupling=True, chrom=True, pt=optics.model.pt)
-        lens_tunes = (float(natural.headers["q1"] % 1.0), float(natural.headers["q2"] % 1.0))
-    else:
-        lens_tunes = (float(config.lens_natural_tunes[0]), float(config.lens_natural_tunes[1]))
+    natural = optics.model.run_twiss(observe=0, coupling=True, chrom=True, pt=optics.model.pt)
+    lens_tunes = (float(natural.headers["q1"] % 1.0), float(natural.headers["q2"] % 1.0))
     # install_ac_dipole takes an explicit deltap (its own API, not a twiss
     # closed-orbit search), so the pt -> dp/p conversion is still required here.
     optics.model.install_ac_dipole(

@@ -271,8 +271,11 @@ def build_psb_tracking_setup(
         apply_vertical_quad_misalignment(
             line, rms=quad_misalign_y_rms, seed=quad_misalign_seed, name_prefix=QUAD_PREFIX
         )
+    quad_tilts: dict[str, float] = {}
     if quad_tilt_rms > 0.0:
-        apply_quad_tilt(line, rms=quad_tilt_rms, seed=quad_tilt_seed, name_prefix=QUAD_PREFIX)
+        quad_tilts = apply_quad_tilt(
+            line, rms=quad_tilt_rms, seed=quad_tilt_seed, name_prefix=QUAD_PREFIX
+        )
     if correct_orbit:
         correct_closed_orbit(
             line,
@@ -360,4 +363,5 @@ def build_psb_tracking_setup(
         ),
         bend_strengths=bend_k0,
         quad_strengths=quad_k1,
+        quad_tilts=quad_tilts,
     )

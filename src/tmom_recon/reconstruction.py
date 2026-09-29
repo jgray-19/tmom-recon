@@ -5,6 +5,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from tmom_recon.acd.global_markers import (
+    apply_global_marker_states,
+    forced_mode_responses,
+    normal_mode_responses,
+)
 from tmom_recon.acd.integration import (
     ACDipoleConfig,
     ResolvedACDipoleConfig,
@@ -50,6 +55,7 @@ __all__ = [
     "ModelOpticsErrors",
     "OpticsInput",
     "PzGenerator",
+    "calculate_acd_global_pz",
     "calculate_acd_pz",
     "calculate_pz",
 ]
@@ -130,6 +136,63 @@ def calculate_acd_pz(
         dpp=_dpp(model_details.accelerator, model_details.pt),
     )
     return _calculate_acd(data, resolved_acd, reference, resolved_optics)
+
+
+def calculate_acd_global_pz(
+    data: pd.DataFrame,
+    model_details: ModelDetails,
+    config: ACDipoleConfig,
+    *,
+    closed_orbit_at_zero: pd.DataFrame,
+    orbit_mode: str,
+    optics: OpticsInput = OpticsInput(),
+    model_errors: ModelOpticsErrors | None = None,
+) -> tfs.TfsDataFrame:
+    """AC-dipole reconstruction with marker states from the global driven optics.
+
+    Same inputs and output layout as :func:`calculate_acd_pz`. The tracked
+    reconstruction runs first; the driven lines of the ``marker_before`` /
+    ``marker_after`` rows are then replaced by the exact coupled forced response
+    to the two AC dipoles, one amplitude each, fitted over x and y at all BPMs
+    (:func:`tmom_recon.acd.global_markers.apply_global_marker_states`). The
+    static offsets, the variances and the BPM rows stay tracked. The per-mode
+    fits are in ``attrs["acd_global_markers"]``.
+
+    The kick is then the fitted drive amplitude itself instead of
+    a difference of tracked momenta, which is far less sensitive to local model
+    errors between the two neighbouring BPMs.
+    """
+    validate_input(data)
+    resolved_acd = resolve_ac_dipole_config(model_details, config)
+    reference = build_orbit_reference(
+        closed_orbit_at_zero,
+        orbit_mode,
+        resolved_acd.closed_orbit_tws,
+        _reference_names(data, resolved_acd.closed_orbit_tws),
+    )
+    resolved_optics = _resolve(
+        resolved_acd.optics_tws,
+        resolved_acd.closed_orbit_tws,
+        data,
+        optics,
+        model_errors,
+        dpp=_dpp(model_details.accelerator, model_details.pt),
+    )
+    tracked = _calculate_acd(data, resolved_acd, reference, resolved_optics)
+    # The undriven transport model: the forced response is exact with coupling,
+    # the driven (lens) optics are not.
+    model = resolved_acd.model
+    vectors, natural_tunes = normal_mode_responses(model, model.pt)
+    responses = forced_mode_responses(
+        vectors,
+        natural_tunes,
+        config.driven_tunes,
+        before=model.accelerator.acd_marker_name("before"),
+        after=model.accelerator.acd_marker_name("after"),
+    )
+    return apply_global_marker_states(
+        tracked, _acd_data(data), responses, driven_tunes=config.driven_tunes
+    )
 
 
 def _names(data: pd.DataFrame) -> list[str]:

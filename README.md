@@ -52,6 +52,7 @@ from tmom_recon import (
     OpticsInput,
     ModelDetails,
     build_twiss_from_measurements,
+    calculate_acd_global_pz,
     calculate_acd_pz,
     calculate_kicker_pz,
     calculate_pz,
@@ -105,6 +106,15 @@ acd_result = calculate_acd_pz(
     orbit_mode="dynamic",
 )
 ```
+
+`calculate_acd_global_pz` takes the same arguments and returns the same
+layout, but builds the marker states from the **exact coupled forced response**
+of the undriven model: one kick amplitude per AC dipole, fitted over x and y at
+all BPMs, then projected to the marker ends. The kick is fitted directly
+instead of taken as a difference of two tracked momenta, so local model errors
+next to the AC dipole cost far less (PSB, 3e-3 rms unmodelled quad errors: kick error 1.6/3.8%
+against 16/13% tracked). The model **must** sit on the measured natural tunes;
+see `docs/api/acd.rst`.
 
 Both required orbit inputs are explicit. ``dynamic`` restores the complete
 generated model state at zero momentum; ``absolute`` restores measured ``x/y``

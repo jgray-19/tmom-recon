@@ -18,7 +18,8 @@ generated zero-momentum model ``x/px/y/py``; absolute mode restores measured
 ``x/y`` and generated model ``px/py``. Callers must not supply or pre-apply a
 reference Twiss.
 
-``calculate_acd_pz`` and ``calculate_kicker_pz`` use the same orbit contract.
+``calculate_acd_pz``, ``calculate_acd_global_pz`` and ``calculate_kicker_pz`` use
+the same orbit contract.
 ``estimate_closed_orbit_pt`` takes ``closed_orbit_at_zero`` directly and has no
 mode because subtraction is identical in both modes.
 
