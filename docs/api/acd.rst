@@ -78,6 +78,20 @@ from A, see ``madl_gphys.mad``). The mode vectors are
 inverse-variance weighted least squares from the ``Q_1`` and ``Q_2`` lines of x
 AND y at all BPMs.
 
+Cross-mode content from the data (``fit_cross_modes=True``). The forced
+response takes each drive's cross-plane content (drive 1 in y, drive 2 in x)
+from the model's coupling. A model with too little coupling (the uncoupled start
+of a fit, refreshed only with the coupling found so far) then gives markers with
+too little, and the fit is pulled back towards less coupling (psb_sim: fitted
+``|f1001|`` about 25% low). With ``fit_cross_modes=True`` each drive's marker
+state gains a free component in the other normal mode at the marker,
+``P_j d_k`` with ``P_j = [Re v_j, Im v_j]`` and ``d_k`` complex 2-vector,
+transported to the BPMs by the same matrices and fitted with ``C_k`` from x and
+y at all BPMs (``cross_mode_bases``). ``C_k`` and the kick still follow the forced
+response. On the 2 mrad tilted PSB the worst marker cross-line error drops from
+100% to 20% with an uncoupled model and from 50% to 9% with half the tilts; the
+own lines and the kick are unchanged.
+
 Why not the driven twiss. MAD-NG's driven optics replace each AC dipole by a
 lens acting on its own plane at all tunes. Without coupling that equals the
 forced response exactly, and the uncoupled results are identical. With coupling,

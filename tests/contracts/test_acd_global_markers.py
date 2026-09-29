@@ -262,3 +262,72 @@ def test_mode_vectors_match_madng_eigenmode_columns(tilted_psb) -> None:
             assert abs(v[i, k] - value) < 1e-9 * scale, (
                 f"{name} v[{i},{k}]: A {v[i, k]} vs columns {value}"
             )
+
+
+# Under-coupled model (the start of a fit, and every refresh short of the
+# fitted coupling): the tilted machine above, reconstructed with the model's
+# tilts scaled by ``model_coupling``, tune-matched to the machine. Worst marker
+# line errors measured 2026-09-29 (cross from model / from data):
+#   tilts x0:   cross line 1.00 / 0.204, own line 1.43e-2 / 1.43e-2, kick 0.252 / 0.252
+#   tilts x0.5: cross line 0.496 / 0.094, own line 2.15e-2 / 1.64e-2, kick 0.282 / 0.274
+# The kick error is the under-coupled model's own (2 mrad rolls; ~0.2% at
+# psb_sim's coupling) and the cross-mode fit leaves it alone.
+_CROSS_FROM_DATA_RATIO_MAX = 0.35
+
+
+@pytest.mark.parametrize("model_coupling", [0.0, 0.5], ids=lambda v: f"model_tilts_x{v:g}")
+def test_cross_mode_fit_recovers_coupling_missing_from_model(tilted_psb, model_coupling) -> None:
+    """Markers' cross-plane lines come from the data, not the model's coupling."""
+    setup, _ = tilted_psb
+    data_all = setup.measurement.data
+    data = data_all.loc[data_all["name"].isin(setup.measurement.bpm_names)].copy()
+    headers = {str(k).lower(): v for k, v in setup.machine.madng_twiss.headers.items()}
+    natural = (float(headers["q1"]) % 1, float(headers["q2"]) % 1)
+    tilts = {
+        f"{name.upper()}.tilt": model_coupling * value for name, value in setup.quad_tilts.items()
+    }
+    interface = AcceleratorMadInterface(setup.machine.accelerator)
+    interface.set_magnet_strengths(tilts)
+    knobs = interface.match_tunes(*natural)
+    details = ModelDetails(
+        accelerator=setup.machine.accelerator,
+        pt=setup.measurement.pt,
+        magnet_strengths=tilts,
+        tune_knobs=knobs,
+    )
+    config = ACDipoleConfig(ac_dipole_marker=ACD_ELEMENT, driven_tunes=DRIVEN_TUNES)
+    origin = data.groupby("name", sort=False)[["x", "y"]].mean()
+    kwargs = {"closed_orbit_at_zero": origin, "orbit_mode": "dynamic"}
+    names = acd_state_marker_names(resolve_ac_dipole_config(details, config).model)
+    results = {
+        label: calculate_acd_global_pz(data, details, config, fit_cross_modes=fit, **kwargs)
+        for label, fit in (("model", False), ("data", True))
+    }
+    truth = data_all.assign(name=data_all["name"].astype(str).str.upper())
+    errors = {}
+    for label, result in results.items():
+        rec = result.assign(name=result["name"].astype(str).str.upper())
+        own_worst = cross_worst = 0.0
+        for name in names:
+            z_true, z_rec = (
+                _mode_lines(truth, name, DRIVEN_TUNES),
+                _mode_lines(rec, name, DRIVEN_TUNES),
+            )
+            for col, own in (("x", 0), ("px", 0), ("y", 1), ("py", 1)):
+                cross = 1 - own
+                own_worst = max(own_worst, abs(z_rec[col][own] / z_true[col][own] - 1))
+                cross_worst = max(cross_worst, abs(z_rec[col][cross] / z_true[col][cross] - 1))
+        kick = _kick_line_errors(result, data_all, names, DRIVEN_TUNES)
+        errors[label] = own_worst, cross_worst, max(kick.values())
+        LOGGER.info(
+            "model tilts x%g, cross from %s: own-line %.2e, cross-line %.2e, kick %.2e",
+            model_coupling,
+            label,
+            *errors[label],
+        )
+    (own_m, cross_m, kick_m), (own_d, cross_d, kick_d) = errors["model"], errors["data"]
+    assert cross_d < _CROSS_FROM_DATA_RATIO_MAX * cross_m, (
+        f"cross line {cross_d:.2e} vs {cross_m:.2e}"
+    )
+    assert own_d < 1.05 * own_m, f"own line {own_d:.2e} vs {own_m:.2e}"
+    assert kick_d < 1.05 * kick_m, f"kick {kick_d:.2e} vs {kick_m:.2e}"

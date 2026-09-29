@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from tmom_recon.acd.global_markers import (
     apply_global_marker_states,
+    cross_mode_bases,
     forced_mode_responses,
     normal_mode_responses,
 )
@@ -147,6 +148,7 @@ def calculate_acd_global_pz(
     orbit_mode: str,
     optics: OpticsInput = OpticsInput(),
     model_errors: ModelOpticsErrors | None = None,
+    fit_cross_modes: bool = False,
 ) -> tfs.TfsDataFrame:
     """AC-dipole reconstruction with marker states from the global driven optics.
 
@@ -161,6 +163,11 @@ def calculate_acd_global_pz(
     The kick is then the fitted drive amplitude itself instead of
     a difference of tracked momenta, which is far less sensitive to local model
     errors between the two neighbouring BPMs.
+
+    ``fit_cross_modes`` also fits each drive's other-mode content at the markers
+    from the BPM data (:func:`tmom_recon.acd.global_markers.cross_mode_bases`)
+    instead of taking it from the model's coupling alone, so a model with too
+    little coupling does not hand the fit markers with too little.
     """
     validate_input(data)
     resolved_acd = resolve_ac_dipole_config(model_details, config)
@@ -190,8 +197,21 @@ def calculate_acd_global_pz(
         before=model.accelerator.acd_marker_name("before"),
         after=model.accelerator.acd_marker_name("after"),
     )
+    cross_bases = (
+        cross_mode_bases(
+            vectors,
+            before=model.accelerator.acd_marker_name("before"),
+            after=model.accelerator.acd_marker_name("after"),
+        )
+        if fit_cross_modes
+        else None
+    )
     return apply_global_marker_states(
-        tracked, _acd_data(data), responses, driven_tunes=config.driven_tunes
+        tracked,
+        _acd_data(data),
+        responses,
+        driven_tunes=config.driven_tunes,
+        cross_bases=cross_bases,
     )
 
 

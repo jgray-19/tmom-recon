@@ -45,6 +45,22 @@ kick is ``Re[C_k exp(2 pi i Q_k n)]`` itself rather than a difference of tracked
 momenta, and the data enter only through ``C_1, C_2``, so rebuilding the
 markers from a fitted model does not feed local errors back.
 
+Cross-mode content from the data (``cross_bases``). The forced response takes
+the drive's cross-plane content (drive 1 in y, drive 2 in x) from the model's
+coupling. A model with too little coupling (e.g. the uncoupled start of a fit,
+refreshed only with the coupling the fit has found so far) then gives markers
+with too little, which pulls the fit back towards less coupling. With
+:func:`cross_mode_bases`, each drive's marker state gains a free component in
+the OTHER normal mode at the marker,
+
+    delta_k(b) = P_j d_k,   P_j = [Re v_j, Im v_j](b),   d_k in C^2,
+
+carried to every element by the same transfer matrices (the AC dipole kicks
+only at its own tune, so ``delta`` is continuous across it), and ``d_k`` is
+fitted with ``C_k`` from the x and y lines of all BPMs. ``C_k`` (and so the
+kick) still follows the forced response; only the cross-mode part at the
+markers comes from the data.
+
 Only the driven lines are replaced. The static part of each marker coordinate
 (the data-driven off-momentum orbit) and the variances are kept from the
 tracked states.
@@ -76,6 +92,7 @@ __all__ = [
     "GLOBAL_SUMMARY_ATTR_NAME",
     "GlobalModeFit",
     "apply_global_marker_states",
+    "cross_mode_bases",
     "fit_mode_amplitude",
     "forced_mode_responses",
     "harmonic_lines",
@@ -94,7 +111,9 @@ class GlobalModeFit:
             ``Re[C exp(2 pi i Q n)]``).
         bpms: BPMs used, in data order.
         residuals: Per-BPM relative residual of the mode's own-plane line,
-            ``|Z_i - C g_i| / |Z_i|``.
+            ``|Z_i - C g_i - B_i d| / |Z_i|``.
+        cross: Fitted other-mode amplitudes ``d`` (2 complex) at the marker,
+            ``None`` without :func:`cross_mode_bases`.
     """
 
     mode: int
@@ -102,6 +121,7 @@ class GlobalModeFit:
     amplitude: complex
     bpms: tuple[str, ...]
     residuals: np.ndarray
+    cross: np.ndarray | None = None
 
     @property
     def median_residual(self) -> float:
@@ -218,10 +238,54 @@ def forced_mode_responses(
     return responses
 
 
+def _transfers(vectors: Mapping[str, np.ndarray], before: str, after: str) -> dict[str, np.ndarray]:
+    """``{NAME: T}``: the model's same-turn transfer from the marker to each element.
+
+    Downstream elements (and ``after``) take ``A(s) A(after)^-1``; upstream ones
+    (and ``before``) ``A(s) A(before)^-1``, as in :func:`forced_mode_responses`.
+    """
+    names = list(vectors)
+    order = {name: i for i, name in enumerate(names)}
+    inv_before = np.linalg.inv(_real_basis(vectors[before]))
+    inv_after = np.linalg.inv(_real_basis(vectors[after]))
+    return {
+        name: _real_basis(vectors[name])
+        @ (inv_after if order[name] >= order[after] else inv_before)
+        for name in names
+    }
+
+
+def cross_mode_bases(
+    vectors: Mapping[str, np.ndarray], *, before: str, after: str
+) -> dict[str, np.ndarray]:
+    """Other-mode basis at the marker, carried to every element (see module doc).
+
+    Args:
+        vectors: :func:`normal_mode_responses` of the model, in sequence order,
+            including the marker ends ``before``/``after``.
+        before, after: Marker names on either side of the AC dipole.
+
+    Returns:
+        ``{NAME: B}`` with ``B`` of shape ``(4, 2, 2)``: ``B[:, :, k]`` maps drive
+        k's other-mode amplitudes ``d_k`` to the element's ``x, px, y, py``.
+        At both marker ends it is ``[Re v_j, Im v_j]`` of ``before``.
+    """
+    before, after = before.upper(), after.upper()
+    basis = _real_basis(vectors[before])
+    other = np.stack([basis[:, 2:4], basis[:, 0:2]], axis=-1)  # drive k -> mode 1 - k
+    transfers = _transfers(vectors, before, after)
+    out = {name: np.einsum("ij,jak->iak", t, other) for name, t in transfers.items()}
+    out[before] = out[after] = other
+    return out
+
+
 def _fit_modes(
-    data: pd.DataFrame, responses: Mapping[str, np.ndarray], tunes: tuple[float, float]
+    data: pd.DataFrame,
+    responses: Mapping[str, np.ndarray],
+    tunes: tuple[float, float],
+    cross_bases: Mapping[str, np.ndarray] | None = None,
 ) -> list[GlobalModeFit]:
-    lines, model, weights, bpms = [], [], [], []
+    lines, model, weights, bpms, bases = [], [], [], [], []
     for name, rows in data.groupby("name", sort=False):
         key = str(name).upper()
         if key not in responses:
@@ -233,6 +297,8 @@ def _fit_modes(
         # lines[plane, mode]
         lines.append([harmonic_lines(turns, rows[p].to_numpy(float), tunes)[0] for p in _OWN_PLANE])
         model.append(responses[key][[0, 2], :])
+        if cross_bases is not None:
+            bases.append(cross_bases[key][[0, 2]])
         weights.append(1.0 / var)
         bpms.append(str(name))
     if len(bpms) < 2:
@@ -242,10 +308,22 @@ def _fit_modes(
     lines, model, weights = np.array(lines), np.array(model), np.array(weights)[:, :, None]
     fits = []
     for k in range(2):
-        amplitude = fit_mode_amplitude(lines[:, :, k], model[:, :, k], weights[:, :, 0])
+        if cross_bases is None:
+            amplitude = fit_mode_amplitude(lines[:, :, k], model[:, :, k], weights[:, :, 0])
+            cross, fitted = None, amplitude * model[:, :, k]
+        else:
+            # Unknowns (C, d1, d2); rows: x and y at every BPM, weighted.
+            b = np.array(bases)[:, :, :, k]  # (bpm, plane, 2)
+            design = np.concatenate([model[:, :, k, None], b], axis=-1).reshape(-1, 3)
+            sqrt_w = np.sqrt(weights[:, :, 0]).reshape(-1, 1)
+            coef = np.linalg.lstsq(
+                sqrt_w * design, sqrt_w[:, 0] * lines[:, :, k].reshape(-1), rcond=None
+            )[0]
+            amplitude, cross = complex(coef[0]), coef[1:]
+            fitted = (design @ coef).reshape(lines[:, :, k].shape)
         own = lines[:, k, k]
-        residuals = np.abs(own - amplitude * model[:, k, k]) / np.abs(own)
-        fits.append(GlobalModeFit(k + 1, float(tunes[k]), amplitude, tuple(bpms), residuals))
+        residuals = np.abs(own - fitted[:, k]) / np.abs(own)
+        fits.append(GlobalModeFit(k + 1, float(tunes[k]), amplitude, tuple(bpms), residuals, cross))
     return fits
 
 
@@ -255,6 +333,7 @@ def apply_global_marker_states(
     responses: Mapping[str, np.ndarray],
     *,
     driven_tunes: tuple[float, float],
+    cross_bases: Mapping[str, np.ndarray] | None = None,
 ) -> pd.DataFrame:
     """Replace the driven lines of the tracked marker states with the global solution.
 
@@ -266,6 +345,9 @@ def apply_global_marker_states(
         responses: Forced responses ``{NAME: g (4, 2)}`` at the BPMs and marker
             ends (:func:`forced_mode_responses`).
         driven_tunes: Drive tunes ``(Q_1, Q_2)`` of the horizontal and vertical AC dipole.
+        cross_bases: :func:`cross_mode_bases` of the same model to also fit each
+            drive's other-mode content at the markers from the data; ``None``
+            takes it from the forced response alone.
 
     Returns:
         Copy of ``result`` with global marker states and the two
@@ -273,7 +355,9 @@ def apply_global_marker_states(
     """
     responses = {str(k).upper(): np.asarray(v) for k, v in responses.items()}
     tunes = (float(driven_tunes[0]), float(driven_tunes[1]))
-    fits = _fit_modes(data, responses, tunes)
+    if cross_bases is not None:
+        cross_bases = {str(k).upper(): np.asarray(v) for k, v in cross_bases.items()}
+    fits = _fit_modes(data, responses, tunes, cross_bases)
     for fit in fits:
         LOGGER.info(
             "Global ACD markers mode %d: kick amplitude %.3e rad, median BPM residual %.2e over %d BPMs",
@@ -288,11 +372,16 @@ def apply_global_marker_states(
         sel = out["row_type"] == row_type
         if not sel.any():
             raise ValueError(f"ACD result has no {row_type} rows")
-        g = responses[str(out.loc[sel, "name"].iloc[0]).upper()]
+        name = str(out.loc[sel, "name"].iloc[0]).upper()
+        drive = amplitudes * responses[name]  # (4, 2): line of each coordinate per drive
+        if cross_bases is not None:
+            drive = drive + np.einsum(
+                "iak,ka->ik", cross_bases[name], np.array([f.cross for f in fits])
+            )
         turns = out.loc[sel, "turn"].to_numpy(float)
         rotation = np.exp(2j * np.pi * np.outer(turns, tunes))  # (n, 2)
         for i, col in enumerate(COORDS):
             offset = harmonic_lines(turns, out.loc[sel, col].to_numpy(float), tunes)[1]
-            out.loc[sel, col] = offset + np.real(rotation @ (amplitudes * g[i]))
+            out.loc[sel, col] = offset + np.real(rotation @ drive[i])
     out.attrs[GLOBAL_SUMMARY_ATTR_NAME] = fits
     return out

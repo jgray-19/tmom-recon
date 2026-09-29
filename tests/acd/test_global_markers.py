@@ -10,6 +10,7 @@ from tmom_recon.acd.global_markers import (
     COORDS,
     GLOBAL_SUMMARY_ATTR_NAME,
     apply_global_marker_states,
+    cross_mode_bases,
     fit_mode_amplitude,
     harmonic_lines,
 )
@@ -226,4 +227,65 @@ def test_missing_marker_rows_raise() -> None:
             _data(responses),
             responses,
             driven_tunes=TUNES,
+        )
+
+
+CROSS = np.array([[3e-4 + 1e-4j, -2e-4j], [1.5e-4, 2e-4 - 1e-4j]])  # d_k, one row per drive
+
+
+def _cross_bases() -> dict[str, np.ndarray]:
+    """Arbitrary other-mode bases, equal at both marker ends (continuous across the AC dipole)."""
+    rng = np.random.default_rng(7)
+    out = {name: rng.normal(size=(4, 2, 2)) for name in BPMS}
+    out[BEFORE.upper()] = out[AFTER.upper()] = rng.normal(size=(4, 2, 2))
+    return out
+
+
+def test_cross_fit_recovers_the_other_mode_missing_from_the_model() -> None:
+    """Uncoupled model, coupled data: the fitted cross part at the markers is the data's."""
+    responses, bases = _responses(), _cross_bases()
+    # The machine: model forced response plus other-mode content B d at every element.
+    truth = {
+        name: responses[name] + np.einsum("iak,ka->ik", bases[name], CROSS) / AMPLITUDE
+        for name in bases
+    }
+    out = apply_global_marker_states(
+        _tracked_result(responses, STATIC),
+        _data(truth),
+        responses,
+        driven_tunes=TUNES,
+        cross_bases=bases,
+    )
+    for row_type, name in (("marker_before", BEFORE), ("marker_after", AFTER)):
+        rows = _markers(out, row_type)
+        expected = _state(truth[name.upper()])
+        for col in COORDS:
+            np.testing.assert_allclose(
+                rows[col].to_numpy() - STATIC[col], expected[col], rtol=0, atol=1e-12
+            )
+    for k, fit in enumerate(out.attrs[GLOBAL_SUMMARY_ATTR_NAME]):
+        assert fit.amplitude == pytest.approx(AMPLITUDE[k], rel=1e-10)
+        np.testing.assert_allclose(fit.cross, CROSS[k], rtol=1e-9)
+    # Without the cross fit the model's (absent) coupling is used.
+    plain = apply_global_marker_states(
+        _tracked_result(responses, STATIC), _data(truth), responses, driven_tunes=TUNES
+    )
+    assert plain.attrs[GLOBAL_SUMMARY_ATTR_NAME][0].cross is None
+
+
+def test_cross_mode_bases_carry_the_other_mode_from_the_marker() -> None:
+    rng = np.random.default_rng(5)
+    names = ["BPM0", BEFORE.upper(), AFTER.upper(), "BPM1"]
+    a = {name: rng.normal(size=(4, 4)) for name in names}
+    a[AFTER.upper()] = a[BEFORE.upper()]
+    vectors = {name: m[:, 0::2] + 1j * m[:, 1::2] for name, m in a.items()}
+    bases = cross_mode_bases(vectors, before=BEFORE, after=AFTER)
+    a_b = a[BEFORE.upper()]
+    other = np.stack([a_b[:, 2:4], a_b[:, 0:2]], axis=-1)  # drive 1 -> mode 2, drive 2 -> mode 1
+    for marker in (BEFORE, AFTER):
+        np.testing.assert_allclose(bases[marker.upper()], other, atol=1e-12)
+    for name in ("BPM0", "BPM1"):
+        transfer = a[name] @ np.linalg.inv(a_b)
+        np.testing.assert_allclose(
+            bases[name], np.einsum("ij,jak->iak", transfer, other), atol=1e-10
         )
