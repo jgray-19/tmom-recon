@@ -252,6 +252,6 @@ def setup_xsuite_simulation(
         accelerator=LHC(beam=1, sequence_file=sequence_file, kinetic_energy=6800),
         pt=LHC(beam=1, sequence_file=sequence_file, kinetic_energy=6800).dp2pt(tracked_delta_p),
         magnet_strengths=magnet_strengths or None,
-        corrector_knobs=corrector_file,
+        machine_state=corrector_file,
     )
     return tracking_df, truth, model_details, xsuite_tws, baseline_line

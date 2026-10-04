@@ -18,7 +18,7 @@ import logging
 import numpy as np
 import pandas as pd
 from scipy import sparse as sp
-from scipy.linalg import solveh_banded
+from scipy.linalg import cholesky_banded
 from scipy.optimize import least_squares
 from scipy.sparse import linalg as spla
 
@@ -548,6 +548,30 @@ def _build_second_difference_operator(n_turns: int) -> sp.csr_matrix:
     )
 
 
+def _banded_inverse_diagonal(ab: np.ndarray, *, bandwidth: int) -> np.ndarray:
+    """Diagonal of ``A^-1`` for a symmetric positive-definite banded ``A``.
+
+    ``ab`` is ``A`` in upper banded form (``ab[bandwidth + i - j, j] = A[i, j]``,
+    as :func:`scipy.linalg.solveh_banded`). With ``A = U^T U`` (banded Cholesky),
+    the Takahashi recurrence gives the band of ``Z = A^-1`` from the last row
+    up in ``O(n bandwidth^2)``, instead of the ``O(n^2)`` full inverse.
+
+    Raises:
+        numpy.linalg.LinAlgError: If ``A`` is not positive definite.
+    """
+    p = bandwidth
+    u = cholesky_banded(ab, lower=False, check_finite=False)  # u[p + i - j, j] = U[i, j]
+    n = u.shape[1]
+    band = np.zeros((n, p + 1))  # band[i, d] = Z[i, i + d]
+    for j in range(n - 1, -1, -1):
+        ujj = u[p, j]
+        ks = range(j + 1, min(n, j + p + 1))
+        for i in range(min(n - 1, j + p), j - 1, -1):
+            s = sum(u[p + j - k, k] * band[min(i, k), abs(i - k)] for k in ks)
+            band[j, i - j] = ((1.0 / ujj if i == j else 0.0) - s) / ujj
+    return band[:, 0]
+
+
 def _solve_smoothed_pre_momentum_with_known_kick(
     turns: np.ndarray,
     upstream_tables: list[pd.DataFrame],
@@ -625,12 +649,11 @@ def _solve_smoothed_pre_momentum_with_known_kick(
     pre_values = spla.spsolve(system_matrix, rhs)
     post_values = pre_values + kick_values
 
-    # Fast path: system_matrix is pentadiagonal (bandwidth 2), so Cholesky
-    # back-substitution is O(bandwidth × T) per RHS.
+    # Fast path: system_matrix is pentadiagonal (bandwidth 2); only the diagonal
+    # of its inverse is needed, which the banded Cholesky factor gives in O(T).
     try:
         ab = _sparse_to_upper_banded(system_matrix.tocsr(), bandwidth=2)
-        inv_cols = solveh_banded(ab, np.eye(n_turns), lower=False, check_finite=False)
-        var_pre = np.clip(np.diag(inv_cols), 0.0, None)
+        var_pre = np.clip(_banded_inverse_diagonal(ab, bandwidth=2), 0.0, None)
     except (np.linalg.LinAlgError, ValueError):
         covariance = np.linalg.pinv(system_matrix.toarray(), hermitian=True)
         var_pre = np.clip(np.diag(covariance), 0.0, None)

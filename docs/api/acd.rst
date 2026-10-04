@@ -133,7 +133,7 @@ tracked        8.2e-4       6.5e-2
 Requirements and limits.
 
 - **The model must be on the machine's natural tunes** (match the tune knobs to
-  the measured tunes in ``ModelDetails.tune_knobs``). The driven optics depend on
+  the measured tunes in ``ModelDetails.machine_state``). The driven optics depend on
   ``Q_nat - Q_drive`` (the resonance denominator of ``xi_k``); in the PSB test (offset 0.01) an unmatched 2e-3 tune miss
   alone makes the global kick 20% wrong, worse than tracked.
 - ``turn`` must increment at the sequence start, where ``mu_d`` is referenced.

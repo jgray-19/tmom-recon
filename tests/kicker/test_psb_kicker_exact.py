@@ -143,7 +143,7 @@ def _track(accelerator, strengths, tune_knobs, *, pt, kicker, kick):
         accelerator=accelerator,
         pt=pt,
         magnet_strengths=strengths,
-        tune_knobs=tune_knobs,
+        machine_state=tune_knobs,
         observed_elements=kicker,
     )
     # The particle must start on its closed orbit, or it oscillates before the kick.
@@ -215,7 +215,7 @@ def _reconstruct(accelerator, state: MachineState, kicker: str, kick: tuple[floa
     orbit_zero = zero.groupby("name", sort=False)[["x", "y"]].mean()
     result = calculate_kicker_pz(
         data,
-        ModelDetails(accelerator, pt=pt, magnet_strengths=strengths, tune_knobs=tune_knobs),
+        ModelDetails(accelerator, pt=pt, magnet_strengths=strengths, machine_state=tune_knobs),
         KickerConfig(kicker=kicker, n_turns_free=_KICK_TURN),
         closed_orbit_at_zero=orbit_zero,
         orbit_mode="dynamic",

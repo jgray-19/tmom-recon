@@ -132,7 +132,7 @@ def test_global_kick_is_robust_to_unmodelled_quad_errors(psb_scenarios, quad_rms
     natural = (float(headers["q1"]) % 1, float(headers["q2"]) % 1)
     knobs = AcceleratorMadInterface(setup.machine.accelerator).match_tunes(*natural)
     details = ModelDetails(
-        accelerator=setup.machine.accelerator, pt=setup.measurement.pt, tune_knobs=knobs
+        accelerator=setup.machine.accelerator, pt=setup.measurement.pt, machine_state=knobs
     )
     config = ACDipoleConfig(ac_dipole_marker=ACD_ELEMENT, driven_tunes=DRIVEN_TUNES)
     origin = data.groupby("name", sort=False)[["x", "y"]].mean()
@@ -293,7 +293,7 @@ def test_cross_mode_fit_recovers_coupling_missing_from_model(tilted_psb, model_c
         accelerator=setup.machine.accelerator,
         pt=setup.measurement.pt,
         magnet_strengths=tilts,
-        tune_knobs=knobs,
+        machine_state=knobs,
     )
     config = ACDipoleConfig(ac_dipole_marker=ACD_ELEMENT, driven_tunes=DRIVEN_TUNES)
     origin = data.groupby("name", sort=False)[["x", "y"]].mean()

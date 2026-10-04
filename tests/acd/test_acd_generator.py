@@ -14,7 +14,13 @@ import pandas as pd
 import pytest
 
 from tests.reference_co import measured_zero_reference_for_simulation
-from tmom_recon import ACDipoleConfig, ACDipolePzGenerator, ModelDetails, calculate_acd_pz
+from tmom_recon import (
+    ACDipoleConfig,
+    ACDipolePzGenerator,
+    ModelDetails,
+    calculate_acd_global_pz,
+    calculate_acd_pz,
+)
 from tmom_recon.acd.madng_driver import ACDipoleMadDriver
 
 from .acd_test_helpers import AC_DIPOLE_ELEMENT, _ac_dipole_segment_around_element, _get_driver
@@ -137,3 +143,31 @@ def test_generator_pt_update_refreshes_acd_models(data_dir, acd_tracking_setup) 
 
     pd.testing.assert_frame_equal(from_generator, one_shot)
     pd.testing.assert_frame_equal(from_generator.attrs["summary"], one_shot.attrs["summary"])
+
+
+@pytest.mark.slow
+def test_global_generator_update_matches_one_shot(data_dir, acd_tracking_setup) -> None:
+    """With ``global_markers`` the generator gives the one-shot global markers."""
+    tracking_df, driver, bpm_up, bpm_dn = _setup(data_dir, acd_tracking_setup)
+    model_details = ModelDetails(accelerator=driver.accelerator, pt=driver.pt)
+    config = _config(bpm_upstream=bpm_up, bpm_downstream=bpm_dn)
+    reference = measured_zero_reference_for_simulation(tracking_df)
+
+    generator = ACDipolePzGenerator.build(
+        data=tracking_df,
+        closed_orbit_at_zero=reference,
+        orbit_mode="dynamic",
+        model_details=model_details,
+        config=config,
+        global_markers=True,
+    )
+    from_generator = generator.update()
+    one_shot = calculate_acd_global_pz(
+        tracking_df,
+        model_details,
+        config,
+        closed_orbit_at_zero=reference,
+        orbit_mode="dynamic",
+    )
+
+    pd.testing.assert_frame_equal(from_generator, one_shot)

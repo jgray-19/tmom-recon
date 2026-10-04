@@ -63,6 +63,7 @@ from tmom_recon.data.columns import (
     MEASUREMENT_RENAME_MAPPING,
 )
 from tmom_recon.measurements.twiss_from_measurement import build_twiss_from_measurements
+from tmom_recon.momentum_dispersion import derive_momentum_dispersion
 
 if TYPE_CHECKING:  # pragma: no cover - typing helpers only
     from collections.abc import Collection
@@ -101,6 +102,12 @@ class OpticsInput:
     measurement_dir: str | Path | None = None
     sources: dict[OpticsCategory, OpticsSource] = field(default_factory=dict)
     reverse_measurement_order: bool = False
+    #: Measured dispersion only: re-derive ``dpx``/``dpy`` from the measured
+    #: ``dx``/``dy`` against the undriven ``dp/p = 0`` twiss of every resolve
+    #: instead of using the measurement's ``D'``. ``D'`` takes its between-BPM
+    #: source term from the model, so a refitted model (tilted quads generating
+    #: vertical dispersion) must re-derive it to stay consistent with its transport.
+    derive_momentum_dispersion: bool = False
 
     def __post_init__(self) -> None:
         unknown = set(self.sources) - set(CATEGORIES)
@@ -246,13 +253,20 @@ def _resolve_sources(
 
 
 def _require_measured_category(
-    tws: pd.DataFrame, category: OpticsCategory, *, dispersion_found: bool
+    tws: pd.DataFrame,
+    category: OpticsCategory,
+    *,
+    dispersion_found: bool,
+    derive_momentum_dispersion: bool = False,
 ) -> None:
     if category == "dispersion" and not dispersion_found:
         raise KeyError(
             "Measured dispersion was requested but the measurement contains no dispersion"
         )
-    missing = [column for column in CATEGORY_COLUMNS[category] if column not in tws.columns]
+    columns = CATEGORY_COLUMNS[category]
+    if category == "dispersion" and derive_momentum_dispersion:
+        columns = ("dx", "dy")
+    missing = [column for column in columns if column not in tws.columns]
     if missing:
         hint = ""
         if category == "dispersion":
@@ -398,7 +412,10 @@ def resolve_optics(
         for category, source in sources.items():
             if source == "measurement":
                 _require_measured_category(
-                    measured_tws, category, dispersion_found=measurement_dispersion_found
+                    measured_tws,
+                    category,
+                    dispersion_found=measurement_dispersion_found,
+                    derive_momentum_dispersion=optics.derive_momentum_dispersion,
                 )
     LOGGER.info("Resolved optics sources: %s", sources)
 
@@ -451,6 +468,13 @@ def resolve_optics(
             raise KeyError(f"Zero-momentum model twiss is missing BPM(s) {absent}")
         for column in DISPERSION_COLUMNS:
             tws[column] = zero_view[column].to_numpy(dtype=float)
+    elif optics.derive_momentum_dispersion:
+        # zero_tws is the free on-momentum lattice the dispersion was measured in.
+        headers = getattr(zero_tws, "headers", {})
+        tunes = (float(headers["q1"]), float(headers["q2"]))
+        derived = derive_momentum_dispersion(tws, zero_view.set_index(tws.index), tunes=tunes)
+        for column, values in derived.items():
+            tws[column] = values
     missing = [col for col in DISPERSION_COLUMNS if col not in tws.columns]
     if missing:
         raise KeyError(f"Resolved optics is missing required dispersion columns {missing}")

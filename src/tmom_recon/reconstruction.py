@@ -186,31 +186,38 @@ def calculate_acd_global_pz(
         dpp=_dpp(model_details.accelerator, model_details.pt),
     )
     tracked = _calculate_acd(data, resolved_acd, reference, resolved_optics)
-    # The undriven transport model: the forced response is exact with coupling,
-    # the driven (lens) optics are not.
-    model = resolved_acd.model
-    vectors, natural_tunes = normal_mode_responses(model, model.pt)
-    responses = forced_mode_responses(
-        vectors,
-        natural_tunes,
-        config.driven_tunes,
-        before=model.accelerator.acd_marker_name("before"),
-        after=model.accelerator.acd_marker_name("after"),
-    )
-    cross_bases = (
-        cross_mode_bases(
-            vectors,
-            before=model.accelerator.acd_marker_name("before"),
-            after=model.accelerator.acd_marker_name("after"),
-        )
-        if fit_cross_modes
-        else None
-    )
-    return apply_global_marker_states(
+    return _global_marker_states(
         tracked,
         _acd_data(data),
+        resolved_acd.model,
+        config.driven_tunes,
+        fit_cross_modes=fit_cross_modes,
+    )
+
+
+def _global_marker_states(
+    tracked: tfs.TfsDataFrame,
+    acd_data: pd.DataFrame,
+    model: ACDipoleMadDriver,
+    driven_tunes: tuple[float, float],
+    *,
+    fit_cross_modes: bool,
+) -> tfs.TfsDataFrame:
+    """Replace the tracked marker drive lines with the global forced response."""
+    # The undriven transport model: the forced response is exact with coupling,
+    # the driven (lens) optics are not.
+    vectors, natural_tunes = normal_mode_responses(model, model.pt)
+    before = model.accelerator.acd_marker_name("before")
+    after = model.accelerator.acd_marker_name("after")
+    responses = forced_mode_responses(
+        vectors, natural_tunes, driven_tunes, before=before, after=after
+    )
+    cross_bases = cross_mode_bases(vectors, before=before, after=after) if fit_cross_modes else None
+    return apply_global_marker_states(
+        tracked,
+        acd_data,
         responses,
-        driven_tunes=config.driven_tunes,
+        driven_tunes=driven_tunes,
         cross_bases=cross_bases,
     )
 
@@ -299,7 +306,12 @@ class ACDipolePzGenerator:
         measured: LoadedMeasurement | None,
         optics: OpticsInput,
         model_errors: ModelOpticsErrors | None,
+        global_markers: bool = False,
+        fit_cross_modes: bool = False,
+        acd_data: pd.DataFrame | None = None,
     ) -> None:
+        if global_markers and acd_data is None:
+            raise ValueError("global_markers needs the ACD data the lines are fitted to")
         self._prepared = prepared
         self._resolved_acd = resolved_acd
         self._optics_tws = resolved_acd.optics_tws
@@ -309,6 +321,9 @@ class ACDipolePzGenerator:
         self._measured = measured
         self._optics = optics
         self._model_errors = model_errors
+        self._global_markers = global_markers
+        self._fit_cross_modes = fit_cross_modes
+        self._acd_data = acd_data
         self.latest: tfs.TfsDataFrame | None = None
 
     @classmethod
@@ -322,8 +337,14 @@ class ACDipolePzGenerator:
         orbit_mode: str,
         optics: OpticsInput = OpticsInput(),
         model_errors: ModelOpticsErrors | None = None,
+        global_markers: bool = False,
+        fit_cross_modes: bool = False,
     ) -> ACDipolePzGenerator:
-        """Freeze the data side of the pipeline and return a generator."""
+        """Freeze the data side of the pipeline and return a generator.
+
+        ``global_markers`` makes every :meth:`update` return the
+        :func:`calculate_acd_global_pz` marker states instead of the tracked ones.
+        """
         validate_input(data)
         resolved_acd = resolve_ac_dipole_config(model_details, config)
         acd = resolved_acd.config
@@ -356,6 +377,9 @@ class ACDipolePzGenerator:
             measured=measured,
             optics=optics,
             model_errors=model_errors,
+            global_markers=global_markers,
+            fit_cross_modes=fit_cross_modes,
+            acd_data=_acd_data(data) if global_markers else None,
         )
 
     @property
@@ -368,10 +392,16 @@ class ACDipolePzGenerator:
         *,
         magnet_strengths: Mapping[str, float] | None = None,
         pt: float | None = None,
+        knobs: Mapping[str, float] | None = None,
     ) -> tfs.TfsDataFrame:
         """Recompute the ACD reconstruction from the generated model inputs.
 
         Args:
+            knobs: Knob variables (e.g. tune-correction knobs) to set on both
+                models before reconstructing. A caller that holds the natural
+                tunes to a measurement passes the knobs it rematched with
+                *magnet_strengths* applied; the AC dipole stays installed at the
+                driven tunes it was built with.
             magnet_strengths: New magnet strengths to apply to the persisted
                 driver before reconstructing. When given, the driven optics and
                 the undriven ``dp/p=0`` closed-orbit reference are regenerated
@@ -393,13 +423,16 @@ class ACDipolePzGenerator:
             updated_pt = float(pt)
             self.model.pt = updated_pt
             self._resolved_acd.optics_model.pt = updated_pt
+        if knobs is not None:
+            self.model.set_knobs(knobs)
+            self._resolved_acd.optics_model.set_knobs(knobs)
         if magnet_strengths is not None:
             # Transport (undriven) and optics (driven) are separate models; both
             # must see the new strengths.
             self.model.apply_strengths(magnet_strengths)
             optics_model = self._resolved_acd.optics_model
             optics_model.apply_strengths(magnet_strengths)
-        if magnet_strengths is not None or pt_changed:
+        if magnet_strengths is not None or pt_changed or knobs is not None:
             optics_model = self._resolved_acd.optics_model
             self._closed_orbit_tws = self.model.run_twiss(
                 observe=1, coupling=True, chrom=True, deltap=0.0
@@ -425,12 +458,21 @@ class ACDipolePzGenerator:
             self._closed_orbit_tws,
             _reference_names(self._prepared.data, self._closed_orbit_tws),
         )
-        self.latest = reconstruct_from_prepared(
+        result = reconstruct_from_prepared(
             self._prepared,
             self._optics_tws,
             reference=reference,
             resolved_optics=resolved_optics,
         )
+        if self._global_markers:
+            result = _global_marker_states(
+                result,
+                self._acd_data,
+                self.model,
+                self._resolved_acd.config.driven_tunes,
+                fit_cross_modes=self._fit_cross_modes,
+            )
+        self.latest = result
         return self.latest
 
 

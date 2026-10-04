@@ -89,8 +89,7 @@ def resolve_ac_dipole_config(
         observed_elements=config.ac_dipole_marker,
         magnet_strengths=model_details.magnet_strengths,
         install_ac_dipole_markers=True,
-        tune_knobs=model_details.tune_knobs,
-        corrector_knobs=model_details.corrector_knobs,
+        machine_state=model_details.machine_state,
     )
     tracking_model.twiss_elements = tracking_model.run_twiss(observe=0)
     closed_orbit_tws = tracking_model.run_twiss(observe=1, coupling=True, chrom=True, deltap=0.0)

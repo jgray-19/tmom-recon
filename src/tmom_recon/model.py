@@ -39,17 +39,15 @@ class ModelDetails:
             use these strengths to derive fitted momenta for a reconstruction frame.
             The coupling is deliberately plain data -- a mapping of strengths
             -- so this package never imports or runs fitting code.
-        tune_knobs: Optional tune-correction knobs, as name/value pairs or as a
-            knobs file to read.
-        corrector_knobs: Optional orbit-corrector settings, as name/value pairs,
-            a knobs file, or a TFS corrector table.
+        machine_state: Optional state the machine was measured in (tune knobs,
+            corrector settings), as name/value pairs, a knobs file, or a TFS
+            corrector table.
     """
 
     accelerator: Accelerator
     pt: float = 0.0
     magnet_strengths: Mapping[str, float] | None = None
-    tune_knobs: Mapping[str, float] | Path | None = None
-    corrector_knobs: Mapping[str, float] | Path | None = None
+    machine_state: Mapping[str, float] | Path | None = None
 
 
 @dataclass(frozen=True)
@@ -79,8 +77,7 @@ def resolve_model_details(
         observed_elements=observed_elements,
         magnet_strengths=details.magnet_strengths,
         install_ac_dipole_markers=install_ac_dipole_markers,
-        tune_knobs=details.tune_knobs,
-        corrector_knobs=details.corrector_knobs,
+        machine_state=details.machine_state,
     )
     zero_tws = model.run_twiss(observe=1, coupling=True, chrom=True, deltap=0.0)
     tws = (

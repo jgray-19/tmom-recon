@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 from pymadng_utils.mad import KnobMadInterface
+from pymadng_utils.mad.knob_mad_interface import resolve_knobs
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
-    from pathlib import Path
 
     from pymadng_utils.accelerators import Accelerator
 
@@ -79,9 +80,10 @@ class ACDipoleMadDriver(KnobMadInterface):
             replace the thick AC-dipole element with a thin copy. Required for
             AC-dipole state transport; leave ``False`` for a plain model that only
             needs optics and closed orbit.
-        tune_knobs: Tune-correction knobs, as name/value pairs or a knobs file.
-        corrector_knobs: Corrector settings, as name/value pairs, a knobs file,
-            or a TFS corrector table.
+        machine_state: The state the machine was measured in, as name/value pairs,
+            a ``name<TAB>value`` knobs file, or a TFS corrector table. A name is a
+            MAD-X variable (a tune knob, a corrector's knob) or an element attribute
+            written ``<element>.<attribute>``.
         debug: If ``True``, enables MAD-NG debug output.
         mad_logfile: If given, redirect MAD-NG stdout and stderr to this path.
         discard_mad_output: If ``True`` and *mad_logfile* is ``None``, suppress
@@ -96,8 +98,7 @@ class ACDipoleMadDriver(KnobMadInterface):
         observed_elements: str | list[str] | None = None,
         magnet_strengths: Mapping[str, float] | None = None,
         install_ac_dipole_markers: bool = True,
-        tune_knobs: Mapping[str, float] | Path | None = None,
-        corrector_knobs: Mapping[str, float] | Path | None = None,
+        machine_state: Mapping[str, float] | str | Path | None = None,
         debug: bool = False,
         mad_logfile: Path | None = None,
         discard_mad_output: bool = False,
@@ -111,14 +112,8 @@ class ACDipoleMadDriver(KnobMadInterface):
         )
         self._mad_logfile = str(mad_logfile) if mad_logfile is not None else None
         self.pt = float(pt)
-        if tune_knobs is not None:
-            self.set_knobs(tune_knobs)
-        if corrector_knobs is not None:
-            # Correctors may be a TFS table (hkick/vkick columns) rather than
-            # knobs, which set_knobs cannot read -- it expects "name<TAB>value"
-            # pairs and would silently apply nothing, leaving the model closed
-            # orbit uncorrected. set_corrector_strengths handles both shapes.
-            self.set_corrector_strengths(corrector_knobs)
+        if machine_state is not None:
+            self.set_machine_state(machine_state)
         self.observe(self.accelerator.bpm_pattern)
         for element in _normalise_element_list(observed_elements):
             # Exact-name selection: observe() would take the name as a Lua
@@ -136,6 +131,28 @@ class ACDipoleMadDriver(KnobMadInterface):
             self.apply_strengths(magnet_strengths)
 
         self.twiss_elements = self.run_twiss(observe=0)
+
+    def set_machine_state(self, state: Mapping[str, float] | str | Path) -> None:
+        """Put the model in *state*: each name is an existing MAD-X variable, else an element attribute, else a new variable.
+
+        A TFS corrector table (``.tfs``) is applied kicker by kicker, as
+        :meth:`set_corrector_strengths` does.
+        """
+        if isinstance(state, str | Path) and str(state).lower().endswith(".tfs"):
+            self.set_corrector_strengths(state)
+            return
+        for name, raw in resolve_knobs(state).items():
+            value = float(raw)
+            element, _, attribute = name.rpartition(".")
+            key = repr(name.replace(".", "_"))
+            target = f"loaded_sequence[('{element}'):upper()]"
+            self.mad.send(
+                f"if MADX.__var[{key}] ~= nil then MADX['{name}'] = {value!r} "
+                f"elseif '{element}' ~= '' and {target} ~= nil and {target}['{attribute}'] ~= nil then {target}['{attribute}'] = {value!r} "
+                f"else MADX['{name}'] = {value!r} end"
+            )
+        self.mad.send(f"{self.py_name}:send(true)")
+        assert self.mad.recv(), "Failed to set machine state"
 
     def apply_strengths(self, strengths: Mapping[str, float]) -> None:
         """Apply magnet-strength knobs to the loaded sequence.
@@ -328,15 +345,28 @@ py:send(flw.tpar == flw.npar)
             raise ValueError(f"direction must be +/- 1, got {direction}")
         state_array = self._validate_states(states)
         range_name = f"{source_element}/{target_element}"
-        particles = self._build_particle_dicts(state_array)
+        if np.isnan(state_array).any():
+            index = np.argwhere(np.isnan(state_array))
+            raise ValueError(f"State array contains NaNs at indices {index.tolist()}")
+        # One matrix instead of one dict per particle: the per-dict send
+        # dominated a refresh (1.5 s of 1.7 s for 4 x 2000 particles).
         self.mad.send(
             """
 range = py:recv()
-x0_particles = py:recv()
+local states, pt0 = py:recv(), py:recv()
+x0_particles = {}
+for i = 1, states.nrow do
+    x0_particles[i] = {
+        x=states:get(i, 1), px=states:get(i, 2), y=states:get(i, 3), py=states:get(i, 4),
+        t=0, pt=pt0,
+    }
+end
 direction = py:recv()
 """
-        ).send(range_name).send(particles).send(direction)
-        return range_name, len(particles)
+        ).send(range_name).send(np.ascontiguousarray(state_array)).send(float(self.pt)).send(
+            direction
+        )
+        return range_name, len(state_array)
 
     def _validate_states(self, states: np.ndarray) -> np.ndarray:
         """Validate and normalise a state batch to shape ``(n, 4)``.
@@ -365,32 +395,6 @@ direction = py:recv()
                 raise ValueError(f"states[:, 5] (pt) must be {self.pt}, got {arr[:, 5]}")
             arr = arr[:, :4]
         return arr
-
-    def _build_particle_dicts(self, state_array: np.ndarray) -> list[dict]:
-        """Convert an ``(n, 4)`` state array to MAD-NG particle-dict format.
-
-        Args:
-            state_array: Shape ``(n, 4)`` with columns ``[x, px, y, py]``.
-
-        Returns:
-            One dict per particle with keys ``x``, ``px``, ``y``, ``py``,
-            ``t`` (always ``0.0``), and ``pt`` (always ``self.pt``).
-        """
-        # First check for nans just in case.
-        if np.isnan(state_array).any():
-            index = np.argwhere(np.isnan(state_array))
-            raise ValueError(f"State array contains NaNs at indices {index.tolist()}")
-        return [
-            {
-                "x": float(x),
-                "px": float(px),
-                "y": float(y),
-                "py": float(py),
-                "t": 0.0,
-                "pt": float(self.pt),
-            }
-            for x, px, y, py in state_array
-        ]
 
     @contextmanager
     def _tracking_errors(
