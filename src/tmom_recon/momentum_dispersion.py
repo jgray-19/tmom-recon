@@ -22,23 +22,28 @@ why the two agree on a round trip, but not for a real measurement. This
 implementation works on numpy arrays, where position and not label decides what
 pairs with what.
 
+The transfer matrix between the two BPMs is the full coupled :math:`4\times 4`
+one, rebuilt from the model's Mais-Ripken columns (see
+:func:`_normalising_matrices`), so ``Dx'`` and ``Dy'`` are solved together from
+the two measured ``Dx``/``Dy`` pairs. Per-plane :math:`2\times 2` maps drop the
+x-y transfer terms and lose about a fifth of the coupled ``Dy'`` response.
+
 The dipole term is what makes it exact rather than approximate.  Between two
 BPMs the dispersion obeys an *inhomogeneous* equation -- bends generate
-dispersion along the way -- so the homogeneous :math:`2\\times 2` map alone does
-not connect :math:`D_i` to :math:`D_{i+1}`.  The generated part is taken from
-the model as the residual its own dispersion needs beyond homogeneous
-propagation,
+dispersion along the way -- so the homogeneous map alone does not connect
+:math:`D_i` to :math:`D_{i+1}`.  The generated part is taken from the model as
+the residual its own dispersion needs beyond homogeneous propagation,
 
 .. math::
 
-   m_{13} = D^{\\mathrm{mdl}}_{i+1} - m_{11} D^{\\mathrm{mdl}}_i
-            - m_{12} D'^{\\mathrm{mdl}}_i,
+   g = \vec D^{\\mathrm{mdl}}_{i+1} - M \vec D^{\\mathrm{mdl}}_i,
 
-and subtracted from the measurement.  Only this bend contribution is model
-sourced; both dispersion values entering the answer are measured.  Because
-:math:`m_{13}` absorbs everything between the two BPMs, the pair need not be
-physically adjacent -- a measurement covering a subset of the ring's BPMs is
-handled correctly, each row simply pairing with the next one present.
+with :math:`\vec D = (D_x, D'_x, D_y, D'_y)`, and subtracted from the
+measurement.  Only this bend contribution is model sourced; the dispersion
+values entering the answer are measured.  Because :math:`g` absorbs everything
+between the two BPMs, the pair need not be physically adjacent -- a measurement
+covering a subset of the ring's BPMs is handled correctly, each row simply
+pairing with the next one present.
 """
 
 from __future__ import annotations
@@ -53,72 +58,118 @@ if TYPE_CHECKING:  # pragma: no cover - typing helpers only
 
 LOGGER = logging.getLogger(__name__)
 
-#: Smallest :math:`|\sin \Delta\phi|` accepted between a BPM and its successor.
-#: ``D'`` is recovered by dividing by :math:`m_{12} \propto \sin \Delta\phi`, so a
-#: pair separated by close to a half-integer phase advance carries almost no
-#: information about the angle and inverts into a large, noise-dominated value.
-#: Rather than return that silently, such a pair raises: the fix is a different
-#: BPM set, not a quieter threshold.
+#: Smallest normalised angle sensitivity accepted between a BPM and its
+#: successor: the smaller singular value of the position-from-angle block of the
+#: transfer matrix, scaled by the betas (``|sin dphi|`` without coupling). ``D'``
+#: is recovered by inverting that block, so a pair close to a half-integer phase
+#: advance carries almost no information about the angle. Such a pair raises:
+#: the fix is a different BPM set, not a quieter threshold.
 MIN_SIN_PHASE_ADVANCE = 0.05
 
-#: Per-plane model column names: (beta, alpha, phase, dispersion, momentum
-#: dispersion, tune header).
-_PLANE_COLUMNS = {
-    "x": ("betx", "alfx", "mu1", "dx", "dpx", "q1"),
-    "y": ("bety", "alfy", "mu2", "dy", "dpy", "q2"),
-}
+#: Model columns of the coupled linear optics (MAD-NG ``twiss{coupling=true}``).
+_OPTICS_COLUMNS = (
+    "beta11",
+    "alfa11",
+    "beta21",
+    "alfa21",
+    "beta12",
+    "alfa12",
+    "beta22",
+    "alfa22",
+    "mu1",
+    "mu2",
+    "kpa",
+    "ev1",
+    "ev2",
+)
+_DISPERSION_COLUMNS = ("dx", "dpx", "dy", "dpy")
 
 
-def _plane_momentum_dispersion(
-    *,
-    measured_d: np.ndarray,
-    measured_d_err: np.ndarray,
-    beta: np.ndarray,
-    alfa: np.ndarray,
-    mu: np.ndarray,
-    model_d: np.ndarray,
-    model_dp: np.ndarray,
-    tune: float,
-    names: np.ndarray,
-    plane: str,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Solve ``D'`` and its uncertainty for one plane. See the module docstring."""
-    nxt = np.roll(np.arange(len(beta)), -1)
+def _mode_vector(beta_x, alfa_x, u_x, phase_x, beta_y, alfa_y, u_y, phase_y) -> np.ndarray:
+    """Complex eigenvector ``(x, px, y, py)`` of one mode, shape ``(n, 4)``."""
 
-    # Phase advance to the next BPM, in turns. The final entry wraps around the
-    # ring, so it is the tune minus the accumulated advance rather than the
-    # negative number the plain difference gives.
-    delta_mu = mu[nxt] - mu
-    delta_mu[-1] += tune
-    phi = 2.0 * np.pi * delta_mu
+    def plane(beta, alfa, u, phase):
+        root = np.sqrt(np.clip(beta, 0.0, None))
+        rotation = np.exp(1j * phase)
+        momentum = np.divide(
+            -alfa + 1j * u, root, out=np.zeros_like(root, dtype=complex), where=root > 0
+        )
+        return root * rotation, momentum * rotation
 
-    sin_phi = np.sin(phi)
-    degenerate = np.abs(sin_phi) < MIN_SIN_PHASE_ADVANCE
+    x, px = plane(beta_x, alfa_x, u_x, phase_x)
+    y, py = plane(beta_y, alfa_y, u_y, phase_y)
+    return np.stack([x, px, y, py], axis=-1)
+
+
+def _normalising_matrices(model: pd.DataFrame, phase_shift: tuple[float, float]) -> np.ndarray:
+    """MAD-NG's normalising map A at each row, shape ``(n, 4, 4)``.
+
+    Mode k's eigenvector is ``A[:, 2k] + i A[:, 2k+1]``: in its own plane
+    ``sqrt(beta_kk) exp(2 pi i mu_k)`` with momentum ``(-alfa + i kpa)/sqrt(beta)``,
+    and in the other plane the same with ``1 - kpa`` and a phase lag of
+    ``arg(ev_k)``. ``phase_shift`` (in turns) is added to ``mu1``/``mu2``.
+    """
+    col = {c: model[c].to_numpy() for c in _OPTICS_COLUMNS}
+    kpa = col["kpa"].astype(float)
+    phase1 = 2.0 * np.pi * (col["mu1"].astype(float) + phase_shift[0])
+    phase2 = 2.0 * np.pi * (col["mu2"].astype(float) + phase_shift[1])
+    lag1 = np.angle(col["ev1"].astype(complex))
+    lag2 = np.angle(col["ev2"].astype(complex))
+    real = {k: col[k].astype(float) for k in _OPTICS_COLUMNS[:8]}
+    mode1 = _mode_vector(
+        real["beta11"],
+        real["alfa11"],
+        kpa,
+        phase1,
+        real["beta21"],
+        real["alfa21"],
+        1.0 - kpa,
+        phase1 - lag1,
+    )
+    mode2 = _mode_vector(
+        real["beta12"],
+        real["alfa12"],
+        1.0 - kpa,
+        phase2 - lag2,
+        real["beta22"],
+        real["alfa22"],
+        kpa,
+        phase2,
+    )
+    return np.stack([mode1.real, mode1.imag, mode2.real, mode2.imag], axis=-1)
+
+
+def _pair_transfer_matrices(model: pd.DataFrame, tunes: tuple[float, float]) -> np.ndarray:
+    """Coupled transfer matrix from each row to the next, the last wrapping to the first."""
+    here = _normalising_matrices(model, (0.0, 0.0))
+    nxt = np.roll(here, -1, axis=0)
+    # The first BPM one turn later: A propagates without rephasing, so mu grows by Q.
+    nxt[-1] = _normalising_matrices(model.iloc[:1], tunes)[0]
+    return nxt @ np.linalg.inv(here)
+
+
+def _check_angle_sensitivity(
+    angle_block: np.ndarray, model: pd.DataFrame, names: np.ndarray
+) -> None:
+    """Raise if any pair's position change is nearly blind to the angle."""
+    betx = model["beta11"].to_numpy(dtype=float)
+    bety = model["beta22"].to_numpy(dtype=float)
+    nxt = np.roll(np.arange(len(betx)), -1)
+    scale_out = np.stack([np.sqrt(betx[nxt]), np.sqrt(bety[nxt])], axis=-1)
+    scale_in = np.stack([np.sqrt(betx), np.sqrt(bety)], axis=-1)
+    normalised = angle_block / scale_out[:, :, None] / scale_in[:, None, :]
+    sensitivity = np.linalg.svd(normalised, compute_uv=False)[:, -1]
+    degenerate = sensitivity < MIN_SIN_PHASE_ADVANCE
     if degenerate.any():
         pairs = ", ".join(
-            f"{names[i]}->{names[nxt[i]]} (sin={sin_phi[i]:+.4f})"
+            f"{names[i]}->{names[nxt[i]]} (sensitivity={sensitivity[i]:.4f})"
             for i in np.flatnonzero(degenerate)
         )
         raise ValueError(
-            f"Cannot derive momentum dispersion in {plane}: the phase advance to the "
-            f"next BPM is too close to a multiple of pi for {int(degenerate.sum())} "
-            f"pair(s): {pairs}. D' inverts as 1/sin(dphi), so these carry no usable "
-            "angle information."
+            "Cannot derive momentum dispersion: the phase advance to the next BPM is "
+            f"too close to a multiple of pi for {int(degenerate.sum())} pair(s): {pairs}. "
+            "D' inverts as 1/sin(dphi), so these carry no usable angle information."
         )
-
-    m11 = np.sqrt(beta[nxt] / beta) * (np.cos(phi) + alfa * np.sin(phi))
-    m12 = np.sqrt(beta[nxt] * beta) * sin_phi
-    # The dispersion generated by bends between the two BPMs, taken from the
-    # model. It is the only model-sourced term in the result.
-    m13 = model_d[nxt] - m11 * model_d - m12 * model_dp
-
-    momentum_dispersion = (measured_d[nxt] - m11 * measured_d - m13) / m12
-    # The two measured dispersions enter linearly and come from independent
-    # BPMs, so their errors add in quadrature. m11/m12 are model quantities and
-    # are treated as exact here, consistent with how the model phase and beta
-    # are treated everywhere else in the reconstruction.
-    variance = (measured_d_err[nxt] ** 2 + (m11 * measured_d_err) ** 2) / m12**2
-    return momentum_dispersion, np.sqrt(variance)
 
 
 def derive_momentum_dispersion(
@@ -132,8 +183,10 @@ def derive_momentum_dispersion(
     Args:
         measured: Ring-ordered frame carrying measured ``dx``/``dy``, and
             optionally ``dx_err``/``dy_err`` (assumed zero when absent).
-        model: Frame on the same index carrying ``betx``/``alfx``/``mu1``/
-            ``dx``/``dpx`` and their vertical counterparts. Phases are in turns.
+        model: Coupled MAD-NG twiss on the same index, carrying the
+            Mais-Ripken columns (``beta11``... ``alfa22``, ``mu1``/``mu2``,
+            ``kpa``, ``ev1``/``ev2``) and ``dx``/``dpx``/``dy``/``dpy``.
+            Phases are in turns.
         tunes: ``(q1, q2)``, used to close the ring for the final BPM pair.
 
     Returns:
@@ -164,37 +217,58 @@ def derive_momentum_dispersion(
                 "Momentum dispersion needs a ring-ordered frame, but the model 's' "
                 "column is not strictly increasing"
             )
+    missing_model = [c for c in (*_OPTICS_COLUMNS, *_DISPERSION_COLUMNS) if c not in model.columns]
+    if missing_model:
+        raise KeyError(
+            f"Model twiss is missing {missing_model}, required to derive momentum dispersion"
+        )
+    missing_measured = [c for c in ("dx", "dy") if c not in measured.columns]
+    if missing_measured:
+        raise KeyError(f"Measured dispersion columns {missing_measured} are required to derive D'")
 
     names = measured.index.to_numpy()
-    result: dict[str, np.ndarray] = {}
-    for plane, (beta, alfa, mu, d, dp, tune_key) in _PLANE_COLUMNS.items():
-        missing_model = [c for c in (beta, alfa, mu, d, dp) if c not in model.columns]
-        if missing_model:
-            raise KeyError(
-                f"Model twiss is missing {missing_model}, required to derive "
-                f"momentum dispersion in {plane}"
-            )
-        if d not in measured.columns:
-            raise KeyError(f"Measured dispersion column {d!r} is required to derive {dp!r}")
+    nxt = np.roll(np.arange(len(measured)), -1)
+    transfer = _pair_transfer_matrices(model, tunes)
+    positions, angles = [0, 2], [1, 3]
+    position_block = transfer[:, positions][:, :, positions]
+    angle_block = transfer[:, positions][:, :, angles]
+    _check_angle_sensitivity(angle_block, model, names)
 
-        err_col = f"{d}_err"
-        measured_err = (
-            measured[err_col].to_numpy(dtype=float)
-            if err_col in measured.columns
-            else np.zeros(len(measured))
-        )
-        values, errors = _plane_momentum_dispersion(
-            measured_d=measured[d].to_numpy(dtype=float),
-            measured_d_err=measured_err,
-            beta=model[beta].to_numpy(dtype=float),
-            alfa=model[alfa].to_numpy(dtype=float),
-            mu=model[mu].to_numpy(dtype=float),
-            model_d=model[d].to_numpy(dtype=float),
-            model_dp=model[dp].to_numpy(dtype=float),
-            tune=float(tunes[0] if plane == "x" else tunes[1]),
-            names=names,
-            plane=plane,
-        )
-        result[dp] = values
-        result[f"{dp}_err"] = errors
-    return result
+    # The dispersion generated by bends between the two BPMs, taken from the
+    # model. It is the only model-sourced term in the result.
+    model_d = model[list(_DISPERSION_COLUMNS)].to_numpy(dtype=float)
+    generated = model_d[nxt] - np.einsum("nij,nj->ni", transfer, model_d)
+
+    measured_d = measured[["dx", "dy"]].to_numpy(dtype=float)
+    measured_err = np.stack(
+        [
+            measured[c].to_numpy(dtype=float) if c in measured.columns else np.zeros(len(measured))
+            for c in ("dx_err", "dy_err")
+        ],
+        axis=-1,
+    )
+    rhs = (
+        measured_d[nxt]
+        - np.einsum("nij,nj->ni", position_block, measured_d)
+        - generated[:, positions]
+    )
+    inverse = np.linalg.inv(angle_block)
+    momentum_dispersion = np.einsum("nij,nj->ni", inverse, rhs)
+    # The measured dispersions come from independent BPMs, so their errors add
+    # in quadrature through the linear solve. The model matrices are treated as
+    # exact, consistent with how the model optics are treated everywhere else.
+    covariance = np.einsum("nij,nj,nkj->nik", inverse, measured_err[nxt] ** 2, inverse) + np.einsum(
+        "nij,njk,nk,nlk,nml->nim",
+        inverse,
+        position_block,
+        measured_err**2,
+        position_block,
+        inverse,
+    )
+    errors = np.sqrt(np.einsum("nii->ni", covariance))
+    return {
+        "dpx": momentum_dispersion[:, 0],
+        "dpx_err": errors[:, 0],
+        "dpy": momentum_dispersion[:, 1],
+        "dpy_err": errors[:, 1],
+    }

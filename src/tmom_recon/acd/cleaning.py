@@ -305,6 +305,38 @@ def _solve_harmonic_series_fit(
     )
 
 
+def _harmonic_grid_rss(
+    t: np.ndarray, y: np.ndarray, w: np.ndarray, tune0: float, n_half: int
+) -> np.ndarray:
+    """Weighted RSS of the fixed-tune fit at ``tune0 + k/len(t)``, ``|k| <= n_half``.
+
+    The normal equations need only ``sum w y exp(2 pi i Q t)`` and
+    ``sum w exp(4 pi i Q t)``; for integer turns ``t`` both are one FFT over
+    ``t mod len(t)`` on this grid.
+    """
+    n = len(t)
+    residue = np.mod(t.astype(np.int64), n)
+    rotation = np.exp(2j * np.pi * tune0 * t)
+    z1 = n * np.fft.ifft(
+        np.bincount(residue, weights=(w * y * rotation).real, minlength=n)
+        + 1j * np.bincount(residue, weights=(w * y * rotation).imag, minlength=n)
+    )
+    rotation2 = rotation**2
+    z2 = n * np.fft.ifft(
+        np.bincount(residue, weights=(w * rotation2).real, minlength=n)
+        + 1j * np.bincount(residue, weights=(w * rotation2).imag, minlength=n)
+    )
+    k = np.arange(-n_half, n_half + 1)
+    s1, c1 = z1[k % n].imag, z1[k % n].real
+    s2, c2 = z2[(2 * k) % n].imag, z2[(2 * k) % n].real
+    total = w.sum()
+    ss, cc, sc = 0.5 * (total - c2), 0.5 * (total + c2), 0.5 * s2
+    det = ss * cc - sc**2
+    a = (cc * s1 - sc * c1) / det
+    b = (ss * c1 - sc * s1) / det
+    return np.dot(w * y, y) - 2.0 * (a * s1 + b * c1) + a * a * ss + 2.0 * a * b * sc + b * b * cc
+
+
 def _fit_harmonic_series_with_tune(
     turns: np.ndarray,
     *,
@@ -340,7 +372,7 @@ def _fit_harmonic_series_with_tune(
 
     tune0 = float(np.clip(tune_hint, _MIN_TUNE, _MAX_TUNE))
 
-    initial_fit, initial_score = _solve_harmonic_series_fit(
+    _, initial_score = _solve_harmonic_series_fit(
         turns,
         tune=tune0,
         values=values,
@@ -356,24 +388,13 @@ def _fit_harmonic_series_with_tune(
     # guarantees the optimizer begins near the global linear-fit minimum.
     _grid_step = 1.0 / max(len(t_valid), 1)  # Rayleigh resolution
     _n_half = max(3, int(np.ceil(2.0 * tune_sigma / _grid_step)))
-    _tune_grid = np.unique(
-        np.clip(
-            tune0 + _grid_step * np.arange(-_n_half, _n_half + 1, dtype=float),
-            _MIN_TUNE,
-            _MAX_TUNE,
-        )
+    _tune_grid = tune0 + _grid_step * np.arange(-_n_half, _n_half + 1, dtype=float)
+    grid_rss = _harmonic_grid_rss(t_valid, y_valid, inv_sigma**2, tune0, _n_half)
+    grid_rss[(_tune_grid < _MIN_TUNE) | (_tune_grid > _MAX_TUNE)] = np.inf
+    _best_tune = float(_tune_grid[int(np.argmin(grid_rss))])
+    _best_fit, _ = _solve_harmonic_series_fit(
+        turns, tune=_best_tune, values=values, variances=variances
     )
-    _best_rss = np.inf
-    _best_tune = tune0
-    _best_fit = initial_fit
-    for _tg in _tune_grid:
-        _fg, _rss_g = _solve_harmonic_series_fit(
-            turns, tune=float(_tg), values=values, variances=variances
-        )
-        if _rss_g < _best_rss:
-            _best_rss = _rss_g
-            _best_tune = float(_tg)
-            _best_fit = _fg
 
     sin0 = _best_fit.amplitude * np.cos(_best_fit.phase)
     cos0 = _best_fit.amplitude * np.sin(_best_fit.phase)
@@ -666,6 +687,29 @@ def _solve_smoothed_pre_momentum_with_known_kick(
     return pre_values, post_values, var_pre, var_pre.copy(), t, pt
 
 
+def _remove_closed_orbit(
+    turns: np.ndarray,
+    tables: list[pd.DataFrame],
+    *,
+    value_col: str,
+    variance_col: str,
+) -> tuple[list[pd.DataFrame], float]:
+    """Subtract one side's closed orbit from *value_col* in every table.
+
+    The closed orbit is the inverse-variance mean of the side's combined series.
+    Returns the deviation tables and the removed closed-orbit value.
+    """
+    combined, variance = _combine_many_estimates(
+        *_align_estimate_component(turns, tables, value_col=value_col, variance_col=variance_col)
+    )
+    valid = np.isfinite(combined) & np.isfinite(variance) & (variance > 0.0)
+    if not np.any(valid):
+        raise ValueError(f"No valid {value_col} observations were available for AC-dipole cleaning")
+    orbit = float(np.average(combined[valid], weights=1.0 / variance[valid]))
+    shifted = [table.assign(**{value_col: table[value_col] - orbit}) for table in tables]
+    return shifted, orbit
+
+
 # ---------------------------------------------------------------------------
 # Main cleaning entry point
 # ---------------------------------------------------------------------------
@@ -686,10 +730,13 @@ def _clean_ac_dipole_states(
 
     1. Pool ``x``/``y`` marker estimates from all BPM reconstructions into a
        single common same-turn position.
-    2. Fit harmonic kick waveforms for ``px`` and ``py`` with local tune
+    2. Remove each side's closed orbit from ``px``/``py``; the AC dipole only
+       oscillates about it.
+    3. Fit zero-mean harmonic kick waveforms to the deviations with local tune
        refinement.
-    3. Solve smoothed pre-kick momentum with the fitted kick as a constraint.
-    4. Return post-kick momentum as ``pre + fitted_kick``.
+    4. Solve smoothed pre-kick momentum with the fitted kick as a constraint.
+    5. Return pre-/post-kick momentum as ``pre + orbit_up`` and
+       ``pre + fitted_kick + orbit_down``.
 
     Args:
         turns: Reference turn array.
@@ -708,44 +755,43 @@ def _clean_ac_dipole_states(
         upstream_tables,
         downstream_tables,
     )
-    dpx_fit = _refine_known_kick_fit(
-        turns,
-        upstream_tables,
-        downstream_tables,
-        value_col="px",
-        variance_col="var_px",
-        tune_hint=dpx_tune,
-    )
-    dpy_fit = _refine_known_kick_fit(
-        turns,
-        upstream_tables,
-        downstream_tables,
-        value_col="py",
-        variance_col="var_py",
-        tune_hint=dpy_tune,
-    )
-    px_pre, px_post, var_px_pre, var_px_post, t_pre, pt_pre = (
-        _solve_smoothed_pre_momentum_with_known_kick(
+    fits = {}
+    solved = {}
+    steps = {}
+    for plane, tune in (("px", dpx_tune), ("py", dpy_tune)):
+        variance_col = f"var_{plane}"
+        # The AC dipole oscillates about the closed orbit, so its kick is
+        # zero-mean.  Any constant step between the transported upstream and
+        # downstream states is an orbit-angle difference, not a kick: fit and
+        # smooth the deviations, then restore each side's closed orbit.
+        up_dev, orbit_up = _remove_closed_orbit(
+            turns, upstream_tables, value_col=plane, variance_col=variance_col
+        )
+        down_dev, orbit_down = _remove_closed_orbit(
+            turns, downstream_tables, value_col=plane, variance_col=variance_col
+        )
+        fits[plane] = _refine_known_kick_fit(
             turns,
-            upstream_tables,
-            downstream_tables,
-            value_col="px",
-            variance_col="var_px",
-            kick_values=dpx_fit.fitted,
+            up_dev,
+            down_dev,
+            value_col=plane,
+            variance_col=variance_col,
+            tune_hint=tune,
+        )
+        pre, post, var_pre, var_post, t, pt = _solve_smoothed_pre_momentum_with_known_kick(
+            turns,
+            up_dev,
+            down_dev,
+            value_col=plane,
+            variance_col=variance_col,
+            kick_values=fits[plane].fitted,
             smooth_lambda=smooth_lambda,
         )
-    )
-    py_pre, py_post, var_py_pre, var_py_post, t_post, pt_post = (
-        _solve_smoothed_pre_momentum_with_known_kick(
-            turns,
-            upstream_tables,
-            downstream_tables,
-            value_col="py",
-            variance_col="var_py",
-            kick_values=dpy_fit.fitted,
-            smooth_lambda=smooth_lambda,
-        )
-    )
+        solved[plane] = (pre + orbit_up, post + orbit_down, var_pre, var_post, t, pt)
+        steps[plane] = orbit_down - orbit_up
+    dpx_fit, dpy_fit = fits["px"], fits["py"]
+    px_pre, px_post, var_px_pre, var_px_post, t_pre, pt_pre = solved["px"]
+    py_pre, py_post, var_py_pre, var_py_post, t_post, pt_post = solved["py"]
     return ACDipoleCleaningResult(
         upstream=ACDipoleStateEstimate(
             state=ACDipoleStateSeries(x_common, px_pre, y_common, py_pre, t_pre, pt_pre),
@@ -763,4 +809,6 @@ def _clean_ac_dipole_states(
         ),
         dpx_fit=dpx_fit,
         dpy_fit=dpy_fit,
+        dpx_orbit_step=steps["px"],
+        dpy_orbit_step=steps["py"],
     )

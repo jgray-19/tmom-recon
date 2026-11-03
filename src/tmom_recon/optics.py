@@ -108,6 +108,9 @@ class OpticsInput:
     #: source term from the model, so a refitted model (tilted quads generating
     #: vertical dispersion) must re-derive it to stay consistent with its transport.
     derive_momentum_dispersion: bool = False
+    #: Which omc3 beta estimator a measured ``beta`` (and its ``alpha``) comes from:
+    #: ``"amplitude"`` (``beta_amplitude_*.tfs``) or ``"phase"`` (``beta_phase_*.tfs``).
+    beta_from: Literal["amplitude", "phase"] = "amplitude"
 
     def __post_init__(self) -> None:
         unknown = set(self.sources) - set(CATEGORIES)
@@ -123,6 +126,8 @@ class OpticsInput:
             if invalid:
                 details.append(f"invalid sources {invalid}")
             raise ValueError("Invalid OpticsInput: " + "; ".join(details))
+        if self.beta_from not in ("amplitude", "phase"):
+            raise ValueError(f"Invalid OpticsInput: beta_from={self.beta_from!r}")
         if (
             any(source == "measurement" for source in self.sources.values())
             and self.measurement_dir is None
@@ -203,10 +208,11 @@ def load_measurement(
     *,
     reverse_meas_tws: bool = False,
     bpm_names: Collection[str] | None = None,
+    beta_from: Literal["amplitude", "phase"] = "amplitude",
 ) -> LoadedMeasurement:
     """Load an omc3 measurement directory into a cacheable :class:`LoadedMeasurement`."""
     tws, dispersion_found = load_measurement_twiss(
-        measurement_dir, reverse_meas_tws=reverse_meas_tws, bpm_names=bpm_names
+        measurement_dir, reverse_meas_tws=reverse_meas_tws, bpm_names=bpm_names, beta_from=beta_from
     )
     return LoadedMeasurement(tws=tws, dispersion_found=dispersion_found)
 
@@ -216,6 +222,7 @@ def load_measurement_twiss(
     *,
     reverse_meas_tws: bool = False,
     bpm_names: Collection[str] | None = None,
+    beta_from: Literal["amplitude", "phase"] = "amplitude",
 ) -> tuple[pd.DataFrame, bool]:
     """Load an omc3 measurement directory as a lowercase-renamed twiss.
 
@@ -225,6 +232,7 @@ def load_measurement_twiss(
     tws, dispersion_found = build_twiss_from_measurements(
         Path(measurement_dir),
         include_errors=True,
+        use_amplitude_beta=beta_from == "amplitude",
         reverse_bpm_order=reverse_meas_tws,
     )
     if bpm_names is not None:
@@ -403,6 +411,7 @@ def resolve_optics(
             optics.measurement_dir,
             reverse_meas_tws=optics.reverse_measurement_order,
             bpm_names=bpm_names,
+            beta_from=optics.beta_from,
         )
 
     sources = _resolve_sources(model_tws=optics_tws, optics=optics)
@@ -469,6 +478,9 @@ def resolve_optics(
         for column in DISPERSION_COLUMNS:
             tws[column] = zero_view[column].to_numpy(dtype=float)
     elif optics.derive_momentum_dispersion:
+        absent = zero_view.index[zero_view.isna().all(axis=1)].tolist()
+        if absent:
+            raise KeyError(f"Zero-momentum model twiss is missing BPM(s) {absent}")
         # zero_tws is the free on-momentum lattice the dispersion was measured in.
         headers = getattr(zero_tws, "headers", {})
         tunes = (float(headers["q1"]), float(headers["q2"]))

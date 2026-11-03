@@ -48,7 +48,7 @@ def _line(turns, values, tune) -> complex:
     indirect=True,
 )
 def test_global_markers_match_tracked_truth(contract_scenario) -> None:
-    """Exact model: the marker drive lines and the kick match truth; the static part stays tracked."""
+    """Exact model: the marker drive lines and the kick match truth; both ends share one DC."""
     sc = contract_scenario
     kwargs = {
         "closed_orbit_at_zero": sc.reference,
@@ -56,7 +56,6 @@ def test_global_markers_match_tracked_truth(contract_scenario) -> None:
         "optics": sc.optics,
     }
     result = calculate_acd_global_pz(sc.data, sc.model_details, sc.acd, **kwargs)
-    tracked = calculate_acd_pz(sc.data, sc.model_details, sc.acd, **kwargs)
     names = acd_state_marker_names(resolve_ac_dipole_config(sc.model_details, sc.acd).model)
     fits = result.attrs[GLOBAL_SUMMARY_ATTR_NAME]
     for fit in fits:
@@ -66,12 +65,10 @@ def test_global_markers_match_tracked_truth(contract_scenario) -> None:
 
     truth = sc.marker_truth.assign(name=sc.marker_truth["name"].astype(str).str.upper())
     rec = result.assign(name=result["name"].astype(str).str.upper())
-    trk = tracked.assign(name=tracked["name"].astype(str).str.upper())
-    lines = {}
+    lines, dc = {}, {}
     for name in names:
         t = truth[truth["name"] == name].sort_values("turn")
         r = rec[rec["name"] == name].set_index("turn").loc[t["turn"]]
-        k = trk[trk["name"] == name].set_index("turn").loc[t["turn"]]
         turns = t["turn"].to_numpy(float)
         for col, q in (
             ("x", sc.acd.driven_tunes[0]),
@@ -84,10 +81,11 @@ def test_global_markers_match_tracked_truth(contract_scenario) -> None:
             err = abs(z_rec - z_true) / abs(z_true)
             LOGGER.info("%s %s marker drive-line error %.2e", name, col, err)
             assert err < _MARKER_LINE_MAX, f"{name} {col}: drive line off by {err:.2e}"
-            # Only the drive line is replaced: the static part stays the tracked one.
-            np.testing.assert_allclose(r[col].mean(), k[col].mean(), rtol=0, atol=1e-9)
+            dc[name, col] = harmonic_lines(turns, r[col].to_numpy(float), sc.acd.driven_tunes)[1]
 
     before, after = names
+    for col in ("x", "px", "y", "py"):
+        assert dc[before, col] == pytest.approx(dc[after, col], abs=1e-12), f"{col} DC step"
     for mom in ("px", "py"):
         kick_true = lines[after, mom][0] - lines[before, mom][0]
         kick_rec = lines[after, mom][1] - lines[before, mom][1]

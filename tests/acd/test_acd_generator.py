@@ -171,3 +171,41 @@ def test_global_generator_update_matches_one_shot(data_dir, acd_tracking_setup) 
     )
 
     pd.testing.assert_frame_equal(from_generator, one_shot)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("global_markers", [False, True], ids=["tracked", "global"])
+def test_generator_removes_bpm_gains(data_dir, acd_tracking_setup, global_markers) -> None:
+    """Data read with gains, rebuilt with them, gives the gain-free reconstruction; no gains restores it."""
+    tracking_df, driver, bpm_up, bpm_dn = _setup(data_dir, acd_tracking_setup)
+    model_details = ModelDetails(accelerator=driver.accelerator, pt=driver.pt)
+    config = _config(bpm_upstream=bpm_up, bpm_downstream=bpm_dn)
+    names = sorted(tracking_df["name"].astype(str).str.upper().unique())
+    gains = {
+        (plane, name): 0.03 * (-1) ** i * (1 + p) / 2
+        for i, name in enumerate(names)
+        for p, plane in enumerate("xy")
+    }
+
+    scaled = tracking_df.copy()
+    upper = scaled["name"].astype(str).str.upper()
+    for plane in "xy":
+        factor = 1.0 + upper.map(lambda n, p=plane: gains[p, n]).to_numpy(float)
+        scaled[plane] = scaled[plane].to_numpy(float) * factor
+        scaled[f"var_{plane}"] = scaled[f"var_{plane}"].to_numpy(float) * factor**2
+
+    def build(frame):
+        return ACDipolePzGenerator.build(
+            data=frame,
+            closed_orbit_at_zero=measured_zero_reference_for_simulation(tracking_df),
+            orbit_mode="dynamic",
+            model_details=model_details,
+            config=config,
+            global_markers=global_markers,
+        )
+
+    reference = build(tracking_df).update()
+    generator = build(scaled)
+    corrected = generator.update(bpm_gains=gains)
+    pd.testing.assert_frame_equal(corrected, reference, rtol=1e-6, atol=1e-12)
+    assert not (generator.update().equals(reference))

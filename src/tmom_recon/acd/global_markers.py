@@ -61,9 +61,10 @@ fitted with ``C_k`` from the x and y lines of all BPMs. ``C_k`` (and so the
 kick) still follows the forced response; only the cross-mode part at the
 markers comes from the data.
 
-Only the driven lines are replaced. The static part of each marker coordinate
-(the data-driven off-momentum orbit) and the variances are kept from the
-tracked states.
+This module gives only the driven lines. The static part of the marker state
+(the off-momentum orbit) is one DC shared by both ends, since the kick has zero
+mean; the reconstruction takes it from the turn-mean BPM states tracked to the
+marker (:func:`tmom_recon.acd.reconstruction.reconstruct_from_prepared`).
 """
 
 from __future__ import annotations
@@ -90,9 +91,10 @@ _OWN_PLANE = ("x", "y")  # plane in which mode k is the drive
 __all__ = [
     "COORDS",
     "GLOBAL_SUMMARY_ATTR_NAME",
+    "GlobalMarkerLines",
     "GlobalModeFit",
-    "apply_global_marker_states",
     "cross_mode_bases",
+    "fit_global_marker_lines",
     "fit_mode_amplitude",
     "forced_mode_responses",
     "harmonic_lines",
@@ -327,31 +329,46 @@ def _fit_modes(
     return fits
 
 
-def apply_global_marker_states(
-    result: pd.DataFrame,
+@dataclass(frozen=True)
+class GlobalMarkerLines:
+    """Driven lines of the global solution at the two marker ends.
+
+    Attributes:
+        tunes: Driven tunes ``(Q_1, Q_2)``.
+        lines: ``{MARKER: (4, 2)}`` complex line of each coordinate per drive.
+        fits: The two :class:`GlobalModeFit`.
+    """
+
+    tunes: tuple[float, float]
+    lines: Mapping[str, np.ndarray]
+    fits: tuple[GlobalModeFit, ...]
+
+    def driven_state(self, name: str, turns: np.ndarray) -> np.ndarray:
+        """Zero-mean driven ``(x, px, y, py)`` at marker ``name``, shape ``(n_turns, 4)``."""
+        rotation = np.exp(2j * np.pi * np.outer(turns, self.tunes))
+        return np.real(rotation @ self.lines[name.upper()].T)
+
+
+def fit_global_marker_lines(
     data: pd.DataFrame,
     responses: Mapping[str, np.ndarray],
     *,
+    markers: Sequence[str],
     driven_tunes: tuple[float, float],
     cross_bases: Mapping[str, np.ndarray] | None = None,
-) -> pd.DataFrame:
-    """Replace the driven lines of the tracked marker states with the global solution.
+) -> GlobalMarkerLines:
+    """Fit the two drive amplitudes to all BPMs and return the lines at ``markers``.
 
     Args:
-        result: Tracked ACD result (``row_type`` ``marker_before``/``marker_after``
-            rows are replaced; all other rows are copied unchanged).
         data: BPM turn-by-turn data with ``name, turn, x, y, var_x, var_y``.
             Any static frame offset per BPM is irrelevant (fitted as a constant).
         responses: Forced responses ``{NAME: g (4, 2)}`` at the BPMs and marker
             ends (:func:`forced_mode_responses`).
+        markers: Marker end names whose lines are returned.
         driven_tunes: Drive tunes ``(Q_1, Q_2)`` of the horizontal and vertical AC dipole.
         cross_bases: :func:`cross_mode_bases` of the same model to also fit each
             drive's other-mode content at the markers from the data; ``None``
             takes it from the forced response alone.
-
-    Returns:
-        Copy of ``result`` with global marker states and the two
-        :class:`GlobalModeFit` in ``attrs[GLOBAL_SUMMARY_ATTR_NAME]``.
     """
     responses = {str(k).upper(): np.asarray(v) for k, v in responses.items()}
     tunes = (float(driven_tunes[0]), float(driven_tunes[1]))
@@ -367,21 +384,13 @@ def apply_global_marker_states(
             len(fit.bpms),
         )
     amplitudes = np.array([fit.amplitude for fit in fits])
-    out = result.copy(deep=True)
-    for row_type in ("marker_before", "marker_after"):
-        sel = out["row_type"] == row_type
-        if not sel.any():
-            raise ValueError(f"ACD result has no {row_type} rows")
-        name = str(out.loc[sel, "name"].iloc[0]).upper()
-        drive = amplitudes * responses[name]  # (4, 2): line of each coordinate per drive
+    lines = {}
+    for marker in markers:
+        name = str(marker).upper()
+        drive = amplitudes * responses[name]
         if cross_bases is not None:
             drive = drive + np.einsum(
                 "iak,ka->ik", cross_bases[name], np.array([f.cross for f in fits])
             )
-        turns = out.loc[sel, "turn"].to_numpy(float)
-        rotation = np.exp(2j * np.pi * np.outer(turns, tunes))  # (n, 2)
-        for i, col in enumerate(COORDS):
-            offset = harmonic_lines(turns, out.loc[sel, col].to_numpy(float), tunes)[1]
-            out.loc[sel, col] = offset + np.real(rotation @ drive[i])
-    out.attrs[GLOBAL_SUMMARY_ATTR_NAME] = fits
-    return out
+        lines[name] = drive
+    return GlobalMarkerLines(tunes, lines, tuple(fits))

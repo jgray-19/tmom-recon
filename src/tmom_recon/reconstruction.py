@@ -6,8 +6,8 @@ import logging
 from typing import TYPE_CHECKING
 
 from tmom_recon.acd.global_markers import (
-    apply_global_marker_states,
     cross_mode_bases,
+    fit_global_marker_lines,
     forced_mode_responses,
     normal_mode_responses,
 )
@@ -38,11 +38,12 @@ from tmom_recon.orbit_reference import build_orbit_reference
 from tmom_recon.physics.transverse import reconstruct_momenta
 
 if TYPE_CHECKING:  # pragma: no cover - typing helpers only
-    from collections.abc import Collection, Mapping
+    from collections.abc import Callable, Collection, Mapping
 
     import pandas as pd
     import tfs
 
+    from tmom_recon.acd.global_markers import GlobalMarkerLines
     from tmom_recon.acd.madng_driver import ACDipoleMadDriver
     from tmom_recon.acd.reconstruction import PreparedACDInputs
 
@@ -152,13 +153,15 @@ def calculate_acd_global_pz(
 ) -> tfs.TfsDataFrame:
     """AC-dipole reconstruction with marker states from the global driven optics.
 
-    Same inputs and output layout as :func:`calculate_acd_pz`. The tracked
-    reconstruction runs first; the driven lines of the ``marker_before`` /
-    ``marker_after`` rows are then replaced by the exact coupled forced response
-    to the two AC dipoles, one amplitude each, fitted over x and y at all BPMs
-    (:func:`tmom_recon.acd.global_markers.apply_global_marker_states`). The
-    static offsets, the variances and the BPM rows stay tracked. The per-mode
-    fits are in ``attrs["acd_global_markers"]``.
+    Same inputs and output layout as :func:`calculate_acd_pz`. The driven lines of
+    the ``marker_before`` / ``marker_after`` rows are the exact coupled forced
+    response to the two AC dipoles, one amplitude each, fitted over x and y at
+    all BPMs (:func:`tmom_recon.acd.global_markers.fit_global_marker_lines`).
+    Their static part is one DC shared by both ends: the kick has zero mean, so
+    the inverse-variance average of the turn-mean primary-BPM states tracked to
+    the marker. The tracked kick fit does not run. The per-mode fits are in
+    ``attrs["acd_global_markers"]`` and the DC step the model leaves across the
+    AC dipole in ``attrs["acd_global_dc_step"]``.
 
     The kick is then the fitted drive amplitude itself instead of
     a difference of tracked momenta, which is far less sensitive to local model
@@ -185,25 +188,23 @@ def calculate_acd_global_pz(
         model_errors,
         dpp=_dpp(model_details.accelerator, model_details.pt),
     )
-    tracked = _calculate_acd(data, resolved_acd, reference, resolved_optics)
-    return _global_marker_states(
-        tracked,
+    global_lines = _global_marker_lines(
         _acd_data(data),
         resolved_acd.model,
         config.driven_tunes,
         fit_cross_modes=fit_cross_modes,
     )
+    return _calculate_acd(data, resolved_acd, reference, resolved_optics, global_lines)
 
 
-def _global_marker_states(
-    tracked: tfs.TfsDataFrame,
+def _global_marker_lines(
     acd_data: pd.DataFrame,
     model: ACDipoleMadDriver,
     driven_tunes: tuple[float, float],
     *,
     fit_cross_modes: bool,
-) -> tfs.TfsDataFrame:
-    """Replace the tracked marker drive lines with the global forced response."""
+) -> GlobalMarkerLines:
+    """Global forced-response drive lines at the two marker ends."""
     # The undriven transport model: the forced response is exact with coupling,
     # the driven (lens) optics are not.
     vectors, natural_tunes = normal_mode_responses(model, model.pt)
@@ -213,10 +214,10 @@ def _global_marker_states(
         vectors, natural_tunes, driven_tunes, before=before, after=after
     )
     cross_bases = cross_mode_bases(vectors, before=before, after=after) if fit_cross_modes else None
-    return apply_global_marker_states(
-        tracked,
+    return fit_global_marker_lines(
         acd_data,
         responses,
+        markers=(before, after),
         driven_tunes=driven_tunes,
         cross_bases=cross_bases,
     )
@@ -265,7 +266,7 @@ def _acd_data(data: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def _calculate_acd(data, resolved_acd, reference, resolved_optics):
+def _calculate_acd(data, resolved_acd, reference, resolved_optics, global_lines=None):
     config = resolved_acd.config
     return _calculate_ac_dipole_momentum(
         _acd_data(data),
@@ -280,7 +281,19 @@ def _calculate_acd(data, resolved_acd, reference, resolved_optics):
         reject_inconsistent_state=config.reject_inconsistent_state,
         reference=reference,
         resolved_optics=resolved_optics,
+        global_lines=global_lines,
     )
+
+
+def remove_bpm_gains(data: pd.DataFrame, gains: Mapping[tuple[str, str], float]) -> pd.DataFrame:
+    """Divide each BPM's ``x``/``y`` readings by ``1 + g`` and the variances by ``(1 + g)**2``."""
+    out = data.copy(deep=True)
+    names = out["name"].astype(str).str.upper()
+    for plane in ("x", "y"):
+        factor = 1.0 + names.map(lambda n, p=plane: gains.get((p, n), 0.0)).to_numpy(float)
+        out[plane] = out[plane].to_numpy(float) / factor
+        out[f"var_{plane}"] = out[f"var_{plane}"].to_numpy(float) / factor**2
+    return out
 
 
 class ACDipolePzGenerator:
@@ -309,9 +322,14 @@ class ACDipolePzGenerator:
         global_markers: bool = False,
         fit_cross_modes: bool = False,
         acd_data: pd.DataFrame | None = None,
+        data: pd.DataFrame | None = None,
+        prepare: Callable[[pd.DataFrame], PreparedACDInputs] | None = None,
     ) -> None:
         if global_markers and acd_data is None:
             raise ValueError("global_markers needs the ACD data the lines are fitted to")
+        self._data = data
+        self._prepare = prepare
+        self._gains_signature: tuple | None = None
         self._prepared = prepared
         self._resolved_acd = resolved_acd
         self._optics_tws = resolved_acd.optics_tws
@@ -353,22 +371,27 @@ class ACDipolePzGenerator:
                 optics.measurement_dir,
                 reverse_meas_tws=optics.reverse_measurement_order,
                 bpm_names=_names(data),
+                beta_from=optics.beta_from,
             )
             if optics.measurement_dir is not None
             else None
         )
-        prepared = prepare_ac_dipole_inputs(
-            _acd_data(data),
-            resolved_acd.optics_tws,
-            ac_dipole_marker=acd.ac_dipole_marker,
-            model=resolved_acd.model,
-            dpx_tune=acd.driven_tunes[0],
-            dpy_tune=acd.driven_tunes[1],
-            bpm_upstream=acd.bpm_upstream,
-            bpm_downstream=acd.bpm_downstream,
-            smooth_lambda=acd.smooth_lambda,
-            reject_inconsistent_state=acd.reject_inconsistent_state,
-        )
+
+        def prepare(frame: pd.DataFrame) -> PreparedACDInputs:
+            return prepare_ac_dipole_inputs(
+                _acd_data(frame),
+                resolved_acd.optics_tws,
+                ac_dipole_marker=acd.ac_dipole_marker,
+                model=resolved_acd.model,
+                dpx_tune=acd.driven_tunes[0],
+                dpy_tune=acd.driven_tunes[1],
+                bpm_upstream=acd.bpm_upstream,
+                bpm_downstream=acd.bpm_downstream,
+                smooth_lambda=acd.smooth_lambda,
+                reject_inconsistent_state=acd.reject_inconsistent_state,
+            )
+
+        prepared = prepare(data)
         return cls(
             prepared=prepared,
             resolved_acd=resolved_acd,
@@ -380,6 +403,8 @@ class ACDipolePzGenerator:
             global_markers=global_markers,
             fit_cross_modes=fit_cross_modes,
             acd_data=_acd_data(data) if global_markers else None,
+            data=data.copy(deep=True),
+            prepare=prepare,
         )
 
     @property
@@ -387,16 +412,34 @@ class ACDipolePzGenerator:
         """The MAD-NG driver used for state transport (mutate magnets here)."""
         return self._resolved_acd.model
 
+    def _apply_gains(self, bpm_gains: Mapping[tuple[str, str], float] | None) -> None:
+        signature = tuple(sorted(bpm_gains.items())) if bpm_gains else None
+        if signature == self._gains_signature:
+            return
+        if self._data is None or self._prepare is None:
+            raise ValueError("BPM gains need a generator made by ACDipolePzGenerator.build")
+        corrected = remove_bpm_gains(self._data, bpm_gains or {})
+        self._prepared = self._prepare(corrected)
+        if self._global_markers:
+            self._acd_data = _acd_data(corrected)
+        self._gains_signature = signature
+
     def update(
         self,
         *,
         magnet_strengths: Mapping[str, float] | None = None,
         pt: float | None = None,
         knobs: Mapping[str, float] | None = None,
+        bpm_gains: Mapping[tuple[str, str], float] | None = None,
     ) -> tfs.TfsDataFrame:
         """Recompute the ACD reconstruction from the generated model inputs.
 
         Args:
+            bpm_gains: BPM gains ``{(plane, BPM): g}`` with ``plane`` ``"x"`` or ``"y"``,
+                where a BPM reads ``(1 + g)`` times the position. The positions are
+                divided by ``1 + g`` (variances by ``(1 + g)**2``) and the cleaning
+                is redone from them, so it costs a re-preparation rather than a refit
+                of the model. ``None`` or empty keeps the data as built.
             knobs: Knob variables (e.g. tune-correction knobs) to set on both
                 models before reconstructing. A caller that holds the natural
                 tunes to a measurement passes the knobs it rematched with
@@ -443,6 +486,7 @@ class ACDipolePzGenerator:
                 chrom=True,
                 pt=self.model.pt,
             )
+        self._apply_gains(bpm_gains)
         resolved_optics = _resolve(
             self._optics_tws,
             self._closed_orbit_tws,
@@ -458,21 +502,23 @@ class ACDipolePzGenerator:
             self._closed_orbit_tws,
             _reference_names(self._prepared.data, self._closed_orbit_tws),
         )
-        result = reconstruct_from_prepared(
-            self._prepared,
-            self._optics_tws,
-            reference=reference,
-            resolved_optics=resolved_optics,
-        )
-        if self._global_markers:
-            result = _global_marker_states(
-                result,
+        global_lines = (
+            _global_marker_lines(
                 self._acd_data,
                 self.model,
                 self._resolved_acd.config.driven_tunes,
                 fit_cross_modes=self._fit_cross_modes,
             )
-        self.latest = result
+            if self._global_markers
+            else None
+        )
+        self.latest = reconstruct_from_prepared(
+            self._prepared,
+            self._optics_tws,
+            reference=reference,
+            resolved_optics=resolved_optics,
+            global_lines=global_lines,
+        )
         return self.latest
 
 
@@ -525,6 +571,7 @@ class PzGenerator:
                 optics.measurement_dir,
                 reverse_meas_tws=optics.reverse_measurement_order,
                 bpm_names=_names(data),
+                beta_from=optics.beta_from,
             )
             if optics.measurement_dir is not None
             else None

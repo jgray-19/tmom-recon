@@ -112,27 +112,6 @@ def tracking_artifacts(xsuite_json_path):
 
 
 @pytest.fixture(scope="session")
-def tracking_setup(tracking_artifacts):
-    """Compatibility wrapper returning tracking data, twiss, and truth."""
-
-    def _get(
-        seq_file: Path,
-        delta_p: float = 0.0,
-        ramp_turns: int = 1000,
-        flattop_turns: int = 100,
-    ):
-        artifacts = tracking_artifacts(
-            seq_file,
-            delta_p=delta_p,
-            ramp_turns=ramp_turns,
-            flattop_turns=flattop_turns,
-        )
-        return artifacts.data
-
-    return _get
-
-
-@pytest.fixture(scope="session")
 def psb_tracking_setup(psb_model_dir: Path):
     """Return lazily generated PSB scenarios for the entire pytest session.
 

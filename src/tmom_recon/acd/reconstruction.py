@@ -28,6 +28,7 @@ from .bpm_reconstruction import (
     prepare_direct_bpm_reconstruction,
 )
 from .cleaning import _clean_ac_dipole_states, _combine_state_tables
+from .global_markers import COORDS, GLOBAL_SUMMARY_ATTR_NAME, GlobalMarkerLines
 from .models import (
     ACDipoleBPMSelection,
     ACDipoleBPMWindow,
@@ -381,6 +382,8 @@ def _tracked_marker_tables(side: ACDipoleSide, model: ACDipoleMadDriver) -> list
 
 def _fit_ac_dipole_from_frames(
     *,
+    summary: pd.DataFrame,
+    turns: np.ndarray,
     upstream_side: ACDipoleSide,
     downstream_side: ACDipoleSide,
     model: ACDipoleMadDriver,
@@ -391,6 +394,8 @@ def _fit_ac_dipole_from_frames(
     """Run the full AC-dipole fit and cleaning pipeline.
 
     Args:
+        summary: Merged primary-BPM momenta (:func:`_merge_primary_bpm_results`).
+        turns: Integer turn labels of ``summary``.
         upstream_side: Upstream side (window BPM frames + transport conventions).
         downstream_side: Downstream side.
         model: MAD-NG driver used for state transport.
@@ -401,20 +406,11 @@ def _fit_ac_dipole_from_frames(
     Returns:
         An :class:`ACDipoleFitResult` with all intermediate and final quantities.
     """
-    summary = _merge_primary_bpm_results(
-        upstream_side.primary_frame,
-        downstream_side.primary_frame,
-    )
-    turns = summary["turn"].to_numpy(dtype=float)
-
     upstream_tables = _tracked_marker_tables(upstream_side, model)
     downstream_tables = _tracked_marker_tables(downstream_side, model)
 
     raw_upstream = _combine_state_tables(turns, upstream_tables)
     raw_downstream = _combine_state_tables(turns, downstream_tables)
-    dpx_raw = raw_downstream.state.px - raw_upstream.state.px
-    dpy_raw = raw_downstream.state.py - raw_upstream.state.py
-
     cleaning = _clean_ac_dipole_states(
         turns,
         upstream_tables,
@@ -423,6 +419,10 @@ def _fit_ac_dipole_from_frames(
         dpy_tune=dpy_tune,
         smooth_lambda=smooth_lambda,
     )
+    # The raw jump relative to the closed-orbit step: that step is an orbit-angle
+    # difference, not a kick, so the zero-mean fit is compared with what is left.
+    dpx_raw = raw_downstream.state.px - raw_upstream.state.px - cleaning.dpx_orbit_step
+    dpy_raw = raw_downstream.state.py - raw_upstream.state.py - cleaning.dpy_orbit_step
 
     r2s = {}
     for label, tune, fit, raw, variance in (
@@ -464,6 +464,81 @@ def _fit_ac_dipole_from_frames(
         dpx_r2=r2s["dpx"],
         dpy_r2=r2s["dpy"],
     )
+
+
+_JACOBIAN_STEP = 1e-7
+
+
+def _global_marker_estimates(
+    upstream_side: ACDipoleSide,
+    downstream_side: ACDipoleSide,
+    *,
+    turns: np.ndarray,
+    model: ACDipoleMadDriver,
+    global_lines: GlobalMarkerLines,
+) -> tuple[ACDipoleStateEstimate, ACDipoleStateEstimate, np.ndarray]:
+    """Marker states from one shared DC plus the global driven lines.
+
+    Each side's turn-mean primary-BPM state is tracked to its marker end, with
+    a finite-difference Jacobian for the per-turn variance. The kick has zero
+    mean, so both ends get the inverse-variance average of the two DCs.
+
+    Returns:
+        ``(before, after, dc_step)``; ``dc_step`` is the downstream minus upstream
+        tracked DC, the orbit the model does not explain.
+    """
+    dcs, variances = [], []
+    for side in (upstream_side, downstream_side):
+        frame = side.primary_frame
+        mean = frame[list(COORDS)].to_numpy(float).mean(axis=0)
+        bpm_var = np.array([np.nanmean(frame[f"var_{c}"].to_numpy(float)) for c in COORDS])
+        probes = mean + np.vstack([np.zeros(4), _JACOBIAN_STEP * np.eye(4)])
+        marker = model.acd_before if side.direction == +1 else model.acd_after
+        tracked = model.track_particles(side.primary, marker, probes, direction=side.direction)
+        jacobian = (tracked[1:, :4] - tracked[0, :4]) / _JACOBIAN_STEP
+        dcs.append(tracked[0, :4])
+        variances.append((jacobian**2).T @ bpm_var)
+    weights = 1.0 / np.array(variances)
+    dc = (weights * np.array(dcs)).sum(axis=0) / weights.sum(axis=0)
+    variance = 1.0 / weights.sum(axis=0)
+    n = len(turns)
+    estimates = []
+    for side in (upstream_side, downstream_side):
+        name = model.accelerator.acd_marker_name(side.marker_end)
+        state = dc + global_lines.driven_state(name, turns)
+        estimates.append(
+            ACDipoleStateEstimate(
+                ACDipoleStateSeries(*state.T, np.zeros(n), np.full(n, model.pt)),
+                *(np.full(n, v) for v in variance),
+            )
+        )
+    return estimates[0], estimates[1], dcs[1] - dcs[0]
+
+
+def _global_kick_fits(
+    global_lines: GlobalMarkerLines,
+    *,
+    turns: np.ndarray,
+    before: str,
+    after: str,
+) -> tuple[ACDipoleHarmonicFit, ACDipoleHarmonicFit]:
+    """Own-tune kick of each drive as a harmonic fit (``px`` for mode 1, ``py`` for 2)."""
+    fits = []
+    for k, coord in ((0, 1), (1, 3)):
+        z = (
+            global_lines.lines[after.upper()][coord, k]
+            - global_lines.lines[before.upper()][coord, k]
+        )
+        tune = global_lines.tunes[k]
+        fits.append(
+            ACDipoleHarmonicFit(
+                tune=tune,
+                amplitude=float(abs(z)),
+                phase=float(np.arctan2(z.real, -z.imag)),
+                fitted=np.real(z * np.exp(2j * np.pi * tune * turns)),
+            )
+        )
+    return fits[0], fits[1]
 
 
 # ---------------------------------------------------------------------------
@@ -739,6 +814,7 @@ def reconstruct_from_prepared(
     *,
     reference: OrbitReference,
     resolved_optics: ResolvedOptics | None = None,
+    global_lines: GlobalMarkerLines | None = None,
 ) -> tfs.TfsDataFrame:
     """Reconstruct AC-dipole kicks for a given model twiss from prepared inputs.
 
@@ -760,6 +836,11 @@ def reconstruct_from_prepared(
             uncertainty and variance columns (and tune headers) override the
             model values for BPM-pair selection and the initial ``px``/``py``
             estimate.
+        global_lines: Global driven lines at the markers
+            (:func:`tmom_recon.acd.global_markers.fit_global_marker_lines`). When
+            given, the marker states are these lines on one shared DC, the
+            turn-mean BPM states tracked to the marker, and the tracked kick fit
+            is skipped. ``None`` runs the tracked fit.
 
     Returns:
         A :class:`tfs.TfsDataFrame` with four long-form state row groups
@@ -811,27 +892,57 @@ def reconstruct_from_prepared(
             for plane in ("x", "px", "y", "py"):
                 bpm_frame[plane] += restored.loc[bpm_name, plane]
 
-    fit = _fit_ac_dipole_from_frames(
-        upstream_side=upstream_side,
-        downstream_side=downstream_side,
-        model=model,
-        smooth_lambda=smooth_lambda,
-        dpx_tune=dpx_tune_frac,
-        dpy_tune=dpy_tune_frac,
+    summary = _merge_primary_bpm_results(
+        upstream_side.primary_frame,
+        downstream_side.primary_frame,
     )
+    turns = summary["turn"].to_numpy(dtype=float)
+    if not np.array_equal(turns, np.round(turns)):
+        raise ValueError("AC-dipole turn labels must be integers")
 
-    result = _assemble_result_dataframe(
-        fit.summary.copy(deep=True),
-        fit=fit,
-        pt_est=model.pt,
-    )
+    if global_lines is None:
+        fit = _fit_ac_dipole_from_frames(
+            summary=summary,
+            turns=turns,
+            upstream_side=upstream_side,
+            downstream_side=downstream_side,
+            model=model,
+            smooth_lambda=smooth_lambda,
+            dpx_tune=dpx_tune_frac,
+            dpy_tune=dpy_tune_frac,
+        )
+        result = _assemble_result_dataframe(summary.copy(deep=True), fit=fit, pt_est=model.pt)
+        marker_before, marker_after = fit.cleaned_upstream, fit.cleaned_downstream
+        dpx_fit, dpy_fit = fit.dpx_fit, fit.dpy_fit
+    else:
+        marker_before, marker_after, dc_step = _global_marker_estimates(
+            upstream_side,
+            downstream_side,
+            turns=turns,
+            model=model,
+            global_lines=global_lines,
+        )
+        LOGGER.info(
+            "Global ACD markers: tracked DC step across the AC dipole %s",
+            dict(zip(COORDS, dc_step, strict=True)),
+        )
+        dpx_fit, dpy_fit = _global_kick_fits(
+            global_lines,
+            turns=turns,
+            before=model.accelerator.acd_marker_name("before"),
+            after=model.accelerator.acd_marker_name("after"),
+        )
+        result = summary.copy(deep=True)
+        result["dpx_fit_rad"] = dpx_fit.fitted
+        result["dpy_fit_rad"] = dpy_fit.fitted
+        result["pt_used"] = model.pt
 
-    # Transport each side's cleaned marker state back to its primary BPM.
+    # Transport each side's marker state back to its primary BPM.
     cleaned_bpm_states: dict[str, ACDipoleStateSeries] = {}
     consistency_records: list[dict[str, object]] = []
     for side, cleaned_marker in (
-        (upstream_side, fit.cleaned_upstream),
-        (downstream_side, fit.cleaned_downstream),
+        (upstream_side, marker_before),
+        (downstream_side, marker_after),
     ):
         bpm_state = transport_marker_state_to_bpm(
             cleaned_marker.state,
@@ -845,7 +956,8 @@ def reconstruct_from_prepared(
                 side.primary_frame,
                 side.primary,
                 bpm_state,
-                reject=prepared.reject_inconsistent_state,
+                # Global lines are ring-fitted; the local mismatch is logged, not rejected.
+                reject=prepared.reject_inconsistent_state and global_lines is None,
             )
         )
         cleaned_bpm_states[side.label] = bpm_state
@@ -853,27 +965,16 @@ def reconstruct_from_prepared(
         result[f"py_bpm_{side.label}_cleaned"] = bpm_state.py
 
     marker_rows = _build_marker_state_rows(
-        turns=fit.turns,
+        turns=turns,
         model=model,
-        marker_states=[
-            (upstream_side, fit.cleaned_upstream),
-            (downstream_side, fit.cleaned_downstream),
-        ],
-    )
-    raw_marker_rows = _build_marker_state_rows(
-        turns=fit.turns,
-        model=model,
-        marker_states=[
-            (upstream_side, fit.raw_upstream),
-            (downstream_side, fit.raw_downstream),
-        ],
+        marker_states=[(upstream_side, marker_before), (downstream_side, marker_after)],
     )
 
     metadata = _build_output_metadata(
         marker_name=marker_name,
         window=window,
-        dpx_fit=fit.dpx_fit,
-        dpy_fit=fit.dpy_fit,
+        dpx_fit=dpx_fit,
+        dpy_fit=dpy_fit,
         pt_used=model.pt,
     )
 
@@ -883,13 +984,13 @@ def reconstruct_from_prepared(
         [
             _build_bpm_state_rows(
                 upstream_side,
-                turns=fit.turns,
+                turns=turns,
                 cleaned_bpm_state=cleaned_bpm_states[upstream_side.label],
             ),
             marker_rows,
             _build_bpm_state_rows(
                 downstream_side,
-                turns=fit.turns,
+                turns=turns,
                 cleaned_bpm_state=cleaned_bpm_states[downstream_side.label],
             ),
         ],
@@ -910,17 +1011,27 @@ def reconstruct_from_prepared(
 
     result_out.attrs.update(metadata)
     result_out.attrs[SUMMARY_ATTR_NAME] = result
-    # Keep the unregularised marker estimates for diagnostics. The rows in the
-    # result itself remain the cleaned states consumed by ACD-marker tracking.
-    result_out.attrs["raw_marker_states"] = raw_marker_rows
     result_out.attrs["acd_state_consistency"] = consistency_records
     result_out.attrs["smooth_lambda"] = smooth_lambda
     result_out.attrs["qx_drive"] = dpx_tune_frac
     result_out.attrs["qy_drive"] = dpy_tune_frac
-    result_out.attrs["dpx_fit"] = dataclasses.asdict(fit.dpx_fit)
-    result_out.attrs["dpy_fit"] = dataclasses.asdict(fit.dpy_fit)
-    result_out.attrs["dpx_r2"] = fit.dpx_r2
-    result_out.attrs["dpy_r2"] = fit.dpy_r2
+    result_out.attrs["dpx_fit"] = dataclasses.asdict(dpx_fit)
+    result_out.attrs["dpy_fit"] = dataclasses.asdict(dpy_fit)
+    if global_lines is None:
+        # Unregularised marker estimates, for diagnostics only.
+        result_out.attrs["raw_marker_states"] = _build_marker_state_rows(
+            turns=turns,
+            model=model,
+            marker_states=[
+                (upstream_side, fit.raw_upstream),
+                (downstream_side, fit.raw_downstream),
+            ],
+        )
+        result_out.attrs["dpx_r2"] = fit.dpx_r2
+        result_out.attrs["dpy_r2"] = fit.dpy_r2
+    else:
+        result_out.attrs[GLOBAL_SUMMARY_ATTR_NAME] = list(global_lines.fits)
+        result_out.attrs["acd_global_dc_step"] = dict(zip(COORDS, dc_step.tolist(), strict=True))
 
     return result_out
 
@@ -940,6 +1051,7 @@ def _calculate_ac_dipole_momentum(
     reject_inconsistent_state: bool = True,
     reference: OrbitReference,
     resolved_optics: ResolvedOptics | None = None,
+    global_lines: GlobalMarkerLines | None = None,
 ) -> tfs.TfsDataFrame:
     """Reconstruct AC-dipole kicks and constrained BPM momenta in one pass.
 
@@ -974,6 +1086,8 @@ def _calculate_ac_dipole_momentum(
             model values for BPM-pair selection and the initial ``px``/``py``
             estimate.
 
+        global_lines: See :func:`reconstruct_from_prepared`.
+
     Returns:
         A :class:`tfs.TfsDataFrame` with four long-form state row groups:
         upstream BPM, marker before, marker after, and downstream BPM.
@@ -997,6 +1111,7 @@ def _calculate_ac_dipole_momentum(
         tws,
         reference=reference,
         resolved_optics=resolved_optics,
+        global_lines=global_lines,
     )
 
 

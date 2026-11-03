@@ -23,7 +23,7 @@ def psb_twiss(seq_psb3) -> pd.DataFrame:
     accelerator = PSB(sequence_file=str(seq_psb3), ring=RING, kinetic_energy=KINETIC_ENERGY_GEV)
     interface = AcceleratorMadInterface(accelerator)
     interface.observe()
-    # betx/alfx only exist in a coupled twiss, where they equal beta11/alfa11.
+    # The derivation needs the coupled (Mais-Ripken) columns.
     tws = interface.run_twiss(coupling=True)
     interface.close()
     tws.index = tws.index.astype(str).str.upper()
@@ -107,9 +107,9 @@ def test_does_not_inherit_the_omc3_index_alignment_bug(psb_twiss):
 
     index = 5
     perturbed_model = psb_twiss.copy()
-    beta = perturbed_model["betx"].to_numpy(dtype=float).copy()
+    beta = perturbed_model["beta11"].to_numpy(dtype=float).copy()
     beta[index + 1] *= 1.3
-    perturbed_model["betx"] = beta
+    perturbed_model["beta11"] = beta
 
     baseline = derive_momentum_dispersion(measured, psb_twiss, tunes=_tunes(psb_twiss))
     perturbed = derive_momentum_dispersion(measured, perturbed_model, tunes=_tunes(psb_twiss))
@@ -168,3 +168,74 @@ def test_rejects_misaligned_frames(psb_twiss):
 def test_rejects_a_single_bpm(psb_twiss):
     with pytest.raises(ValueError, match="at least two BPMs"):
         derive_momentum_dispersion(psb_twiss.iloc[:1], psb_twiss.iloc[:1], tunes=_tunes(psb_twiss))
+
+
+_QUAD_NAMES = """
+local names = {}
+for _, element in loaded_sequence:iter() do
+  if element.kind == 'quadrupole' and element.l > 0 then names[#names+1] = element.name end
+end
+PY:send(table.concat(names, ","))"""
+
+_BETATRON_TRAJECTORY = """
+local trk = MAD.track{sequence=loaded_sequence, X0={x=LAUNCH_X,px=0,y=0,py=0,t=0,pt=0}, nturn=1, observe=1}
+PY:send(trk:getcol"x"); PY:send(trk:getcol"y"); PY:send(trk:getcol"px"); PY:send(trk:getcol"py")"""
+
+
+def _coupled_twiss_and_trajectory(seq_psb3, rms_tilt: float, launch_x: float):
+    """Coupled twiss at the BPMs plus a one-pass betatron trajectory from a horizontal launch."""
+    accelerator = PSB(sequence_file=str(seq_psb3), ring=RING, kinetic_energy=KINETIC_ENERGY_GEV)
+    interface = AcceleratorMadInterface(accelerator)
+    interface.mad.send(_QUAD_NAMES.replace("PY", interface.py_name))
+    quads = interface.mad.recv().split(",")
+    tilts = rms_tilt * np.random.default_rng(1).standard_normal(len(quads))
+    interface.set_magnet_strengths({f"{q}.tilt": float(t) for q, t in zip(quads, tilts)})
+    interface.observe()
+    tws = interface.run_twiss(coupling=True)
+    tws.index = tws.index.astype(str).str.upper()
+    interface.mad.send(
+        _BETATRON_TRAJECTORY.replace("PY", interface.py_name).replace("LAUNCH_X", repr(launch_x))
+    )
+    x, y, px, py = (np.asarray(interface.mad.recv(), dtype=float).ravel() for _ in range(4))
+    interface.close()
+    assert len(x) == len(tws)
+    return tws, x, y, px, py
+
+
+def _derived_angle_error(seq_psb3, rms_tilt: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Error in the D' response to a physical change of D, and the true vertical response.
+
+    A betatron trajectory added to the model D is a change of D the lattice can
+    actually carry between any two BPMs, so the derived D' must move by exactly
+    the trajectory's angle. The last pair wraps to the next turn, which a
+    one-pass trajectory does not reach, so it is excluded.
+    """
+    tws, x, y, px, py = _coupled_twiss_and_trajectory(seq_psb3, rms_tilt, launch_x=1e-4)
+    tunes = _tunes(tws)
+    measured = tws.copy()
+    measured["dx"] = tws["dx"].to_numpy(dtype=float) + x
+    measured["dy"] = tws["dy"].to_numpy(dtype=float) + y
+    baseline = derive_momentum_dispersion(tws, tws, tunes=tunes)
+    derived = derive_momentum_dispersion(measured, tws, tunes=tunes)
+    error_x = (derived["dpx"] - baseline["dpx"] - px)[:-1]
+    error_y = (derived["dpy"] - baseline["dpy"] - py)[:-1]
+    return error_x, error_y, py[:-1]
+
+
+def test_follows_a_physical_dispersion_change_without_coupling(seq_psb3):
+    error_x, error_y, _ = _derived_angle_error(seq_psb3, rms_tilt=0.0)
+    np.testing.assert_allclose(error_x, 0.0, atol=1e-9)
+    np.testing.assert_allclose(error_y, 0.0, atol=1e-12)
+
+
+def test_follows_a_physical_dispersion_change_with_coupling(seq_psb3):
+    """A horizontal change of D in a coupled lattice must give the right Dy'.
+
+    With quad tilts a horizontal deviation of D leaks into y, so the measured
+    Dy moves too and the derived Dy' must follow it exactly. Per-plane 2x2
+    maps lose about 21% of this response.
+    """
+    error_x, error_y, true_y = _derived_angle_error(seq_psb3, rms_tilt=5e-3)
+    assert np.abs(true_y).max() > 1e-6
+    np.testing.assert_allclose(error_x, 0.0, atol=1e-9)
+    np.testing.assert_allclose(error_y, 0.0, atol=1e-9)

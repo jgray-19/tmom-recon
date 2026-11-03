@@ -213,29 +213,31 @@ tbl, flw = track {
     observe=1,
 }
 py:send(flw.tpar == flw.npar)
+local id, ename = tbl.id, tbl.ename
+local cols = { tbl.x, tbl.px, tbl.y, tbl.py, tbl.t, tbl.pt }
+local last = {}
+for i = 1, #tbl do last[id[i]] = i end
+local final, endpoints, seen = MAD.matrix(flw.npar, 6), {}, {}
+for p = 1, flw.npar do
+    local i = last[p]
+    for c = 1, 6 do final:set(p, c, cols[c][i]) end
+    local name = ename[i]
+    if not seen[name] then seen[name] = true; endpoints[#endpoints + 1] = name end
+end
+py:send(final)
+py:send(endpoints, true)
 """
         )
         with self._tracking_errors(source_element, target_element, direction, range_name):
-            _assert_all_tracked(self.mad.recv())
-            track_df = self.mad.tbl.to_df(force_pandas=True)
+            all_tracked = self.mad.recv()
+            tracked_states = np.asarray(self.mad.recv(), dtype=float)
+            endpoint_names = {str(name).upper() for name in self.mad.recv()}
+            _assert_all_tracked(all_tracked)
 
-        if "id" not in track_df.columns:
-            raise ValueError("Track table is missing required particle id column 'id'")
-
-        # Preserve MAD-NG's emitted row order when selecting the endpoint.
-        # Sorting by increasing s breaks backward tracks because the first row
-        # is then the endpoint while the last is the starting-marker state.
-        final_rows = (
-            track_df.reset_index(drop=True)
-            .groupby("id", sort=False, as_index=False)
-            .tail(1)
-            .sort_values("id", kind="stable")
-        )
-        # The last emitted row per particle must be the requested target. If the
+        # The last saved row per particle must be the requested target. If the
         # target is not observed, track(observe=1) emits no row there and the
         # endpoint falls back to the source element, silently returning the
         # un-transported source state. Catch that instead of returning garbage.
-        endpoint_names = {str(name).upper() for name in final_rows["name"]}
         if endpoint_names != {target_element.upper()}:
             raise ACDipoleTrackingError(
                 source_element=source_element,
@@ -248,7 +250,6 @@ py:send(flw.tpar == flw.npar)
                     f"requested target; is the target element observed?"
                 ),
             )
-        tracked_states = final_rows[["x", "px", "y", "py", "t", "pt"]].to_numpy(dtype=float)
         if tracked_states.shape != (n_particles, N_COORD):
             raise ValueError(
                 f"Tracked particle batch must have shape ({n_particles}, {N_COORD}),"

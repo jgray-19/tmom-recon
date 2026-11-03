@@ -168,12 +168,17 @@ class ACDipoleCleaningResult:
         downstream: Cleaned post-kick state estimate at the marker.
         dpx_fit: Harmonic fit of the horizontal kick waveform.
         dpy_fit: Harmonic fit of the vertical kick waveform.
+        dpx_orbit_step: Closed-orbit ``px`` step, downstream minus upstream [rad].
+        dpy_orbit_step: Closed-orbit ``py`` step, downstream minus upstream [rad].
+            Not part of the kick: subtract it from a raw jump to compare with the fit.
     """
 
     upstream: ACDipoleStateEstimate
     downstream: ACDipoleStateEstimate
     dpx_fit: ACDipoleHarmonicFit
     dpy_fit: ACDipoleHarmonicFit
+    dpx_orbit_step: float
+    dpy_orbit_step: float
 
 
 @dataclass(frozen=True)
