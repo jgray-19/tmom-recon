@@ -1,7 +1,6 @@
 """Estimate the momentum offset of a measurement from its closed orbit.
 
-The estimate is an *offset from the reference orbit*, never an absolute
-momentum; see :mod:`tmom_recon.reference`.
+The estimate is an offset from the measured orbit-zero frame.
 """
 
 from __future__ import annotations
@@ -11,16 +10,15 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from tmom_recon.model import ModelDetails, resolve_model_details
 from tmom_recon.physics.closed_orbit import estimate_closed_orbit
 
 if TYPE_CHECKING:  # pragma: no cover - typing helpers only
     import pandas as pd
 
-    from tmom_recon.reference import MomentumReference
 
 LOGGER = logging.getLogger(__name__)
 
-# BPMs with |dx| below this carry no usable dispersive signal.
 DX_TOL = 1e-2
 
 
@@ -48,59 +46,77 @@ def _solve_pt_quadratic(numerator: float, s_dx2: float, s_ddx_dx: float) -> floa
     return min(candidates, key=lambda value: abs(value - linear))
 
 
-def estimate_pt_from_model(
+def estimate_closed_orbit_pt(
     data: pd.DataFrame,
-    tws: pd.DataFrame,
+    model_details: ModelDetails,
     *,
-    reference: MomentumReference,
+    closed_orbit_at_zero: pd.DataFrame,
     info: bool = True,
 ) -> float:
-    """
-    Estimate MAD-NG pt from the closed orbit, using first- and second-order dispersion.
+    """Estimate momentum from turn-by-turn data using a chromatic Twiss around ``pt=0``.
 
-    Projects the measured closed orbit onto the model dispersion. If ``ddx`` is
-    available, solves the corresponding second-order quadratic. ``reference``
-    must contain the measured closed orbit used to define the momentum offset.
+    ``model_details`` carries the accelerator and all lattice settings needed to
+    build the dispersion model. Its ``pt`` is deliberately required to be zero:
+    ``dx`` and ``ddx`` are expansion coefficients around the nominal momentum.
+    The turn-by-turn readings are averaged per BPM and passed to
+    :func:`estimate_pt_from_orbit`.
+    """
+    if model_details.pt != 0.0:
+        raise ValueError(
+            f"estimate_closed_orbit_pt requires ModelDetails.pt == 0.0; got {model_details.pt!r}"
+        )
+    tws = resolve_model_details(model_details).tws.copy(deep=True)
+    tws.index = tws.index.astype(str).str.upper()
+    data = data.copy(deep=True)
+    data["name"] = data["name"].astype(str).str.upper()
+    # BPMs the model lacks come back as NaN rows, which estimate_pt_from_orbit rejects.
+    orbit = estimate_closed_orbit(data, tws).reindex(data["name"].unique())
+    return estimate_pt_from_orbit(orbit, tws, closed_orbit_at_zero=closed_orbit_at_zero, info=info)
+
+
+def estimate_pt_from_orbit(
+    orbit: pd.DataFrame,
+    tws: pd.DataFrame,
+    *,
+    closed_orbit_at_zero: pd.DataFrame,
+    info: bool = True,
+) -> float:
+    """Estimate MAD-NG ``pt`` from a measured closed orbit.
+
+    The horizontal orbit relative to ``closed_orbit_at_zero`` is projected onto the
+    model dispersion: second order when *tws* carries ``ddx``, first order otherwise.
+    LHC data uses only the arc BPMs; other machines use BPMs with ``|dx| > DX_TOL``.
 
     Args:
-        data: Tracking data with BPM readings. Must contain columns: ["name", "x"].
-        tws: Twiss parameters DataFrame. Must have column "dx" and be indexed by BPM
-            name. When "ddx" is present the second-order solution is used.
-        reference: The momentum origin (:class:`~tmom_recon.reference.MomentumReference`).
-            Its closed orbit must cover every BPM used for the estimate.
-        info: If True, log diagnostic information.
-    Returns:
-        The momentum offset of *data* from the reference orbit.
-    Raises:
-        ValueError: If *reference* is missing or does not cover the BPMs selected
-            for the estimate.
+        orbit: Closed orbit indexed by BPM name, with an ``x`` column.
+        tws: Model Twiss about ``pt=0`` indexed by element name, with ``dx`` and
+            optionally ``ddx``.
+        closed_orbit_at_zero: Measured orbit that defines ``pt=0``.
+        info: Log the BPM selection and the estimate.
     """
-    if reference is None or not reference.measured:
-        raise ValueError(
-            "estimate_pt_from_model requires a `reference` MomentumReference built "
-            "from a measured closed orbit. Neither a model closed orbit nor the "
-            "pinned zero of a dynamic-part run is a valid substitute: dipole errors "
-            "are exactly degenerate with the dispersive orbit at a single momentum, "
-            "so a mismatched origin biases pt by tens of percent. This is the one "
-            "place the measured orbit is load-bearing, which is why the requirement "
-            "lives here rather than at an entry point that may never reach it."
-        )
-    reference_co = reference.closed_orbit
-    data_bpms = set(data["name"].unique())
+    from tmom_recon.orbit_reference import normalize_closed_orbit
+
+    orbit = orbit.copy(deep=True)
+    orbit.index = orbit.index.astype(str).str.upper()
+    tws = tws.copy(deep=True)
+    tws.index = tws.index.astype(str).str.upper()
+    orbit_bpms = set(orbit.index)
     tws_bpms = set(tws.index)
 
-    missing_bpms = data_bpms - tws_bpms
+    missing_bpms = orbit_bpms - tws_bpms
     if missing_bpms:
-        raise ValueError(f"Data contains BPMs not present in tws: {missing_bpms}")
+        raise ValueError(f"Orbit contains BPMs not present in tws: {missing_bpms}")
 
-    extra_bpms = tws_bpms - data_bpms
+    extra_bpms = tws_bpms - orbit_bpms
     if extra_bpms:
-        LOGGER.warning(f"tws contains BPMs not present in data: {extra_bpms}")
-        tws = tws.loc[tws.index.intersection(data_bpms)]
+        LOGGER.warning(f"tws contains BPMs not present in the orbit: {extra_bpms}")
+        tws = tws.loc[tws.index.intersection(orbit_bpms)]
 
     is_lhc = tws.index.str.match(LHC_ARC_PATTERN).any()
-    closed_orbit = estimate_closed_orbit(data, tws)
-
+    origin = normalize_closed_orbit(closed_orbit_at_zero, list(orbit_bpms))
+    # Twiss order, so the projection sums run in lattice order.
+    closed_orbit = orbit.loc[tws.index, ["x"]]
+    closed_orbit["x"] -= origin.loc[closed_orbit.index, "x"].to_numpy()
     if is_lhc:
         filtered_co = closed_orbit[closed_orbit.index.str.match(LHC_ARC_PATTERN)]
         filtered_tws = tws.loc[filtered_co.index.unique()]
@@ -109,9 +125,11 @@ def estimate_pt_from_model(
                 "LHC arc BPM pattern detected. Using %d BPMs for δ estimation.",
                 filtered_tws.shape[0],
             )
+        if filtered_tws.empty:
+            raise ValueError("No BPMs available for δ estimation after filtering.")
     else:
-        bpms_with_small_dx = tws[np.abs(tws["dx"]) > DX_TOL].index
-        filtered_co = closed_orbit[closed_orbit.index.isin(bpms_with_small_dx)]
+        dispersive_bpms = tws.index[np.abs(tws["dx"]) > DX_TOL]
+        filtered_co = closed_orbit[closed_orbit.index.isin(dispersive_bpms)]
         filtered_tws = tws.loc[filtered_co.index.unique()]
         if info:
             LOGGER.info(
@@ -119,20 +137,10 @@ def estimate_pt_from_model(
                 DX_TOL,
                 filtered_tws.shape[0],
             )
-    if filtered_tws.empty:
-        raise ValueError("No BPMs available for δ estimation after filtering.")
+        if filtered_tws.empty:
+            raise ValueError("No BPMs available for δ estimation after filtering.")
 
-    missing_reference = filtered_co.index.difference(reference_co.index)
-    if len(missing_reference):
-        raise ValueError(
-            "The reference closed orbit is missing BPMs used for the pt estimate: "
-            f"{sorted(map(str, missing_reference))}"
-        )
-    # Referencing to a *measured* nominal-RF orbit cancels the machine's error
-    # closed orbit identically; see the docstring for why a model CO cannot.
-    orbit = filtered_co["x"] - reference_co.loc[filtered_co.index, "x"].astype(float)
-
-    numerator = float(np.sum(orbit * filtered_tws["dx"]))
+    numerator = float(np.sum(closed_orbit.loc[filtered_tws.index, "x"] * filtered_tws["dx"]))
     denominator = float(np.sum(filtered_tws["dx"] ** 2))
 
     if "ddx" in filtered_tws.columns:
@@ -151,12 +159,11 @@ def estimate_pt_from_model(
     if info:
         LOGGER.info(
             "Estimated pt from %s-order dispersion: %s (from %.2e/%.2e), "
-            "as an offset from the reference orbit (reference pt %s) over %d BPMs",
+            "as an offset from the frame reference over %d BPMs",
             order,
             pt,
             numerator,
             denominator,
-            reference.pt,
             len(filtered_tws),
         )
     return pt

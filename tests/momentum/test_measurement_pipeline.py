@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import tfs
 
+from tmom_recon import OpticsInput
 from tmom_recon.optics import resolve_optics
 
 
@@ -106,10 +107,10 @@ def _build_model_twiss() -> tfs.TfsDataFrame:
     return tfs.TfsDataFrame(
         pd.DataFrame(
             {
-                "beta11": [101.0, 102.0, 103.0],
-                "beta22": [201.0, 202.0, 203.0],
-                "alfa11": [11.0, 12.0, 13.0],
-                "alfa22": [21.0, 22.0, 23.0],
+                "betx": [101.0, 102.0, 103.0],
+                "bety": [201.0, 202.0, 203.0],
+                "alfx": [11.0, 12.0, 13.0],
+                "alfy": [21.0, 22.0, 23.0],
                 "dx": [10.0, 20.0, 30.0],
                 "dy": [40.0, 50.0, 60.0],
                 "dpx": [1.0, 2.0, 3.0],
@@ -121,6 +122,23 @@ def _build_model_twiss() -> tfs.TfsDataFrame:
     )
 
 
+def _build_zero_twiss() -> pd.DataFrame:
+    """dp/p = 0 twiss with dispersion unlike the optics twiss at pt."""
+    return pd.DataFrame(
+        {
+            "dx": [7.0, 8.0, 9.0],
+            "dy": [4.5, 5.5, 6.5],
+            "dpx": [0.7, 0.8, 0.9],
+            "dpy": [0.45, 0.55, 0.65],
+            "ddx": [70.0, 80.0, 90.0],
+            "ddpx": [7.0, 8.0, 9.0],
+            "ddy": [0.0, 0.0, 0.0],
+            "ddpy": [0.0, 0.0, 0.0],
+        },
+        index=["BPM1", "BPM2", "BPM3"],
+    )
+
+
 def test_resolve_optics_uses_measured_phase_with_model_optics(tmp_path: Path) -> None:
     _build_measurement_folder(tmp_path)
     optics_tws = _build_model_twiss()
@@ -128,8 +146,8 @@ def test_resolve_optics_uses_measured_phase_with_model_optics(tmp_path: Path) ->
     # Force beta, alpha and dispersion from the model; phase (and tunes) stays measured.
     resolved = resolve_optics(
         optics_tws=optics_tws,
-        measurement_dir=tmp_path,
-        model_optics=["beta", "alpha", "dispersion"],
+        zero_tws=_build_zero_twiss(),
+        optics=OpticsInput(measurement_dir=tmp_path, sources={"phase": "measurement"}),
         bpm_names=["BPM1", "BPM2", "BPM3"],
     )
     tws = pd.DataFrame(resolved.tws)
@@ -140,13 +158,14 @@ def test_resolve_optics_uses_measured_phase_with_model_optics(tmp_path: Path) ->
         "alpha": "model",
         "dispersion": "model",
     }
-    assert resolved.use_dispersion
     assert np.allclose(tws["mu1"].to_numpy(), [0.0, 0.2, 0.5])
     assert np.allclose(tws["mu2"].to_numpy(), [0.0, 0.15, 0.4])
-    assert np.allclose(tws["beta11"].to_numpy(), [101.0, 102.0, 103.0])
-    assert np.allclose(tws["beta22"].to_numpy(), [201.0, 202.0, 203.0])
-    assert np.allclose(tws["dx"].to_numpy(), [10.0, 20.0, 30.0])
-    assert np.allclose(tws["dpx"].to_numpy(), [1.0, 2.0, 3.0])
+    assert np.allclose(tws["betx"].to_numpy(), [101.0, 102.0, 103.0])
+    assert np.allclose(tws["bety"].to_numpy(), [201.0, 202.0, 203.0])
+    # Model dispersion is taken about pt = 0: from the zero twiss, not the optics twiss.
+    assert np.allclose(tws["dx"].to_numpy(), [7.0, 8.0, 9.0])
+    assert np.allclose(tws["dpx"].to_numpy(), [0.7, 0.8, 0.9])
+    assert np.allclose(tws["ddx"].to_numpy(), [70.0, 80.0, 90.0])
 
 
 def test_resolve_optics_keeps_measured_dispersion_with_model_beta_and_alpha(tmp_path: Path) -> None:
@@ -156,8 +175,11 @@ def test_resolve_optics_keeps_measured_dispersion_with_model_beta_and_alpha(tmp_
     # Only beta and alpha from the model; phase and dispersion stay measured.
     resolved = resolve_optics(
         optics_tws=optics_tws,
-        measurement_dir=tmp_path,
-        model_optics=["beta", "alpha"],
+        zero_tws=_build_zero_twiss(),
+        optics=OpticsInput(
+            measurement_dir=tmp_path,
+            sources={"phase": "measurement", "dispersion": "measurement"},
+        ),
         bpm_names=["BPM1", "BPM2", "BPM3"],
     )
     tws = pd.DataFrame(resolved.tws)
@@ -165,19 +187,25 @@ def test_resolve_optics_keeps_measured_dispersion_with_model_beta_and_alpha(tmp_
     assert resolved.sources["beta"] == "model"
     assert resolved.sources["alpha"] == "model"
     assert resolved.sources["dispersion"] == "measurement"
-    assert resolved.use_dispersion
-    assert np.allclose(tws["beta11"].to_numpy(), [101.0, 102.0, 103.0])
+    assert np.allclose(tws["betx"].to_numpy(), [101.0, 102.0, 103.0])
+    # Measured D and D' are used as measured (no shift to pt); D2 from the zero twiss.
     assert np.allclose(tws["dx"].to_numpy(), [1.0, 2.0, 3.0])
     assert np.allclose(tws["dpx"].to_numpy(), [0.1, 0.2, 0.3])
+    assert np.allclose(tws["ddx"].to_numpy(), [70.0, 80.0, 90.0])
 
 
 def test_resolve_optics_respects_reverse_phase_accumulation(tmp_path: Path) -> None:
     _build_measurement_folder(tmp_path)
 
-    # No model twiss: every category comes from the measurement, phases reversed.
+    optics_tws = _build_model_twiss()
     resolved = resolve_optics(
-        measurement_dir=tmp_path,
-        reverse_meas_tws=True,
+        optics_tws=optics_tws,
+        zero_tws=_build_zero_twiss(),
+        optics=OpticsInput(
+            measurement_dir=tmp_path,
+            reverse_measurement_order=True,
+            sources=dict.fromkeys(("phase", "beta", "alpha", "dispersion"), "measurement"),
+        ),
         bpm_names=["BPM1", "BPM2", "BPM3"],
     )
     tws = pd.DataFrame(resolved.tws)
@@ -253,8 +281,11 @@ def test_resolve_optics_pairs_measured_beta_with_model_alpha(tmp_path: Path) -> 
 
     resolved = resolve_optics(
         optics_tws=optics_tws,
-        measurement_dir=tmp_path,
-        model_optics=["alpha"],
+        zero_tws=_build_zero_twiss(),
+        optics=OpticsInput(
+            measurement_dir=tmp_path,
+            sources={"phase": "measurement", "beta": "measurement", "dispersion": "measurement"},
+        ),
         bpm_names=["BPM1", "BPM2", "BPM3"],
     )
     tws = pd.DataFrame(resolved.tws)
@@ -263,12 +294,12 @@ def test_resolve_optics_pairs_measured_beta_with_model_alpha(tmp_path: Path) -> 
     assert resolved.sources["alpha"] == "model"
 
     # Beta from beta_amplitude_x/y.tfs, not from beta_phase_x/y.tfs.
-    assert np.allclose(tws["beta11"].to_numpy(), [11.0, 12.0, 13.0])
-    assert np.allclose(tws["beta22"].to_numpy(), [21.0, 22.0, 23.0])
+    assert np.allclose(tws["betx"].to_numpy(), [11.0, 12.0, 13.0])
+    assert np.allclose(tws["bety"].to_numpy(), [21.0, 22.0, 23.0])
 
     # Alpha from the model, not the phase beta files.
-    assert np.allclose(tws["alfa11"].to_numpy(), [11.0, 12.0, 13.0])
-    assert np.allclose(tws["alfa22"].to_numpy(), [21.0, 22.0, 23.0])
+    assert np.allclose(tws["alfx"].to_numpy(), [11.0, 12.0, 13.0])
+    assert np.allclose(tws["alfy"].to_numpy(), [21.0, 22.0, 23.0])
 
     # Errors follow their own category: measured for beta, synthesised for alpha.
     assert np.allclose(tws["sqrt_betax_err"].to_numpy(), 0.1 / (2.0 * np.sqrt([11.0, 12.0, 13.0])))

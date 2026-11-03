@@ -127,10 +127,25 @@ def _compute_centre(
     if centre is None:
         return 0.0
     if weights is None:
+        finite = np.isfinite(matrix)
         if centre == "bpm":
-            return np.nanmean(matrix, axis=0, keepdims=True)
+            numerator = np.nansum(matrix, axis=0, keepdims=True)
+            denominator = np.sum(finite, axis=0, keepdims=True)
+            return np.divide(
+                numerator,
+                denominator,
+                out=np.zeros_like(numerator),
+                where=denominator > 0,
+            )
         if centre == "global":
-            return np.nanmean(matrix, keepdims=True)
+            numerator = np.array([[np.nansum(matrix)]], dtype=float)
+            denominator = np.array([[np.sum(finite)]], dtype=float)
+            return np.divide(
+                numerator,
+                denominator,
+                out=np.zeros_like(numerator),
+                where=denominator > 0,
+            )
         return 0.0
 
     safe_weights = np.where(np.isfinite(matrix), weights, 0.0)
@@ -276,6 +291,10 @@ def _svd_clean_matrix(
         rank: Integer rank or ``"auto"``.
         max_nan_gap: Largest measurement gap to interpolate before
             decomposition.
+        fix_zero_columns: Whether exact zeros are valid measurements. By
+            default, any BPM column containing an exact zero is treated as a
+            dead-reading column and returned as NaN. Set this to ``True`` when
+            zeros are legitimate samples.
         variance_matrix: Optional variance matrix. When provided, the cleaner
             derives one standard deviation per device column, whitens each
             column before applying SVD, and rescales afterwards.
@@ -414,6 +433,10 @@ def svd_clean_measurements(
         rank: Integer rank or ``"auto"`` to use the Gavish-Donoho threshold.
         max_nan_gap: Largest contiguous missing span to interpolate before
             decomposition.
+        fix_zero_columns: Whether exact zeros are valid measurements. By
+            default, any BPM column containing an exact zero is treated as a
+            dead-reading column and returned as NaN. Set this to ``True`` when
+            zeros are legitimate samples.
 
     Returns:
         Copy of the input measurements with cleaned ``x`` and ``y`` values.
@@ -478,6 +501,10 @@ def weighted_svd_clean_measurements(
         rank: Integer rank or ``"auto"`` to use the Gavish-Donoho threshold.
         max_nan_gap: Largest contiguous missing span to interpolate before
             decomposition.
+        fix_zero_columns: Whether exact zeros are valid measurements. By
+            default, any BPM column containing an exact zero is treated as a
+            dead-reading column and returned as NaN. Set this to ``True`` when
+            zeros are legitimate samples.
 
     Returns:
         Copy of the input measurements with cleaned ``x`` and ``y`` values.
@@ -565,6 +592,10 @@ def known_noise_svd_clean_measurements(
             Values above one are more conservative and cut more modes.
         max_nan_gap: Largest contiguous missing span to interpolate before
             decomposition.
+        fix_zero_columns: Whether exact zeros are valid measurements. By
+            default, any BPM column containing an exact zero is treated as a
+            dead-reading column and returned as NaN. Set this to ``True`` when
+            zeros are legitimate samples.
 
     Returns:
         Copy of the input measurements with cleaned ``x`` and ``y`` values.

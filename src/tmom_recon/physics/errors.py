@@ -13,6 +13,38 @@ from tmom_recon.lattice.core import neighbour_plane_factors
 if TYPE_CHECKING:  # pragma: no cover - typing helpers only
     import pandas as pd
 
+PLANES = ("x", "y")
+
+
+def column_or_zeros(frame: pd.DataFrame, column: str, template: np.ndarray) -> np.ndarray:
+    """``frame[column]`` as an array, or zeros shaped like *template* when absent."""
+    if column in frame.columns:
+        return frame[column].to_numpy(dtype=float)
+    return np.zeros_like(template, dtype=float)
+
+
+def _plane_factors(data: pd.DataFrame, names, plane: str, is_prev: bool):
+    """``(sign, alpha_sign, tan_phi, sec_phi)`` for *plane*; ``phi`` is stored in turns."""
+    phi = data[getattr(names, f"delta_{plane}")].to_numpy() * 2 * np.pi
+    sign, alpha_sign, _cos_phi, tan_phi, sec_phi = neighbour_plane_factors(phi, is_prev=is_prev)
+    return sign, alpha_sign, tan_phi, sec_phi
+
+
+def _plane_measurement_variance(
+    data: pd.DataFrame, names, neighbor_suffix: str, plane: str, is_prev: bool
+) -> np.ndarray:
+    var_current = data[f"var_{plane}"].to_numpy()
+    var_neighbor = data[getattr(names, f"var_{plane}")].to_numpy()
+    sqrt_beta = data[f"sqrt_beta{plane}"].to_numpy()
+    sqrt_beta_neigh = data[f"sqrt_beta{plane}_{neighbor_suffix}"].to_numpy()
+    alpha = data[f"alfa{plane}"].to_numpy()
+    sign, alpha_sign, tan_phi, sec_phi = _plane_factors(data, names, plane, is_prev)
+
+    return (
+        var_neighbor * (sign * sec_phi / (sqrt_beta * sqrt_beta_neigh)) ** 2
+        + var_current * (sign * (tan_phi + alpha_sign * alpha) / sqrt_beta**2) ** 2
+    )
+
 
 def compute_measurement_errors(
     data: pd.DataFrame,
@@ -22,34 +54,20 @@ def compute_measurement_errors(
 ) -> tuple[np.ndarray, np.ndarray]:
     r"""Compute measurement-only error contributions to momentum variances.
 
-    The analytical expressions implemented here are
+    For each plane :math:`u \in \{x, y\}`,
 
     .. math::
 
-       \operatorname{var}_{\mathrm{meas}}(p_x)
+       \operatorname{var}_{\mathrm{meas}}(p_u)
        =
-       \sigma^2_{x_n}
+       \sigma^2_{u_n}
        \left(
-       \frac{s \sec \phi_x}{\sqrt{\beta_x}\sqrt{\beta_{x,n}}}
+       \frac{s \sec \phi_u}{\sqrt{\beta_u}\sqrt{\beta_{u,n}}}
        \right)^2
        +
-       \sigma^2_x
+       \sigma^2_u
        \left(
-       \frac{s (\tan \phi_x + a \alpha_x)}{\beta_x}
-       \right)^2,
-
-    .. math::
-
-       \operatorname{var}_{\mathrm{meas}}(p_y)
-       =
-       \sigma^2_{y_n}
-       \left(
-       \frac{s \sec \phi_y}{\sqrt{\beta_y}\sqrt{\beta_{y,n}}}
-       \right)^2
-       +
-       \sigma^2_y
-       \left(
-       \frac{s (\tan \phi_y + a \alpha_y)}{\beta_y}
+       \frac{s (\tan \phi_u + a \alpha_u)}{\beta_u}
        \right)^2,
 
     with :math:`s = -1, a = +1` for the previous neighbor and
@@ -64,41 +82,75 @@ def compute_measurement_errors(
     Returns:
         Tuple of (var_px_measurement, var_py_measurement).
     """
-    sigma_x_current = data["var_x"].to_numpy() ** 0.5
-    sigma_y_current = data["var_y"].to_numpy() ** 0.5
-    sigma_x_neighbor = data[names.var_x].to_numpy() ** 0.5
-    sigma_y_neighbor = data[names.var_y].to_numpy() ** 0.5
-
-    sqrt_beta_x = data["sqrt_betax"].to_numpy()
-    sqrt_beta_y = data["sqrt_betay"].to_numpy()
-    sqrt_beta_x_neigh = data[f"sqrt_betax_{neighbor_suffix}"].to_numpy()
-    sqrt_beta_y_neigh = data[f"sqrt_betay_{neighbor_suffix}"].to_numpy()
-
-    alpha_x = data["alfax"].to_numpy()
-    alpha_y = data["alfay"].to_numpy()
-
-    phi_x = data[names.delta_x].to_numpy() * 2 * np.pi
-    phi_y = data[names.delta_y].to_numpy() * 2 * np.pi
-
-    sign_x, alpha_sign_x, cos_phi_x, tan_phi_x, sec_phi_x = neighbour_plane_factors(
-        phi_x, is_prev=is_prev
+    var_px, var_py = (
+        _plane_measurement_variance(data, names, neighbor_suffix, plane, is_prev)
+        for plane in PLANES
     )
-    sign_y, alpha_sign_y, cos_phi_y, tan_phi_y, sec_phi_y = neighbour_plane_factors(
-        phi_y, is_prev=is_prev
-    )
-
-    # Compute variances analytically
-    var_px = (
-        sigma_x_neighbor**2 * (sign_x * sec_phi_x / (sqrt_beta_x * sqrt_beta_x_neigh)) ** 2
-        + sigma_x_current**2 * (sign_x * (tan_phi_x + alpha_sign_x * alpha_x) / sqrt_beta_x**2) ** 2
-    )
-
-    var_py = (
-        sigma_y_neighbor**2 * (sign_y * sec_phi_y / (sqrt_beta_y * sqrt_beta_y_neigh)) ** 2
-        + sigma_y_current**2 * (sign_y * (tan_phi_y + alpha_sign_y * alpha_y) / sqrt_beta_y**2) ** 2
-    )
-
     return var_px, var_py
+
+
+def _plane_optics_variance(
+    data: pd.DataFrame,
+    names,
+    neighbor_suffix: str,
+    plane: str,
+    is_prev: bool,
+    pt_est: float,
+) -> np.ndarray:
+    current = data[plane].to_numpy()
+    neighbor = data[getattr(names, plane)].to_numpy()
+
+    sqrt_beta = data[f"sqrt_beta{plane}"].to_numpy()
+    sqrt_beta_neigh = data[f"sqrt_beta{plane}_{neighbor_suffix}"].to_numpy()
+    alpha = data[f"alfa{plane}"].to_numpy()
+
+    # Dispersion about pt = 0, zero when absent -- as in momenta._compute_nominal_momenta.
+    dispersion_column = f"d{plane}"
+    neighbor_dispersion_column = getattr(names, f"d{plane}")
+    if pt_est != 0.0 and dispersion_column not in data.columns:
+        raise ValueError(f"Column {dispersion_column!r} missing but pt_est is non-zero.")
+    d_current = column_or_zeros(data, dispersion_column, current)
+    d_neighbor = column_or_zeros(data, neighbor_dispersion_column, neighbor)
+    dd_current = column_or_zeros(data, f"dd{plane}", current)
+    dd_neighbor = column_or_zeros(data, getattr(names, f"dd{plane}"), neighbor)
+
+    # One-sigma optics errors; the phase error is stored in TURNS.
+    sigma_sqrt_beta = data[f"sqrt_beta{plane}_err"].to_numpy()
+    sigma_sqrt_beta_neigh = data[f"sqrt_beta{plane}_{neighbor_suffix}_err"].to_numpy()
+    sigma_alpha = data[f"alfa{plane}_err"].to_numpy()
+    sigma_d_current = column_or_zeros(data, f"{dispersion_column}_err", current)
+    sigma_dp_current = column_or_zeros(data, f"dp{plane}_err", current)
+    sigma_d_neighbor = column_or_zeros(data, f"{neighbor_dispersion_column}_err", neighbor)
+    sigma_delta = data[getattr(names, f"delta_{plane}_err")].to_numpy()
+
+    sign, alpha_sign, tan_phi, sec_phi = _plane_factors(data, names, plane, is_prev)
+
+    pt2 = pt_est * pt_est
+    current_norm = (current - pt_est * d_current - pt2 * dd_current) / sqrt_beta
+    neighbor_norm = (neighbor - pt_est * d_neighbor - pt2 * dd_neighbor) / sqrt_beta_neigh
+
+    a = tan_phi + alpha_sign * alpha
+    dp_dd_neigh = sign * (-pt_est) * sec_phi / (sqrt_beta * sqrt_beta_neigh)
+    dp_dd_curr = sign * (-pt_est) * a / sqrt_beta**2
+    dp_ddp = pt_est
+    dp_dalpha = sign * alpha_sign * current_norm / sqrt_beta
+    dp_ds = -(sign / sqrt_beta**2) * (neighbor_norm * sec_phi + 2.0 * current_norm * a)
+    dp_ds_neigh = -sign * neighbor_norm * sec_phi / (sqrt_beta * sqrt_beta_neigh)
+    dp_dphi = (sign / sqrt_beta) * (neighbor_norm * sec_phi * tan_phi + current_norm * sec_phi**2)
+    # Chain rule to the phase in turns: phi = 2*pi*delta.
+    dp_ddelta = dp_dphi * 2.0 * np.pi
+
+    return np.vstack(
+        (
+            sigma_d_neighbor**2 * dp_dd_neigh**2,
+            sigma_d_current**2 * dp_dd_curr**2,
+            sigma_dp_current**2 * dp_ddp**2,
+            sigma_alpha**2 * dp_dalpha**2,
+            sigma_sqrt_beta**2 * dp_ds**2,
+            sigma_sqrt_beta_neigh**2 * dp_ds_neigh**2,
+            sigma_delta**2 * dp_ddelta**2,
+        )
+    )
 
 
 def compute_optics_errors(
@@ -110,149 +162,43 @@ def compute_optics_errors(
 ) -> tuple[np.ndarray, np.ndarray]:
     r"""Compute optics error contributions to momentum variances.
 
-    The code applies first-order uncertainty propagation,
+    The code applies first-order uncertainty propagation, for each plane
+    :math:`u \in \{x, y\}`,
 
     .. math::
 
-       \operatorname{var}_{\mathrm{opt}}(p_x) =
-       \sum_i \sigma_i^2 \left(\frac{\partial p_x}{\partial q_i}\right)^2,
+       \operatorname{var}_{\mathrm{opt}}(p_u) =
+       \sum_i \sigma_i^2 \left(\frac{\partial p_u}{\partial q_i}\right)^2,
        \qquad
        q_i \in
-       \{D_{x,n}, D_x, D_x', \alpha_x, \sqrt{\beta_x}, \sqrt{\beta_{x,n}}, \Delta_x\},
+       \{D_{u,n}, D_u, D_u', \alpha_u, \sqrt{\beta_u}, \sqrt{\beta_{u,n}}, \Delta_u\}.
 
-    .. math::
-
-       \operatorname{var}_{\mathrm{opt}}(p_y) =
-       \sum_i \sigma_i^2 \left(\frac{\partial p_y}{\partial q_i}\right)^2,
-       \qquad
-       q_i \in
-       \{D_{y,n}, D_y, D_y', \alpha_y, \sqrt{\beta_y}, \sqrt{\beta_{y,n}}, \Delta_y\}.
-
-    The phase-advance uncertainties are stored in turns and converted to radians
-    through :math:`\phi = 2 \pi \Delta`, so the implementation uses
-    :math:`\partial p / \partial \Delta = 2 \pi \, \partial p / \partial \phi`.
+    The derivatives are taken of the momenta of
+    :func:`tmom_recon.physics.momenta._compute_nominal_momenta`, including its
+    second-order dispersion (``ddx``/``ddy``, zero when absent), which is
+    treated as exact. The phase-advance uncertainties are stored in turns and
+    converted to radians through :math:`\phi = 2 \pi \Delta`, so the
+    implementation uses :math:`\partial p / \partial \Delta = 2 \pi \, \partial p / \partial \phi`.
 
     Args:
-        data: DataFrame with optics and error columns.
+        data: DataFrame with optics and error columns. Dispersion and its
+            errors are optional (zero when absent).
         names: Neighbor column names.
         neighbor_suffix: Suffix for neighbor columns ('p' or 'n').
         is_prev: Whether this is previous neighbor calculation.
         pt_est: Estimated MAD-NG pt.
 
     Returns:
-        Tuple of (var_px_errors, var_py_errors), where each is a 2D numpy array of shape (7, N).
-        Each row is one error contribution. Sum along axis 0 and add to measurement variance for total variance.
+        Tuple of (var_px_errors, var_py_errors), each of shape (7, N): one row
+        per contribution, in the order of ``q_i`` above. Sum along axis 0 and
+        add to the measurement variance for the total variance.
+
+    Raises:
+        ValueError: If *pt_est* is non-zero and a plane's dispersion column
+            (``dx``/``dy``) is missing.
     """
-    x_current = data["x"].to_numpy()
-    y_current = data["y"].to_numpy()
-    x_neighbor = data[names.x].to_numpy()
-    y_neighbor = data[names.y].to_numpy()
-
-    sqrt_beta_x = data["sqrt_betax"].to_numpy()
-    sqrt_beta_y = data["sqrt_betay"].to_numpy()
-    sqrt_beta_x_neigh = data[f"sqrt_betax_{neighbor_suffix}"].to_numpy()
-    sqrt_beta_y_neigh = data[f"sqrt_betay_{neighbor_suffix}"].to_numpy()
-
-    alpha_x = data["alfax"].to_numpy()
-    alpha_y = data["alfay"].to_numpy()
-
-    dx_current = data.get("dx", np.zeros_like(x_current))
-    dx_neighbor = data.get(names.dx, np.zeros_like(x_neighbor))
-    dpx_current = data.get("dpx", np.zeros_like(x_current))
-    dy_current = data.get("dy", np.zeros_like(y_current))
-    dy_neighbor = data.get(names.dy, np.zeros_like(y_neighbor))
-    dpy_current = data.get("dpy", np.zeros_like(y_current))
-    if np.all(dx_current == 0) and pt_est != 0.0:
-        raise ValueError("Dispersion columns missing but pt_est is non-zero.")
-
-    phi_x = data[names.delta_x].to_numpy() * 2 * np.pi
-    phi_y = data[names.delta_y].to_numpy() * 2 * np.pi
-
-    # Optics errors
-    sigma_sqrt_betax = data["sqrt_betax_err"].to_numpy()
-    sigma_sqrt_betay = data["sqrt_betay_err"].to_numpy()
-    sigma_sqrt_betax_neigh = data[f"sqrt_betax_{neighbor_suffix}_err"].to_numpy()
-    sigma_sqrt_betay_neigh = data[f"sqrt_betay_{neighbor_suffix}_err"].to_numpy()
-    sigma_alpha_x = data["alfax_err"].to_numpy()
-    sigma_alpha_y = data["alfay_err"].to_numpy()
-    sigma_dx_current = data.get("dx_err", np.zeros_like(dx_current))
-    sigma_dpx_current = data.get("dpx_err", np.zeros_like(dpx_current))
-    sigma_dy_current = data.get("dy_err", np.zeros_like(dy_current))
-    sigma_dpy_current = data.get("dpy_err", np.zeros_like(dpy_current))
-    sigma_dx_neighbor = data.get(f"{names.dx}_err", np.zeros_like(dx_neighbor))
-    sigma_dy_neighbor = data.get(f"{names.dy}_err", np.zeros_like(dy_neighbor))
-    # Phase uncertainty is stored in TURNS in the dataframe
-    sigma_delta_x = data[names.delta_x_err].to_numpy()
-    sigma_delta_y = data[names.delta_y_err].to_numpy()
-
-    sign_x, alpha_sign_x, cos_phi_x, tan_phi_x, sec_phi_x = neighbour_plane_factors(
-        phi_x, is_prev=is_prev
+    var_px, var_py = (
+        _plane_optics_variance(data, names, neighbor_suffix, plane, is_prev, pt_est)
+        for plane in PLANES
     )
-    sign_y, alpha_sign_y, cos_phi_y, tan_phi_y, sec_phi_y = neighbour_plane_factors(
-        phi_y, is_prev=is_prev
-    )
-
-    # Normalized coordinates
-    x_current_norm = (x_current - pt_est * dx_current) / sqrt_beta_x
-    x_neighbor_norm = (x_neighbor - pt_est * dx_neighbor) / sqrt_beta_x_neigh
-    y_current_norm = (y_current - pt_est * dy_current) / sqrt_beta_y
-    y_neighbor_norm = (y_neighbor - pt_est * dy_neighbor) / sqrt_beta_y_neigh
-
-    # Add optics contributions
-    # Horizontal
-    a_x = tan_phi_x + alpha_sign_x * alpha_x
-    sec_tan_x = sec_phi_x * tan_phi_x
-    sec2_x = sec_phi_x**2
-
-    dpx_ddx_neigh = sign_x * (-pt_est) * sec_phi_x / (sqrt_beta_x * sqrt_beta_x_neigh)
-    dpx_ddx_curr = sign_x * (-pt_est) * a_x / sqrt_beta_x**2
-    dpx_ddpx = pt_est
-    dpx_dalpha = sign_x * alpha_sign_x * x_current_norm / sqrt_beta_x
-    dpx_ds = -(sign_x / sqrt_beta_x**2) * (x_neighbor_norm * sec_phi_x + 2.0 * x_current_norm * a_x)
-    dpx_ds_neigh = -sign_x * x_neighbor_norm * sec_phi_x / (sqrt_beta_x * sqrt_beta_x_neigh)
-    dpx_dphi = (sign_x / sqrt_beta_x) * (x_neighbor_norm * sec_tan_x + x_current_norm * sec2_x)
-
-    # Phase error is in turns; dpx_dphi is w.r.t. phi in radians
-    # Chain rule: dpx/d(delta_turns) = dpx/d(phi_radians) * d(phi_radians)/d(delta_turns) = dpx_dphi * 2π
-    dpx_ddelta = dpx_dphi * 2.0 * np.pi
-
-    var_px_errors = np.vstack(
-        (
-            sigma_dx_neighbor**2 * dpx_ddx_neigh**2,
-            sigma_dx_current**2 * dpx_ddx_curr**2,
-            sigma_dpx_current**2 * dpx_ddpx**2,
-            sigma_alpha_x**2 * dpx_dalpha**2,
-            sigma_sqrt_betax**2 * dpx_ds**2,
-            sigma_sqrt_betax_neigh**2 * dpx_ds_neigh**2,
-            sigma_delta_x**2 * dpx_ddelta**2,
-        )
-    )
-
-    # Vertical
-    a_y = tan_phi_y + alpha_sign_y * alpha_y
-    sec_tan_y = sec_phi_y * tan_phi_y
-    sec2_y = sec_phi_y**2
-
-    dpy_ddy_neigh = sign_y * (-pt_est) * sec_phi_y / (sqrt_beta_y * sqrt_beta_y_neigh)
-    dpy_ddy_curr = sign_y * (-pt_est) * a_y / sqrt_beta_y**2
-    dpy_ddpy = pt_est
-    dpy_dalpha = sign_y * alpha_sign_y * y_current_norm / sqrt_beta_y
-    dpy_ds = -(sign_y / sqrt_beta_y**2) * (y_neighbor_norm * sec_phi_y + 2.0 * y_current_norm * a_y)
-    dpy_ds_neigh = -sign_y * y_neighbor_norm * sec_phi_y / (sqrt_beta_y * sqrt_beta_y_neigh)
-    dpy_dphi = (sign_y / sqrt_beta_y) * (y_neighbor_norm * sec_tan_y + y_current_norm * sec2_y)
-
-    dpy_ddelta = dpy_dphi * 2.0 * np.pi
-
-    var_py_errors = np.vstack(
-        (
-            sigma_dy_neighbor**2 * dpy_ddy_neigh**2,
-            sigma_dy_current**2 * dpy_ddy_curr**2,
-            sigma_dpy_current**2 * dpy_ddpy**2,
-            sigma_alpha_y**2 * dpy_dalpha**2,
-            sigma_sqrt_betay**2 * dpy_ds**2,
-            sigma_sqrt_betay_neigh**2 * dpy_ds_neigh**2,
-            sigma_delta_y**2 * dpy_ddelta**2,
-        )
-    )
-
-    return var_px_errors, var_py_errors
+    return var_px, var_py

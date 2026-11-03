@@ -114,18 +114,22 @@ def assert_acd_momenta_match_truth(
     kick_r2_min: float,
     bpm_r2_min: float,
     marker_r2_min: float,
-    marker_pos_r2_min: float = 0.999,
+    marker_pos_r2_min: float,
+    fit_r2_min: float,
+    marker_mean_max: dict[str, float] | None,
 ) -> None:
     """Assert an AC-dipole reconstruction matches the tracked truth.
 
     Checks, against the directly tracked truth, that:
 
     - the harmonic kick fit reconstructs the true kick (after - before markers),
-    - with no noise the internal observed-vs-fit R^2 is essentially perfect,
+    - with no noise the internal observed-vs-fit R^2 is above ``fit_r2_min``,
     - the BPM momenta agree with truth (raw when ``clean``, cleaned under noise),
     - the momenta at the ``<acd>_before`` / ``<acd>_after`` markers agree with truth,
     - the ``x``/``y`` positions at those markers (obtained by tracking the BPM
-      states to the marker) agree with truth.
+      states to the marker) agree with truth,
+    - with ``marker_mean_max``, the static (mean) marker error per coordinate is
+      below its limit: an R^2 is blind to a constant offset.
 
     Args:
         result: The full reconstruction result (state rows; summary in ``attrs``).
@@ -137,6 +141,10 @@ def assert_acd_momenta_match_truth(
         bpm_r2_min: Minimum R^2 for the BPM momenta vs truth.
         marker_r2_min: Minimum R^2 for the marker momenta vs truth.
         marker_pos_r2_min: Minimum R^2 for the marker ``x``/``y`` positions vs truth.
+        fit_r2_min: Minimum internal fit R^2 (``attrs["dpx_r2"]``/``["dpy_r2"]``)
+            when ``clean``.
+        marker_mean_max: Maximum ``|mean(reconstructed - truth)|`` at the markers
+            per coordinate (``x``, ``px``, ``y``, ``py``); ``None`` skips it.
     """
     summary = result.attrs["summary"]
     bpm_upstream = result.attrs["bpm_upstream"]
@@ -155,8 +163,8 @@ def assert_acd_momenta_match_truth(
     assert dpx_r2 > kick_r2_min, f"Kick dpx R^2={dpx_r2} below threshold {kick_r2_min}"
     assert dpy_r2 > kick_r2_min, f"Kick dpy R^2={dpy_r2} below threshold {kick_r2_min}"
     if clean:
-        assert result.attrs["dpx_r2"] > 0.999
-        assert result.attrs["dpy_r2"] > 0.999
+        for key in ("dpx_r2", "dpy_r2"):
+            assert result.attrs[key] > fit_r2_min, f"{key}={result.attrs[key]} below {fit_r2_min}"
 
     # BPM momenta agree with truth (cleaned outputs are noise-robust).
     bpm_col = "{plane}_bpm_{side}" if clean else "{plane}_bpm_{side}_cleaned"
@@ -186,3 +194,9 @@ def assert_acd_momenta_match_truth(
             assert rows[coord].notna().all(), f"{marker_name} {coord} has NaNs"
             r2 = r_squared(rows[f"{coord}_true"].to_numpy(), rows[coord].to_numpy())
             assert r2 > marker_pos_r2_min, f"{marker_name} {coord} position R^2={r2}"
+        if marker_mean_max is not None:
+            for coord, limit in marker_mean_max.items():
+                mean = float(np.mean(rows[coord].to_numpy() - rows[f"{coord}_true"].to_numpy()))
+                assert abs(mean) < limit, (
+                    f"{marker_name} static {coord} error {mean:.3e} >= {limit:.1e}"
+                )

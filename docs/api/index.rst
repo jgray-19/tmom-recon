@@ -8,9 +8,9 @@ The pages are grouped by subsystem:
 - ``tmom_recon`` for the top-level public entry points
 - ``physics`` for the main reconstruction formulae
 - ``measurements`` for measurement-pipeline helpers
-- ``nbpm`` and ``acd`` for higher-level reconstruction workflows
+- ``acd`` for AC-dipole reconstruction
 - ``kicker`` for single-turn kick reconstruction
-- ``lattice``, ``kalman``, and ``data`` for supporting infrastructure
+- ``lattice`` and ``data`` for supporting infrastructure
 
 .. toctree::
    :maxdepth: 2
@@ -18,9 +18,7 @@ The pages are grouped by subsystem:
    tmom_recon
    physics
    measurements
-   nbpm
    acd
    kicker
    lattice
-   kalman
    data

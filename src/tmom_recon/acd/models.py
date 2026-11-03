@@ -103,21 +103,19 @@ class ACDipoleSide:
 class ACDipoleHarmonicFit:
     """Result of a single-harmonic least-squares fit at the AC-dipole marker.
 
-    The fitted waveform is ``amplitude * sin(2π * tune * n + phase) + offset``
-    where ``n`` is the turn number.
+    The fitted waveform is ``amplitude * sin(2π * tune * n + phase)`` where ``n``
+    is the turn number. It has no offset: an AC dipole's kick has zero mean.
 
     Attributes:
         tune: Fractional tune used for the fit (0 < tune < 0.5).
         amplitude: Peak amplitude of the fitted harmonic [rad].
         phase: Phase of the fitted harmonic [rad].
-        offset: DC offset of the fitted harmonic [rad].
         fitted: Per-turn fitted values, shape ``(n_turns,)`` [rad].
     """
 
     tune: float
     amplitude: float
     phase: float
-    offset: float
     fitted: np.ndarray
 
 
@@ -170,12 +168,17 @@ class ACDipoleCleaningResult:
         downstream: Cleaned post-kick state estimate at the marker.
         dpx_fit: Harmonic fit of the horizontal kick waveform.
         dpy_fit: Harmonic fit of the vertical kick waveform.
+        dpx_orbit_step: Closed-orbit ``px`` step, downstream minus upstream [rad].
+        dpy_orbit_step: Closed-orbit ``py`` step, downstream minus upstream [rad].
+            Not part of the kick: subtract it from a raw jump to compare with the fit.
     """
 
     upstream: ACDipoleStateEstimate
     downstream: ACDipoleStateEstimate
     dpx_fit: ACDipoleHarmonicFit
     dpy_fit: ACDipoleHarmonicFit
+    dpx_orbit_step: float
+    dpy_orbit_step: float
 
 
 @dataclass(frozen=True)

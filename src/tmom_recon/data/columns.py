@@ -16,10 +16,10 @@ from omc3.optics_measurements.constants import (
 
 # Measurement column mappings
 MEASUREMENT_RENAME_MAPPING: dict[str, str] = {
-    f"{BETA}X": "beta11",
-    f"{BETA}Y": "beta22",
-    f"{ALPHA}X": "alfa11",
-    f"{ALPHA}Y": "alfa22",
+    f"{BETA}X": "betx",
+    f"{BETA}Y": "bety",
+    f"{ALPHA}X": "alfx",
+    f"{ALPHA}Y": "alfy",
     f"{PHASE_ADV}X": "mu1",
     f"{PHASE_ADV}Y": "mu2",
     f"{ORBIT}X": "x",

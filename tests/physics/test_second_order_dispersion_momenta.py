@@ -1,7 +1,9 @@
 """Second-order dispersion in the neighbour-pair momentum reconstruction.
 
-The orbit at momentum ``pt`` is ``pt*dx + pt**2*ddx`` (MAD-NG's ``chrom=true``
-columns already carry the Taylor 1/2), and its angle is ``pt*dpx + pt**2*ddpx``.
+The dispersion columns are an expansion about the ``pt = 0`` closed orbit (the
+``dp/p = 0`` twiss, or a momentum scan), so the orbit relative to the measured
+origin is ``pt*dx + pt**2*ddx``, with angle ``pt*dpx + pt**2*ddpx`` (see
+:func:`_compute_nominal_momenta`).
 The reconstruction must strip the full dispersive *position* before normalising
 to betatron coordinates and add the full dispersive *angle* back afterwards.
 
@@ -19,6 +21,8 @@ import pytest
 
 from tmom_recon.data.schema import PREV, SUFFIX_PREV
 from tmom_recon.physics.momenta import _compute_nominal_momenta
+
+pytestmark = pytest.mark.unit
 
 PT = 8.0e-3
 DX, DDX = 1.7, -4.2

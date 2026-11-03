@@ -454,6 +454,16 @@ Potential future improvements could include:
 - validating whether additional BPMs on each side improve the marker position
   average in difficult optics conditions
 
+## Alternative: Global Driven-Optics Marker States
+
+`calculate_acd_global_pz` runs this whole pipeline, then replaces the driven
+lines of the cleaned marker states (Step 7) by the exact coupled forced
+response to the two AC dipoles, one kick amplitude each, fitted over x and y at
+all BPMs (`tmom_recon.acd.global_markers`). It avoids limitation 1 for the
+kick, which is fitted directly rather than taken as a difference of two
+tracked momenta, and it carries the cross-plane lines. It needs the model on the measured natural tunes. Details, numbers
+and limits: `docs/api/acd.rst`, section "Global Driven-Optics Markers".
+
 ## Summary
 
 Yes: the reconstruction should use the assumption that, for the same turn,

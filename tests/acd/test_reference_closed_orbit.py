@@ -4,6 +4,8 @@ import pytest
 
 from tmom_recon import ACDipoleConfig
 
+pytestmark = pytest.mark.unit
+
 
 def test_acd_config_rejects_dispersive_closed_orbit_mode() -> None:
     with pytest.raises(TypeError, match="dispersive_closed_orbit"):

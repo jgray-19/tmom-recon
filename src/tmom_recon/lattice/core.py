@@ -10,8 +10,6 @@ from tmom_recon.data.config import FILE_COLUMNS, POSITION_STD_DEV
 from tmom_recon.data.schema import (
     CORE_ID_COLS,
     CORE_MOM_COLS,
-    CORE_POS_COLS,
-    POSITION_COLS,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -48,23 +46,6 @@ class LatticeMaps:
     ddpx: Mapping[str, float] | None = None
     ddy: Mapping[str, float] | None = None
     ddpy: Mapping[str, float] | None = None
-
-
-@dataclass(frozen=True)
-class InputFeatures:
-    has_px: bool
-    has_py: bool
-
-
-def validate_input(df: pd.DataFrame) -> InputFeatures:
-    required = set(CORE_ID_COLS + CORE_POS_COLS)
-    missing = required.difference(df.columns)
-    if missing:
-        raise ValueError(f"Missing required column(s): {sorted(missing)}")
-    return InputFeatures(
-        has_px=("px" in df.columns),
-        has_py=("py" in df.columns),
-    )
 
 
 def get_rng(rng: np.random.Generator | None) -> np.random.Generator:
@@ -145,6 +126,13 @@ def inject_noise_xy(
     rng: np.random.Generator,
     noise_std: float = POSITION_STD_DEV,
 ) -> pd.DataFrame:
+    """Add Gaussian position noise and declare it in the variance columns.
+
+    The variances are overwritten rather than accumulated: whatever a tracking
+    pipeline put there was a placeholder for noiseless data, and leaving it in
+    place makes the reconstruction weight and report an uncertainty unrelated to
+    the noise actually present.
+    """
     out = df.copy(deep=True)
     n_rows = len(df)
     LOGGER.debug("Adding Gaussian noise: std=%g", noise_std)
@@ -153,32 +141,29 @@ def inject_noise_xy(
 
     out["x"] = df["x"] + noise_x
     out["y"] = df["y"] + noise_y
+    out["var_x"] = noise_std**2
+    out["var_y"] = noise_std**2
     return out
 
 
-def build_lattice_maps(
-    tws: pd.DataFrame,
-    *,
-    include_dispersion: bool = False,
-) -> LatticeMaps:
-    sqrt_betax = np.sqrt(tws["beta11"])
-    sqrt_betay = np.sqrt(tws["beta22"])
+def build_lattice_maps(tws: pd.DataFrame) -> LatticeMaps:
+    sqrt_betax = np.sqrt(tws["betx"])
+    sqrt_betay = np.sqrt(tws["bety"])
     params: dict[str, Mapping[str, float]] = {
         "sqrt_betax": sqrt_betax.to_dict(),
         "sqrt_betay": sqrt_betay.to_dict(),
-        "betax": tws["beta11"].to_dict(),
-        "betay": tws["beta22"].to_dict(),
-        "alfax": tws["alfa11"].to_dict(),
-        "alfay": tws["alfa22"].to_dict(),
+        "betax": tws["betx"].to_dict(),
+        "betay": tws["bety"].to_dict(),
+        "alfax": tws["alfx"].to_dict(),
+        "alfay": tws["alfy"].to_dict(),
     }
-    if include_dispersion:
-        params["dx"] = tws["dx"].to_dict()
-        params["dpx"] = tws["dpx"].to_dict()
-        params["dy"] = tws["dy"].to_dict()
-        params["dpy"] = tws["dpy"].to_dict()
-        for col in SECOND_ORDER_DISPERSION_COLUMNS:
-            if col in tws.columns:
-                params[col] = tws[col].to_dict()
+    params["dx"] = tws["dx"].to_dict()
+    params["dpx"] = tws["dpx"].to_dict()
+    params["dy"] = tws["dy"].to_dict()
+    params["dpy"] = tws["dpy"].to_dict()
+    for col in SECOND_ORDER_DISPERSION_COLUMNS:
+        if col in tws.columns:
+            params[col] = tws[col].to_dict()
     return LatticeMaps(**params)
 
 
@@ -320,90 +305,6 @@ def sync_endpoints(data_p: pd.DataFrame, data_n: pd.DataFrame) -> tuple[pd.DataF
     return data_p_out, data_n_out
 
 
-def diagnostics(
-    orig_data,
-    data_p,
-    data_n,
-    data_avg,
-    info: bool,
-    features: InputFeatures,
-) -> None:
-    if not info:
-        return
-
-    # Merge dataframes to ensure proper alignment by name and turn
-    # This prevents misleading diagnostics from index misalignment
-    merge_cols = list(CORE_ID_COLS)
-
-    # Merge prev estimates
-    merged_p = orig_data.merge(
-        data_p[
-            merge_cols + list(POSITION_COLS + CORE_MOM_COLS)
-            if features.has_px
-            else merge_cols + list(POSITION_COLS)
-        ],
-        on=merge_cols,
-        suffixes=("_true", "_prev"),
-    )
-
-    # Merge next estimates
-    merged_n = orig_data.merge(
-        data_n[merge_cols + list(CORE_MOM_COLS) if features.has_px else merge_cols],
-        on=merge_cols,
-        suffixes=("_true", "_next"),
-    )
-
-    # Merge averaged estimates
-    merged_avg = orig_data.merge(
-        data_avg[merge_cols + list(CORE_MOM_COLS) if features.has_px else merge_cols],
-        on=merge_cols,
-        suffixes=("_true", "_avg"),
-    )
-
-    if "x_true" in merged_p.columns:
-        x_diff = merged_p["x_prev"] - merged_p["x_true"]
-        y_diff = merged_p["y_prev"] - merged_p["y_true"]
-        LOGGER.info("x_diff mean %s ± %s", x_diff.abs().mean(), x_diff.std())
-        LOGGER.info("y_diff mean %s ± %s", y_diff.abs().mean(), y_diff.std())
-
-    LOGGER.info("MOMENTUM DIFFERENCES ------")
-    if features.has_px:
-        px_diff_p = merged_p["px_prev"] - merged_p["px_true"]
-        px_diff_n = merged_n["px_next"] - merged_n["px_true"]
-        px_diff_avg = merged_avg["px_avg"] - merged_avg["px_true"]
-        LOGGER.info("px_diff mean (prev w/ k) %s ± %s", px_diff_p.abs().mean(), px_diff_p.std())
-        LOGGER.info("px_diff mean (next w/ k) %s ± %s", px_diff_n.abs().mean(), px_diff_n.std())
-        LOGGER.info("px_diff mean (avg) %s ± %s", px_diff_avg.abs().mean(), px_diff_avg.std())
-
-    if features.has_py:
-        py_diff_p = merged_p["py_prev"] - merged_p["py_true"]
-        py_diff_n = merged_n["py_next"] - merged_n["py_true"]
-        py_diff_avg = merged_avg["py_avg"] - merged_avg["py_true"]
-        LOGGER.info("py_diff mean (prev w/ k) %s ± %s", py_diff_p.abs().mean(), py_diff_p.std())
-        LOGGER.info("py_diff mean (next w/ k) %s ± %s", py_diff_n.abs().mean(), py_diff_n.std())
-        LOGGER.info("py_diff mean (avg) %s ± %s", py_diff_avg.abs().mean(), py_diff_avg.std())
-
-    epsilon = 1e-10
-    if features.has_px and "px_true" in merged_avg.columns:
-        mask_px = merged_avg["px_true"].abs() > epsilon
-        if mask_px.any():
-            px_rel = (merged_avg["px_avg"] - merged_avg["px_true"])[mask_px] / merged_avg[
-                "px_true"
-            ][mask_px]
-            LOGGER.info("px_diff mean (avg rel) %s ± %s", px_rel.abs().mean(), px_rel.std())
-        else:
-            LOGGER.info("px_diff mean (avg rel): No significant px values")
-    if features.has_py and "py_true" in merged_avg.columns:
-        mask_py = merged_avg["py_true"].abs() > epsilon
-        if mask_py.any():
-            py_rel = (merged_avg["py_avg"] - merged_avg["py_true"])[mask_py] / merged_avg[
-                "py_true"
-            ][mask_py]
-            LOGGER.info("py_diff mean (avg rel) %s ± %s", py_rel.abs().mean(), py_rel.std())
-        else:
-            LOGGER.info("py_diff mean (avg rel): No significant py values")
-
-
 def _require_full_coverage(data: pd.DataFrame, co: pd.DataFrame, what: str) -> None:
     """Fail loudly when *co* does not cover every BPM in *data*.
 
@@ -418,72 +319,3 @@ def _require_full_coverage(data: pd.DataFrame, co: pd.DataFrame, what: str) -> N
             f"{what} is missing {len(missing)} BPM(s) present in the data: "
             f"{sorted(map(str, missing))[:10]}"
         )
-
-
-def remove_closed_orbit(data: pd.DataFrame, co: pd.DataFrame) -> pd.DataFrame:
-    """Return tracking data with the closed-orbit *position* removed.
-
-    On the production path *co* is the **measured** nominal-RF orbit, not a model
-    twiss: an unknown dipole-error orbit is exactly degenerate with the
-    dispersive orbit, so no model can supply it. See
-    :func:`tmom_recon.physics.pt_calculation.estimate_pt_from_model`.
-    """
-    LOGGER.info("Removing closed orbit from data")
-    _require_full_coverage(data, co, "closed orbit")
-    out = data.copy(deep=True)
-    x_dict = co["x"].to_dict()
-    y_dict = co["y"].to_dict()
-    # Ensure arithmetic is performed on float dtype, not categorical
-    out["x"] = out["x"].astype(float) - out["name"].map(x_dict).astype(float)
-    out["y"] = out["y"].astype(float) - out["name"].map(y_dict).astype(float)
-    return out
-
-
-def restore_closed_orbit_and_reference_momenta(
-    data: pd.DataFrame,
-    co: pd.DataFrame,
-    *,
-    momentum_co: pd.DataFrame | None = None,
-) -> pd.DataFrame:
-    """Return data with the closed-orbit position and momenta restored.
-
-    Position and momentum come from deliberately different places. ``co`` carries
-    ``x``/``y`` and should be the *measured* nominal-RF orbit, the same frame
-    :func:`remove_closed_orbit` subtracted. ``momentum_co`` carries ``px``/``py``,
-    which BPMs cannot measure at all, so it comes from a twiss: preferably one
-    fitted to the measured orbit (which tracks the machine's real errors), else
-    a plain model twiss.
-
-    Passing them separately matters because the two disagree whenever the model
-    does not carry the machine's real errors: subtracting a measured orbit and
-    adding back a model one leaves the difference as an unmodelled residual.
-    When *momentum_co* is omitted, ``co`` supplies both, which is only correct if
-    ``co`` is itself a full twiss.
-    """
-    LOGGER.info("Restoring closed orbit and reference momenta to data")
-    out = data.copy(deep=True)
-    co_dict = co.to_dict()
-    momentum_source = co if momentum_co is None else momentum_co
-    momentum_dict = co_dict if momentum_co is None else momentum_co.to_dict()
-    out["x"] = out["x"] + out["name"].map(co_dict["x"])
-    out["y"] = out["y"] + out["name"].map(co_dict["y"])
-    # Reference momenta are absent from measurement-built twiss tables; the
-    # closed-orbit momentum is then taken as zero. That is a real approximation,
-    # not a no-op -- on PSB ring 3 the true closed-orbit angle reaches ~1e-3 rad
-    # with realistic dipole errors -- so say so rather than failing silently.
-    missing_momenta = [col for col in ("px", "py") if col not in momentum_source.columns]
-    if missing_momenta:
-        LOGGER.warning(
-            "Closed-orbit momenta %s unavailable; treating the closed-orbit angle as "
-            "zero. Supply a model twiss carrying px/py (ideally one fitted to the "
-            "measured orbit) if the machine has appreciable orbit errors.",
-            missing_momenta,
-        )
-    for col in ("px", "py"):
-        if col in momentum_source.columns:
-            out[col] = out[col] + out["name"].map(momentum_dict[col])
-
-    if "var_px" in co.columns and "var_py" in co.columns:
-        out["var_px"] = out["var_px"] + out["name"].map(co_dict["var_px"])
-        out["var_py"] = out["var_py"] + out["name"].map(co_dict["var_py"])
-    return out
