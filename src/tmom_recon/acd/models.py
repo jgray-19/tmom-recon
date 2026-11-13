@@ -22,71 +22,33 @@ class ACDipoleBPMSelection:
 
 
 @dataclass(frozen=True)
-class ACDipoleBPMWindow:
-    """An ordered window of BPMs on each side of the AC dipole.
-
-    Attributes:
-        upstream: Ordered tuple of upstream BPM names (closest first).
-        downstream: Ordered tuple of downstream BPM names (closest first).
-    """
-
-    upstream: tuple[str, ...]
-    downstream: tuple[str, ...]
-
-    @property
-    def primary(self) -> ACDipoleBPMSelection:
-        """The closest upstream/downstream BPM pair."""
-        return ACDipoleBPMSelection(
-            upstream=self.upstream[0],
-            downstream=self.downstream[0],
-        )
-
-
-@dataclass(frozen=True)
 class ACDipoleSide:
     """Reconstructed BPM momenta on one side of the AC-dipole marker.
 
-    Bundles the per-BPM reconstructed-momentum frames for the window of BPMs on
-    a single side of the marker together with the orientation conventions that
-    tell the pipeline how to transport those states to the marker
-    (:attr:`direction`) and how to label the resulting output. Representing the
-    two sides as two of these lets the reconstruction treat upstream and
-    downstream symmetrically instead of threading mirror-image arguments.
-
-    The window ordering (closest BPM to the marker first) and the primary BPM are
-    read straight off :attr:`bpm_frames`, so the window has a single source.
+    Bundles the reconstructed-momentum frame of the BPM on a single side of the
+    marker together with the orientation conventions that tell the pipeline how
+    to transport its state to the marker (:attr:`direction`) and how to label the
+    resulting output. Representing the two sides as two of these lets the
+    reconstruction treat upstream and downstream symmetrically instead of
+    threading mirror-image arguments.
 
     Attributes:
         label: Side identity, ``"upstream"`` or ``"downstream"``. Appears in the
             per-turn summary column names (e.g. ``px_bpm_upstream``).
         marker_end: The marker end this side reconstructs: ``"before"`` (pre-kick,
             upstream) or ``"after"`` (post-kick, downstream).
-        direction: MAD-NG tracking direction from a BPM *to* the marker: ``+1``
+        direction: MAD-NG tracking direction from the BPM *to* the marker: ``+1``
             forward (upstream) or ``-1`` backward (downstream). The reverse
             transport, marker to BPM, uses ``-direction``.
-        bpm_frames: Ordered mapping from BPM name to its reconstructed-momentum
-            DataFrame, closest BPM to the marker first.
+        bpm: Name of the BPM on this side.
+        frame: Reconstructed-momentum DataFrame of that BPM.
     """
 
     label: str
     marker_end: str
     direction: int
-    bpm_frames: dict[str, pd.DataFrame]
-
-    @property
-    def bpm_names(self) -> tuple[str, ...]:
-        """Window BPM names, closest to the marker first."""
-        return tuple(self.bpm_frames)
-
-    @property
-    def primary(self) -> str:
-        """Name of the primary (closest) BPM."""
-        return next(iter(self.bpm_frames))
-
-    @property
-    def primary_frame(self) -> pd.DataFrame:
-        """Reconstructed-momentum DataFrame for the primary BPM."""
-        return self.bpm_frames[self.primary]
+    bpm: str
+    frame: pd.DataFrame
 
     @property
     def bpm_row_type(self) -> str:

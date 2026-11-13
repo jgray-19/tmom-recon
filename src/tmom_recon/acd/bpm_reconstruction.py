@@ -17,7 +17,7 @@ from tmom_recon.physics.bpm_phases import (
 )
 from tmom_recon.physics.momenta import momenta_from_next, momenta_from_prev
 
-from .models import ACDipoleBPMWindow
+from .models import ACDipoleBPMSelection
 
 if TYPE_CHECKING:
     from tmom_recon.lattice.core import LatticeMaps
@@ -219,8 +219,7 @@ def _merge_prev_neighbor_data(
         columns={"turn": "turn_y_p", "name": PREV.bpm_y, "y": PREV.y, "var_y": PREV.var_y}
     )
     rows = rows.merge(x_coords, on=["turn_x_p", PREV.bpm_x], how="left")
-    rows = rows.merge(y_coords, on=["turn_y_p", PREV.bpm_y], how="left")
-    return rows.drop(columns=["turn_x_p", "turn_y_p"])
+    return rows.merge(y_coords, on=["turn_y_p", PREV.bpm_y], how="left")
 
 
 def _merge_next_neighbor_data(
@@ -252,8 +251,7 @@ def _merge_next_neighbor_data(
         columns={"turn": "turn_y_n", "name": NEXT.bpm_y, "y": NEXT.y, "var_y": NEXT.var_y}
     )
     rows = rows.merge(x_coords, on=["turn_x_n", NEXT.bpm_x], how="left")
-    rows = rows.merge(y_coords, on=["turn_y_n", NEXT.bpm_y], how="left")
-    return rows.drop(columns=["turn_x_n", "turn_y_n"])
+    return rows.merge(y_coords, on=["turn_y_n", NEXT.bpm_y], how="left")
 
 
 def _prepare_prev_reconstruction(
@@ -352,39 +350,33 @@ def prepare_direct_bpm_reconstruction(
     data: pd.DataFrame,
     tws_bpm: pd.DataFrame,
     *,
-    window: ACDipoleBPMWindow,
+    selection: ACDipoleBPMSelection,
     bpm_index: dict[str, int],
     pt_est: float = 0.0,
     use_immediate_neighbors: bool = False,
-) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
-    """Build per-BPM reconstruction DataFrames for all BPMs in the window.
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build per-BPM reconstruction DataFrames for the selected BPM on each side.
 
     Args:
         data: Full measurement DataFrame.
         tws_bpm: Twiss DataFrame restricted to BPMs.
-        window: The selected upstream/downstream BPM window.
+        selection: The selected upstream/downstream BPM pair.
         bpm_index: Mapping from BPM name to lattice position index.
         pt_est: Estimated MAD-NG pt.
         use_immediate_neighbors: Passed through to
             :func:`_prepare_neighbor_tables`.
 
     Returns:
-        ``(upstream_frames, downstream_frames)`` where each is a dict mapping
-        BPM name to its reconstructed-momentum DataFrame.
+        ``(upstream_frame, downstream_frame)``, the reconstructed-momentum
+        DataFrame of the selected BPM on each side.
     """
     prev_x, prev_y, next_x, next_y = _prepare_neighbor_tables(
         tws_bpm, use_immediate_neighbors=use_immediate_neighbors
     )
-    upstream_frames = {
-        bpm_name: _prepare_prev_reconstruction(
-            data, tws_bpm, bpm_name, prev_x, prev_y, bpm_index, pt_est=pt_est
-        )
-        for bpm_name in window.upstream
-    }
-    downstream_frames = {
-        bpm_name: _prepare_next_reconstruction(
-            data, tws_bpm, bpm_name, next_x, next_y, bpm_index, pt_est=pt_est
-        )
-        for bpm_name in window.downstream
-    }
-    return upstream_frames, downstream_frames
+    upstream_frame = _prepare_prev_reconstruction(
+        data, tws_bpm, selection.upstream, prev_x, prev_y, bpm_index, pt_est=pt_est
+    )
+    downstream_frame = _prepare_next_reconstruction(
+        data, tws_bpm, selection.downstream, next_x, next_y, bpm_index, pt_est=pt_est
+    )
+    return upstream_frame, downstream_frame

@@ -67,10 +67,8 @@ This is handled by the selection helpers in `src/tmom_recon/acd/selection.py`.
 
 Conceptually:
 
-- one primary upstream BPM is chosen
-- one primary downstream BPM is chosen
-- optionally a wider window of upstream/downstream BPMs can also contribute to
-  the marker-side cleaning
+- one upstream BPM is chosen
+- one downstream BPM is chosen
 
 The selected names are stored in the result metadata so downstream code knows
 which BPMs were used.

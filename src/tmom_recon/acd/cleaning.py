@@ -100,9 +100,34 @@ def _align_estimate_component(
     return np.vstack(values), np.vstack(variances)
 
 
+def _aligned_estimate(
+    turns: np.ndarray, table: pd.DataFrame, *, value_col: str, variance_col: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """Align one table onto *turns*; non-finite or non-positive-variance entries become NaN."""
+    values, variances = _align_table_columns(
+        turns, table, value_col=value_col, variance_col=variance_col
+    )
+    valid = np.isfinite(values) & np.isfinite(variances) & (variances > 0.0)
+    return np.where(valid, values, np.nan), np.where(valid, variances, np.nan)
+
+
 # ---------------------------------------------------------------------------
 # Inverse-variance combination
 # ---------------------------------------------------------------------------
+
+
+def inverse_variance_weights(values: np.ndarray, variances: np.ndarray) -> np.ndarray:
+    """Unnormalised inverse-variance weights; invalid entries get weight 0.
+
+    Args:
+        values: Shape ``(n_sources, n_turns)``.
+        variances: Shape ``(n_sources, n_turns)``.
+
+    Returns:
+        Weights of the same shape.
+    """
+    valid = np.isfinite(values) & np.isfinite(variances) & (variances > 0.0)
+    return np.where(valid, 1.0 / np.where(valid, variances, np.inf), 0.0)
 
 
 def _combine_many_estimates(
@@ -120,9 +145,7 @@ def _combine_many_estimates(
         ``(combined, combined_var)`` each shape ``(n_turns,)``.  Turns with no
         valid source produce ``NaN``.
     """
-    valid = np.isfinite(values) & np.isfinite(variances) & (variances > 0.0)
-    safe_variances = np.where(valid, variances, np.inf)
-    inv_vars = np.where(valid, 1.0 / safe_variances, 0.0)
+    inv_vars = inverse_variance_weights(values, variances)
     weight_sum = np.sum(inv_vars, axis=0)
     combined = np.divide(
         np.sum(values * inv_vars, axis=0),
@@ -139,35 +162,22 @@ def _combine_many_estimates(
     return combined, combined_var
 
 
-def _combine_state_tables(
-    turns: np.ndarray, estimate_tables: list[pd.DataFrame]
-) -> ACDipoleStateEstimate:
-    """Inverse-variance combine per-coordinate estimates from multiple BPM tables.
+def _state_estimate(turns: np.ndarray, table: pd.DataFrame) -> ACDipoleStateEstimate:
+    """Align a tracked-state table onto *turns* as an :class:`ACDipoleStateEstimate`.
 
     Args:
         turns: Reference turn array used for alignment.
-        estimate_tables: List of DataFrames, each with columns
-            ``x, px, y, py, var_x, var_px, var_y, var_py, turn``.
+        table: DataFrame with columns ``x, px, y, py, var_x, var_px, var_y, var_py, turn``.
 
     Returns:
-        An :class:`ACDipoleStateEstimate` with combined central values and
-        variances at each turn.
+        The state and variances at each turn; invalid entries are NaN.
     """
-    x, var_x = _combine_many_estimates(
-        *_align_estimate_component(turns, estimate_tables, value_col="x", variance_col="var_x")
-    )
-    px, var_px = _combine_many_estimates(
-        *_align_estimate_component(turns, estimate_tables, value_col="px", variance_col="var_px")
-    )
-    y, var_y = _combine_many_estimates(
-        *_align_estimate_component(turns, estimate_tables, value_col="y", variance_col="var_y")
-    )
-    py, var_py = _combine_many_estimates(
-        *_align_estimate_component(turns, estimate_tables, value_col="py", variance_col="var_py")
-    )
-    # All t and pt should be identical across tables, so just take the first non-NaN value per turn
+    x, var_x = _aligned_estimate(turns, table, value_col="x", variance_col="var_x")
+    px, var_px = _aligned_estimate(turns, table, value_col="px", variance_col="var_px")
+    y, var_y = _aligned_estimate(turns, table, value_col="y", variance_col="var_y")
+    py, var_py = _aligned_estimate(turns, table, value_col="py", variance_col="var_py")
     t = np.zeros_like(x)
-    pt, _ = _align_table_columns(turns, estimate_tables[0], value_col="pt", variance_col="var_x")
+    pt, _ = _align_table_columns(turns, table, value_col="pt", variance_col="var_x")
     return ACDipoleStateEstimate(
         state=ACDipoleStateSeries(x, px, y, py, t, pt),
         var_x=var_x,
@@ -179,8 +189,8 @@ def _combine_state_tables(
 
 def _combine_marker_transverse_positions(
     turns: np.ndarray,
-    upstream_tables: list[pd.DataFrame],
-    downstream_tables: list[pd.DataFrame],
+    upstream_table: pd.DataFrame,
+    downstream_table: pd.DataFrame,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Combine marker transverse positions from both upstream and downstream estimates.
 
@@ -191,8 +201,8 @@ def _combine_marker_transverse_positions(
 
     Args:
         turns: Reference turn array.
-        upstream_tables: Tracked-state tables from upstream BPMs.
-        downstream_tables: Tracked-state tables from downstream BPMs.
+        upstream_table: Tracked-state table from the upstream BPM.
+        downstream_table: Tracked-state table from the downstream BPM.
 
     Returns:
         ``(x_common, y_common, var_x_common, var_y_common)`` each shape
@@ -201,7 +211,7 @@ def _combine_marker_transverse_positions(
     x_common, var_x_common = _combine_many_estimates(
         *_align_estimate_component(
             turns,
-            upstream_tables + downstream_tables,
+            [upstream_table, downstream_table],
             value_col="x",
             variance_col="var_x",
         )
@@ -209,7 +219,7 @@ def _combine_marker_transverse_positions(
     y_common, var_y_common = _combine_many_estimates(
         *_align_estimate_component(
             turns,
-            upstream_tables + downstream_tables,
+            [upstream_table, downstream_table],
             value_col="y",
             variance_col="var_y",
         )
@@ -230,22 +240,18 @@ def _build_harmonic_design(turns: np.ndarray, tune: float) -> np.ndarray:
 
 def _build_raw_kick_series(
     turns: np.ndarray,
-    upstream_tables: list[pd.DataFrame],
-    downstream_tables: list[pd.DataFrame],
+    upstream_table: pd.DataFrame,
+    downstream_table: pd.DataFrame,
     *,
     value_col: str,
     variance_col: str,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute the raw same-turn kick series and its propagated variance."""
-    upstream_hat, upstream_var = _combine_many_estimates(
-        *_align_estimate_component(
-            turns, upstream_tables, value_col=value_col, variance_col=variance_col
-        )
+    upstream_hat, upstream_var = _aligned_estimate(
+        turns, upstream_table, value_col=value_col, variance_col=variance_col
     )
-    downstream_hat, downstream_var = _combine_many_estimates(
-        *_align_estimate_component(
-            turns, downstream_tables, value_col=value_col, variance_col=variance_col
-        )
+    downstream_hat, downstream_var = _aligned_estimate(
+        turns, downstream_table, value_col=value_col, variance_col=variance_col
     )
 
     raw_kick = downstream_hat - upstream_hat
@@ -464,8 +470,8 @@ def _fit_harmonic_series_with_tune(
 
 def _refine_known_kick_fit(
     turns: np.ndarray,
-    upstream_tables: list[pd.DataFrame],
-    downstream_tables: list[pd.DataFrame],
+    upstream_table: pd.DataFrame,
+    downstream_table: pd.DataFrame,
     *,
     value_col: str,
     variance_col: str,
@@ -480,8 +486,8 @@ def _refine_known_kick_fit(
     """
     raw_kick, raw_var = _build_raw_kick_series(
         turns,
-        upstream_tables,
-        downstream_tables,
+        upstream_table,
+        downstream_table,
         value_col=value_col,
         variance_col=variance_col,
     )
@@ -595,8 +601,8 @@ def _banded_inverse_diagonal(ab: np.ndarray, *, bandwidth: int) -> np.ndarray:
 
 def _solve_smoothed_pre_momentum_with_known_kick(
     turns: np.ndarray,
-    upstream_tables: list[pd.DataFrame],
-    downstream_tables: list[pd.DataFrame],
+    upstream_table: pd.DataFrame,
+    downstream_table: pd.DataFrame,
     *,
     value_col: str,
     variance_col: str,
@@ -605,7 +611,7 @@ def _solve_smoothed_pre_momentum_with_known_kick(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Solve smoothed pre-/post-kick momentum with the kick waveform fixed.
 
-    Let ``u_t`` be the combined upstream estimate and ``d_t`` the downstream
+    Let ``u_t`` be the upstream estimate and ``d_t`` the downstream
     estimate per turn. With fitted kick ``k_t``, the downstream estimates are
     mapped to pre-kick space as ``d_t - k_t``. We solve for ``p_t`` by
     minimising::
@@ -620,8 +626,8 @@ def _solve_smoothed_pre_momentum_with_known_kick(
 
     Args:
         turns: Reference turn array.
-        upstream_tables: Tracked-state tables from upstream BPMs.
-        downstream_tables: Tracked-state tables from downstream BPMs.
+        upstream_table: Tracked-state table from the upstream BPM.
+        downstream_table: Tracked-state table from the downstream BPM.
         value_col: Momentum column to solve for (``"px"`` or ``"py"``).
         variance_col: Corresponding variance column.
         kick_values: Per-turn fitted kick waveform, shape ``(n_turns,)``.
@@ -633,15 +639,11 @@ def _solve_smoothed_pre_momentum_with_known_kick(
     Raises:
         ValueError: If no valid observations exist for the specified coordinate.
     """
-    upstream_hat, upstream_var = _combine_many_estimates(
-        *_align_estimate_component(
-            turns, upstream_tables, value_col=value_col, variance_col=variance_col
-        )
+    upstream_hat, upstream_var = _aligned_estimate(
+        turns, upstream_table, value_col=value_col, variance_col=variance_col
     )
-    downstream_hat, downstream_var = _combine_many_estimates(
-        *_align_estimate_component(
-            turns, downstream_tables, value_col=value_col, variance_col=variance_col
-        )
+    downstream_hat, downstream_var = _aligned_estimate(
+        turns, downstream_table, value_col=value_col, variance_col=variance_col
     )
 
     mapped_downstream_hat = downstream_hat - kick_values
@@ -650,8 +652,6 @@ def _solve_smoothed_pre_momentum_with_known_kick(
     valid_downstream = (
         np.isfinite(mapped_downstream_hat) & np.isfinite(downstream_var) & (downstream_var > 0.0)
     )
-    if not np.any(valid_upstream | valid_downstream):
-        raise ValueError(f"No valid {value_col} observations were available for AC-dipole cleaning")
 
     upstream_weights = np.where(valid_upstream, 1.0 / upstream_var, 0.0)
     downstream_weights = np.where(valid_downstream, 1.0 / downstream_var, 0.0)
@@ -680,7 +680,7 @@ def _solve_smoothed_pre_momentum_with_known_kick(
         var_pre = np.clip(np.diag(covariance), 0.0, None)
 
     t = np.zeros_like(pre_values)
-    pt_col = upstream_tables[0].get("pt")
+    pt_col = upstream_table.get("pt")
     pt = pt_col.to_numpy(dtype=float) if pt_col is not None else np.zeros_like(pre_values)
 
     # Kick is treated as known, so post variance equals pre variance.
@@ -689,25 +689,24 @@ def _solve_smoothed_pre_momentum_with_known_kick(
 
 def _remove_closed_orbit(
     turns: np.ndarray,
-    tables: list[pd.DataFrame],
+    table: pd.DataFrame,
     *,
     value_col: str,
     variance_col: str,
-) -> tuple[list[pd.DataFrame], float]:
-    """Subtract one side's closed orbit from *value_col* in every table.
+) -> tuple[pd.DataFrame, float]:
+    """Subtract one side's closed orbit from *value_col* in *table*.
 
-    The closed orbit is the inverse-variance mean of the side's combined series.
-    Returns the deviation tables and the removed closed-orbit value.
+    The closed orbit is the inverse-variance mean of the side's series.
+    Returns the deviation table and the removed closed-orbit value.
     """
-    combined, variance = _combine_many_estimates(
-        *_align_estimate_component(turns, tables, value_col=value_col, variance_col=variance_col)
+    combined, variance = _aligned_estimate(
+        turns, table, value_col=value_col, variance_col=variance_col
     )
     valid = np.isfinite(combined) & np.isfinite(variance) & (variance > 0.0)
     if not np.any(valid):
         raise ValueError(f"No valid {value_col} observations were available for AC-dipole cleaning")
     orbit = float(np.average(combined[valid], weights=1.0 / variance[valid]))
-    shifted = [table.assign(**{value_col: table[value_col] - orbit}) for table in tables]
-    return shifted, orbit
+    return table.assign(**{value_col: table[value_col] - orbit}), orbit
 
 
 # ---------------------------------------------------------------------------
@@ -717,8 +716,8 @@ def _remove_closed_orbit(
 
 def _clean_ac_dipole_states(
     turns: np.ndarray,
-    upstream_tables: list[pd.DataFrame],
-    downstream_tables: list[pd.DataFrame],
+    upstream_table: pd.DataFrame,
+    downstream_table: pd.DataFrame,
     *,
     dpx_tune: float,
     dpy_tune: float,
@@ -728,7 +727,7 @@ def _clean_ac_dipole_states(
 
     Pipeline:
 
-    1. Pool ``x``/``y`` marker estimates from all BPM reconstructions into a
+    1. Pool ``x``/``y`` marker estimates from both BPM reconstructions into a
        single common same-turn position.
     2. Remove each side's closed orbit from ``px``/``py``; the AC dipole only
        oscillates about it.
@@ -740,8 +739,8 @@ def _clean_ac_dipole_states(
 
     Args:
         turns: Reference turn array.
-        upstream_tables: Tracked-state DataFrames from upstream BPM reconstructions.
-        downstream_tables: Tracked-state DataFrames from downstream BPM reconstructions.
+        upstream_table: Tracked-state DataFrame from the upstream BPM reconstruction.
+        downstream_table: Tracked-state DataFrame from the downstream BPM reconstruction.
         dpx_tune: Horizontal driven tune (fractional, 0 < tune < 0.5).
         dpy_tune: Vertical driven tune (fractional, 0 < tune < 0.5).
         smooth_lambda: Second-difference regularisation strength.
@@ -752,8 +751,8 @@ def _clean_ac_dipole_states(
     """
     x_common, y_common, var_x_common, var_y_common = _combine_marker_transverse_positions(
         turns,
-        upstream_tables,
-        downstream_tables,
+        upstream_table,
+        downstream_table,
     )
     fits = {}
     solved = {}
@@ -765,10 +764,10 @@ def _clean_ac_dipole_states(
         # downstream states is an orbit-angle difference, not a kick: fit and
         # smooth the deviations, then restore each side's closed orbit.
         up_dev, orbit_up = _remove_closed_orbit(
-            turns, upstream_tables, value_col=plane, variance_col=variance_col
+            turns, upstream_table, value_col=plane, variance_col=variance_col
         )
         down_dev, orbit_down = _remove_closed_orbit(
-            turns, downstream_tables, value_col=plane, variance_col=variance_col
+            turns, downstream_table, value_col=plane, variance_col=variance_col
         )
         fits[plane] = _refine_known_kick_fit(
             turns,

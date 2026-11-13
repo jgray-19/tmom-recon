@@ -109,8 +109,8 @@ def test_closed_orbit_step_is_kept_in_the_states_not_in_the_kick() -> None:
 
     result = _clean_ac_dipole_states(
         turns,
-        [upstream],
-        [downstream],
+        upstream,
+        downstream,
         dpx_tune=tune,
         dpy_tune=tune,
         smooth_lambda=0.0,

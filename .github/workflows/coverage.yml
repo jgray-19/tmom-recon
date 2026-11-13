@@ -61,9 +61,14 @@ jobs:
       - name: Ensure pip, setuptools and wheel
         run: uv pip install --upgrade pip setuptools wheel
 
-      # pymadng-utils comes from GitHub via [tool.uv.sources]; xtrack-tools is test-only.
+      # pymadng-utils and xtrack-tools are not on PyPI. Their git URLs live here, not in
+      # [tool.uv.sources]: downstream repos (adelmo) install tmom-recon as a path
+      # dependency, and uv would then see two URLs for pymadng-utils and refuse to resolve.
       - name: Install package
-        run: uv pip install '.[test]' 'xtrack-tools @ git+https://github.com/jgray-19/xtrack_tools.git'
+        run: >-
+          uv pip install '.[test]'
+          'pymadng-utils @ git+https://github.com/jgray-19/pymadng-utils.git'
+          'xtrack-tools @ git+https://github.com/jgray-19/xtrack_tools.git'
 
       - name: Run ${{ matrix.shard }} tests
         run: |
