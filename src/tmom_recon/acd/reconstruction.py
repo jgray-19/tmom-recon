@@ -84,13 +84,8 @@ def _log_harmonic_fit_quality(
     """
     observed_arr = np.asarray(observed, dtype=float)
     fitted_arr = np.asarray(fitted, dtype=float)
-    valid = np.isfinite(observed_arr) & np.isfinite(fitted_arr)
-    if not np.any(valid):
-        LOGGER.info("AC-dipole %s fit quality: no valid samples", label)
-        return float("nan")
-
-    obs = observed_arr[valid]
-    fit = fitted_arr[valid]
+    obs = observed_arr
+    fit = fitted_arr
     residual = obs - fit
     rmse = float(np.sqrt(np.mean(residual**2)))
     mae = float(np.mean(np.abs(residual)))
@@ -103,16 +98,11 @@ def _log_harmonic_fit_quality(
 
     r_squared = unweighted_r_squared
     if variances is not None:
-        variance_arr = np.asarray(variances, dtype=float)[valid]
-        valid_weights = np.isfinite(variance_arr) & (variance_arr > 0.0)
-        if np.any(valid_weights):
-            obs_w = obs[valid_weights]
-            fit_w = fit[valid_weights]
-            weights = 1.0 / variance_arr[valid_weights]
-            mean_w = float(np.average(obs_w, weights=weights))
-            weighted_sst = float(np.sum(weights * (obs_w - mean_w) ** 2))
-            weighted_sse = float(np.sum(weights * (obs_w - fit_w) ** 2))
-            r_squared = float("nan") if weighted_sst <= 0.0 else 1.0 - weighted_sse / weighted_sst
+        weights = 1.0 / np.asarray(variances, dtype=float)
+        mean_w = float(np.average(obs, weights=weights))
+        weighted_sst = float(np.sum(weights * (obs - mean_w) ** 2))
+        weighted_sse = float(np.sum(weights * (obs - fit) ** 2))
+        r_squared = float("nan") if weighted_sst <= 0.0 else 1.0 - weighted_sse / weighted_sst
 
     peak_to_peak = float(np.ptp(obs))
     nrmse = float("nan") if peak_to_peak <= 0.0 else rmse / peak_to_peak
@@ -121,7 +111,7 @@ def _log_harmonic_fit_quality(
         "AC-dipole %s fit quality over %d turns: RMSE=%.3e rad, MAE=%.3e rad, "
         "NRMSE=%.3e, weighted R^2=%.6f, unweighted R^2=%.6f",
         label,
-        int(np.count_nonzero(valid)),
+        len(obs),
         rmse,
         mae,
         nrmse,
@@ -374,7 +364,6 @@ def _fit_ac_dipole_from_frames(
     upstream_side: ACDipoleSide,
     downstream_side: ACDipoleSide,
     model: ACDipoleMadDriver,
-    smooth_lambda: float,
     dpx_tune: float,
     dpy_tune: float,
 ) -> ACDipoleFitResult:
@@ -386,7 +375,6 @@ def _fit_ac_dipole_from_frames(
         upstream_side: Upstream side (BPM frame + transport conventions).
         downstream_side: Downstream side.
         model: MAD-NG driver used for state transport.
-        smooth_lambda: Second-difference regularisation strength.
         dpx_tune: Fractional horizontal driven tune.
         dpy_tune: Fractional vertical driven tune.
 
@@ -404,7 +392,6 @@ def _fit_ac_dipole_from_frames(
         downstream_table,
         dpx_tune=dpx_tune,
         dpy_tune=dpy_tune,
-        smooth_lambda=smooth_lambda,
     )
     # The raw jump relative to the closed-orbit step: that step is an orbit-angle
     # difference, not a kick, so the zero-mean fit is compared with what is left.
@@ -477,7 +464,7 @@ def _global_marker_estimates(
     for side in (upstream_side, downstream_side):
         frame = side.frame
         mean = frame[list(COORDS)].to_numpy(float).mean(axis=0)
-        bpm_var = np.array([np.nanmean(frame[f"var_{c}"].to_numpy(float)) for c in COORDS])
+        bpm_var = np.array([frame[f"var_{c}"].to_numpy(float).mean() for c in COORDS])
         probes = mean + np.vstack([np.zeros(4), _JACOBIAN_STEP * np.eye(4)])
         marker = model.acd_before if side.direction == +1 else model.acd_after
         tracked = model.track_particles(side.bpm, marker, probes, direction=side.direction)
@@ -554,7 +541,6 @@ class PreparedACDInputs:
         lattice_names: Lattice element names (used to normalise twiss indices).
         lattice_bpm_order: Available BPMs in lattice order.
         dpx_tune_frac, dpy_tune_frac: Driven tunes folded into ``(0, 0.5)``.
-        smooth_lambda: Second-difference regularisation strength.
         use_immediate_neighbors: Use immediate lattice neighbors for BPM
             momentum reconstruction instead of pi/2-phase neighbors.
     """
@@ -567,7 +553,6 @@ class PreparedACDInputs:
     lattice_bpm_order: list[str]
     dpx_tune_frac: float
     dpy_tune_frac: float
-    smooth_lambda: float
     use_immediate_neighbors: bool
     reject_inconsistent_state: bool
 
@@ -582,7 +567,6 @@ def prepare_ac_dipole_inputs(
     dpy_tune: float,
     bpm_upstream: str | None = None,
     bpm_downstream: str | None = None,
-    smooth_lambda: float = 1,
     use_immediate_neighbors_for_bpms: bool = False,
     reject_inconsistent_state: bool = True,
 ) -> PreparedACDInputs:
@@ -605,7 +589,6 @@ def prepare_ac_dipole_inputs(
         dpy_tune: Vertical driven tune.
         bpm_upstream: Optional explicit upstream BPM name.
         bpm_downstream: Optional explicit downstream BPM name.
-        smooth_lambda: Second-difference regularisation strength.
         use_immediate_neighbors_for_bpms: Use immediate lattice neighbors instead
             of pi/2-phase neighbors for BPM momentum reconstruction.
         reject_inconsistent_state: Raise :class:`ACDipoleStateConsistencyError`
@@ -657,7 +640,6 @@ def prepare_ac_dipole_inputs(
         lattice_bpm_order=lattice_bpm_order,
         dpx_tune_frac=_normalise_supplied_tune("dpx", float(dpx_tune)),
         dpy_tune_frac=_normalise_supplied_tune("dpy", float(dpy_tune)),
-        smooth_lambda=smooth_lambda,
         use_immediate_neighbors=use_immediate_neighbors_for_bpms,
         reject_inconsistent_state=reject_inconsistent_state,
     )
@@ -833,7 +815,6 @@ def reconstruct_from_prepared(
     model = prepared.model
     marker_name = prepared.marker_name
     selection = prepared.selection
-    smooth_lambda = prepared.smooth_lambda
     dpx_tune_frac = prepared.dpx_tune_frac
     dpy_tune_frac = prepared.dpy_tune_frac
 
@@ -891,7 +872,6 @@ def reconstruct_from_prepared(
             upstream_side=upstream_side,
             downstream_side=downstream_side,
             model=model,
-            smooth_lambda=smooth_lambda,
             dpx_tune=dpx_tune_frac,
             dpy_tune=dpy_tune_frac,
         )
@@ -1002,7 +982,6 @@ def reconstruct_from_prepared(
     result_out.attrs.update(metadata)
     result_out.attrs[SUMMARY_ATTR_NAME] = result
     result_out.attrs["acd_state_consistency"] = consistency_records
-    result_out.attrs["smooth_lambda"] = smooth_lambda
     result_out.attrs["qx_drive"] = dpx_tune_frac
     result_out.attrs["qy_drive"] = dpy_tune_frac
     result_out.attrs["dpx_fit"] = dataclasses.asdict(dpx_fit)
@@ -1037,7 +1016,6 @@ def _calculate_ac_dipole_momentum(
     dpy_tune: float,
     bpm_upstream: str | None = None,
     bpm_downstream: str | None = None,
-    smooth_lambda: float = 1,
     use_immediate_neighbors_for_bpms: bool = False,
     reject_inconsistent_state: bool = True,
     reference: OrbitReference,
@@ -1064,8 +1042,6 @@ def _calculate_ac_dipole_momentum(
         bpm_upstream: Optional explicit upstream BPM name. Closest upstream BPM
             is selected automatically when omitted.
         bpm_downstream: Optional explicit downstream BPM name.
-        smooth_lambda: Second-difference regularisation strength for the
-            marker-side momentum solve.
         use_immediate_neighbors_for_bpms: If ``True``, use immediate lattice
             neighbors instead of pi/2-phase neighbors for BPM momentum
             reconstruction.
@@ -1093,7 +1069,6 @@ def _calculate_ac_dipole_momentum(
         dpy_tune=dpy_tune,
         bpm_upstream=bpm_upstream,
         bpm_downstream=bpm_downstream,
-        smooth_lambda=smooth_lambda,
         use_immediate_neighbors_for_bpms=use_immediate_neighbors_for_bpms,
         reject_inconsistent_state=reject_inconsistent_state,
     )

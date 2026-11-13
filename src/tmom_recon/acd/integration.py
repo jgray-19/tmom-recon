@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from tmom_recon.model import ModelDetails, resolve_model_details
 
 from .madng_driver import ACDipoleMadDriver
+from .reconstruction import SUMMARY_ATTR_NAME
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ACDipoleConfig",
     "ResolvedACDipoleConfig",
+    "apply_precomputed_ac_dipole_bpm_overrides",
     "resolve_ac_dipole_config",
 ]
 
@@ -42,7 +44,6 @@ class ACDipoleConfig:
     driven_tunes: tuple[float, float]
     bpm_upstream: str | None = None
     bpm_downstream: str | None = None
-    smooth_lambda: float = 1.0
     reject_inconsistent_state: bool = True
 
 
@@ -118,3 +119,41 @@ def resolve_ac_dipole_config(
         optics_tws=optics_tws,
         closed_orbit_tws=closed_orbit_tws,
     )
+
+
+def apply_precomputed_ac_dipole_bpm_overrides(
+    result: pd.DataFrame,
+    acd_result: pd.DataFrame,
+) -> pd.DataFrame:
+    """Patch ``px``/``py`` for the BPMs adjacent to the AC dipole."""
+    bpm_upstream = acd_result.attrs["bpm_upstream"]
+    bpm_downstream = acd_result.attrs["bpm_downstream"]
+
+    out = result.copy(deep=True)
+    out.attrs["ac_dipole_marker"] = acd_result.attrs["acd_marker"]
+    out.attrs["ac_dipole_bpm_upstream"] = bpm_upstream
+    out.attrs["ac_dipole_bpm_downstream"] = bpm_downstream
+
+    summary = acd_result.attrs[SUMMARY_ATTR_NAME]
+    for bpm_name, px_col, py_col in (
+        (bpm_upstream, "px_bpm_upstream_cleaned", "py_bpm_upstream_cleaned"),
+        (bpm_downstream, "px_bpm_downstream_cleaned", "py_bpm_downstream_cleaned"),
+    ):
+        # Tracking and MAD-NG preserve the same BPM identity but not necessarily
+        # its spelling.  The all-BPM result commonly retains Xsuite's lower-case
+        # monitor name while the ACD model returns MAD-NG's upper-case name.
+        # Match the physical BPM identity, otherwise the barrier deliberately
+        # leaves these two rows undefined and the successfully reconstructed ACD
+        # estimate is never installed.
+        mask = out["name"].astype(str).str.upper() == str(bpm_name).upper()
+        if not mask.any():
+            continue
+        side = (
+            summary[["turn", px_col, py_col]]
+            .rename(columns={px_col: "px", py_col: "py"})
+            .set_index("turn")
+        )
+        turns = out.loc[mask, "turn"].to_numpy()
+        out.loc[mask, "px"] = side.reindex(turns)["px"].to_numpy(dtype=float)
+        out.loc[mask, "py"] = side.reindex(turns)["py"].to_numpy(dtype=float)
+    return out

@@ -277,7 +277,6 @@ def _calculate_acd(data, resolved_acd, reference, resolved_optics, global_lines=
         dpy_tune=config.driven_tunes[1],
         bpm_upstream=config.bpm_upstream,
         bpm_downstream=config.bpm_downstream,
-        smooth_lambda=config.smooth_lambda,
         reject_inconsistent_state=config.reject_inconsistent_state,
         reference=reference,
         resolved_optics=resolved_optics,
@@ -387,7 +386,6 @@ class ACDipolePzGenerator:
                 dpy_tune=acd.driven_tunes[1],
                 bpm_upstream=acd.bpm_upstream,
                 bpm_downstream=acd.bpm_downstream,
-                smooth_lambda=acd.smooth_lambda,
                 reject_inconsistent_state=acd.reject_inconsistent_state,
             )
 

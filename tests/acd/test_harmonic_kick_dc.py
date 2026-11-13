@@ -113,10 +113,32 @@ def test_closed_orbit_step_is_kept_in_the_states_not_in_the_kick() -> None:
         downstream,
         dpx_tune=tune,
         dpy_tune=tune,
-        smooth_lambda=0.0,
     )
 
     np.testing.assert_allclose(result.dpx_fit.fitted, kick, atol=1e-8, rtol=0.0)
     assert result.dpx_orbit_step == pytest.approx(orbit_down - orbit_up, abs=1e-8)
     np.testing.assert_allclose(result.upstream.state.px, orbit_up, atol=1e-8, rtol=0.0)
     np.testing.assert_allclose(result.downstream.state.px, orbit_down + kick, atol=1e-8, rtol=0.0)
+
+
+def test_pre_kick_momentum_is_the_inverse_variance_mean() -> None:
+    from tmom_recon.acd.cleaning import _combine_pre_momentum_with_known_kick
+
+    turns = np.arange(300, dtype=float)
+    kick = 2.5e-6 * np.sin(2 * np.pi * 0.1625 * turns + 0.37)
+    truth = 4.0e-5 * np.sin(2 * np.pi * 0.2 * turns + 1.0)
+    var_up, var_down = 1.0e-12, 4.0e-12
+    upstream = pd.DataFrame({"turn": turns, "px": truth + 2.0e-6, "var_px": var_up, "pt": 0.0})
+    downstream = pd.DataFrame(
+        {"turn": turns, "px": truth + kick - 1.0e-6, "var_px": var_down, "pt": 0.0}
+    )
+
+    pre, post, var_pre, var_post, _, _ = _combine_pre_momentum_with_known_kick(
+        turns, upstream, downstream, value_col="px", variance_col="var_px", kick_values=kick
+    )
+
+    # Errors +2e-6 (weight 4/5) and -1e-6 (weight 1/5) combine to +1.4e-6.
+    np.testing.assert_allclose(pre - truth, 1.4e-6, rtol=0.0, atol=1e-15)
+    np.testing.assert_allclose(post - pre, kick, rtol=0.0, atol=1e-15)
+    np.testing.assert_allclose(var_pre, 0.8e-12, rtol=1e-12)
+    np.testing.assert_allclose(var_post, var_pre, rtol=0.0, atol=0.0)

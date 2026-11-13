@@ -21,9 +21,6 @@ import pandas as pd
 from tmom_recon.data.schema import NEXT, PREV, SUFFIX_NEXT, SUFFIX_PREV
 from tmom_recon.lattice.core import neighbour_plane_factors
 
-from .cleaning import inverse_variance_weights
-from .transport import build_tracked_state_table
-
 if TYPE_CHECKING:
     from .madng_driver import ACDipoleMadDriver
     from .models import ACDipoleSide
@@ -45,22 +42,17 @@ def transport_jacobians(
 ) -> np.ndarray:
     """Per-state ``d(marker state) / d(BPM state)``, shape ``(n, 4, 4)`` as ``[out, in]``.
 
-    Central finite differences through MAD-NG at each state. Rows with non-finite
-    states give NaN.
+    Central finite differences through MAD-NG at each state.
     """
-    jacobian = np.full((len(states), 4, 4), np.nan)
-    finite = np.isfinite(states).all(axis=1)
-    centre = states[finite]
-    probes = np.repeat(centre[:, None, :], 8, axis=1)
+    probes = np.repeat(states[:, None, :], 8, axis=1)
     for k in range(4):
         probes[:, 2 * k, k] += JACOBIAN_STEP
         probes[:, 2 * k + 1, k] -= JACOBIAN_STEP
     marker = model.acd_before if side.direction == +1 else model.acd_after
     tracked = model.track_particles(name, marker, probes.reshape(-1, 4), direction=side.direction)
-    tracked = tracked[:, :4].reshape(len(centre), 8, 4)
+    tracked = tracked[:, :4].reshape(len(states), 8, 4)
     derivative = (tracked[:, 0::2, :] - tracked[:, 1::2, :]) / (2 * JACOBIAN_STEP)
-    jacobian[finite] = derivative.transpose(0, 2, 1)
-    return jacobian
+    return derivative.transpose(0, 2, 1)
 
 
 def momentum_coefficients(
@@ -85,11 +77,8 @@ def momentum_coefficients(
 
 
 def _on_turns(values: np.ndarray, frame_turns: np.ndarray, turns: np.ndarray) -> np.ndarray:
-    """Re-index per-row *values* (last axis = rows) onto *turns*; missing turns are NaN."""
-    index = pd.Index(frame_turns).get_indexer(turns)
-    out = np.full((*values.shape[:-1], len(turns)), np.nan)
-    out[..., index >= 0] = values[..., index[index >= 0]]
-    return out
+    """Re-index per-row *values* (last axis = rows) onto *turns*."""
+    return values[..., pd.Index(frame_turns).get_indexer(turns)]
 
 
 def _add(jacobian: KickJacobian, key: MeasurementKey, coefficient: np.ndarray) -> None:
@@ -111,25 +100,17 @@ def marker_momentum_jacobian(
     bpm, frame = side.bpm, side.frame
     states = frame[["x", "px", "y", "py"]].to_numpy(float)
     frame_turns = frame["turn"].to_numpy(int)
-    tracked = build_tracked_state_table(frame, model, source_name=bpm, direction=side.direction)
     transport = _on_turns(
         transport_jacobians(model, side, bpm, states).transpose(1, 2, 0), frame_turns, turns
     )
 
     variances: dict[tuple[str, str], float] = {}
     for p in PLANES:
-        variances[(bpm, p)] = float(np.nanmean(frame[f"var_{p}"].to_numpy(float)))
+        variances[(bpm, p)] = float(frame[f"var_{p}"].mean())
         neighbour = getattr(names, f"bpm_{p}")
         variances[(str(frame[neighbour].iat[0]), p)] = float(
-            np.nanmean(frame[getattr(names, f"var_{p}")].to_numpy(float))
+            frame[getattr(names, f"var_{p}")].mean()
         )
-
-    aligned = pd.DataFrame({"turn": turns}).merge(
-        tracked[["turn", f"p{plane}", f"var_p{plane}"]], on="turn", how="left"
-    )
-    weight = inverse_variance_weights(
-        aligned[f"p{plane}"].to_numpy(float), aligned[f"var_p{plane}"].to_numpy(float)
-    ).astype(bool)
 
     jacobian: KickJacobian = {}
     for p in PLANES:
@@ -137,14 +118,14 @@ def marker_momentum_jacobian(
         own, neighbour = (_on_turns(c, frame_turns, turns) for c in (own, neighbour))
         offset_column = f"turn_{p}_{suffix}"
         offset = int(
-            np.nanmedian(frame[offset_column].to_numpy(float) - frame["turn"].to_numpy(float))
+            np.median(frame[offset_column].to_numpy(float) - frame["turn"].to_numpy(float))
         )
         pos, mom = POSITION_INDEX[p], MOMENTUM_INDEX[p]
         to_own = transport[out, pos] + transport[out, mom] * own
         to_neighbour = transport[out, mom] * neighbour
         neighbour_bpm = str(frame[getattr(names, f"bpm_{p}")].iat[0])
-        _add(jacobian, (bpm, p, 0), np.nan_to_num(weight * to_own))
-        _add(jacobian, (neighbour_bpm, p, offset), np.nan_to_num(weight * to_neighbour))
+        _add(jacobian, (bpm, p, 0), to_own)
+        _add(jacobian, (neighbour_bpm, p, offset), to_neighbour)
     return jacobian, variances
 
 

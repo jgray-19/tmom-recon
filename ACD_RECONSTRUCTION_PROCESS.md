@@ -53,7 +53,7 @@ The full flow is:
 4. Combine the tracked marker `x` and `y` values into one common same-turn
    ACD position.
 5. Fit harmonic kick waveforms for `dpx` and `dpy`.
-6. Solve for smoothed pre-kick momenta `px_pre` and `py_pre`.
+6. Combine the pre-kick momenta `px_pre` and `py_pre`.
 7. Reconstruct post-kick momenta from the fitted kick:
    `px_post = px_pre + dpx_fit`, `py_post = py_pre + dpy_fit`.
 8. Transport the cleaned marker states back to the selected upstream and
@@ -209,22 +209,22 @@ momenta:
 
 using:
 
-- `_solve_smoothed_pre_momentum_with_known_kick(...)`
+- `_combine_pre_momentum_with_known_kick(...)`
 
 The solver combines:
 
 - the upstream marker momentum estimate directly
 - the downstream marker momentum estimate mapped back to pre-kick space by
   subtracting the fitted kick
-- an optional smoothness regularization across turns
 
 Conceptually, for `px`, the downstream estimate is first converted into a
 pre-kick estimate:
 
 - `px_down_as_pre(turn) = px_downstream_marker(turn) - dpx_fit(turn)`
 
-Then the solver finds a smooth `px_pre(turn)` that best agrees with both the
-upstream pre-kick estimate and the mapped downstream estimate.
+Then `px_pre(turn)` is the per-turn inverse-variance mean of the upstream
+pre-kick estimate and the mapped downstream estimate, with variance
+`1 / (w_up + w_down)`.
 
 The same is done for `py`.
 
