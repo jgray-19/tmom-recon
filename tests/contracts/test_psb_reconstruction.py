@@ -1,5 +1,9 @@
 """PSB reconstruction contracts; machine identity is not a test parameter."""
 
+import os
+import re
+
+import pymadng
 import pytest
 
 from tests.contracts.conftest import machine_reconstruction_params
@@ -10,7 +14,33 @@ from tests.contracts.test_reconstruction import (
 )
 
 pytestmark = [pytest.mark.diagnostic, pytest.mark.integration, pytest.mark.slow, pytest.mark.psb]
-PARAMS = machine_reconstruction_params("psb", optics_origins=("model", "measurement"))
+_PYMADNG_VERSION = tuple(int(v) for v in re.findall(r"\d+", pymadng.__version__)[:3])
+_XFAIL_NO_962_FIX = pytest.mark.xfail(
+    not os.environ.get("MADNG_PATH") and _PYMADNG_VERSION <= (0, 10, 0),
+    reason="MAD-NG bundled with pymadng <= 0.10.0 lacks the xsuite/xsuite#962 fix",
+)
+
+
+def _mark_962(params):
+    """Mark the off-momentum clean ACD cells whose kick-fit R^2 needs the #962 fringe fix."""
+    marked = []
+    for param in params:
+        spec = param.values[0]
+        needs_fix = (
+            spec.workflow == "acd"
+            and spec.delta_p != 0.0
+            and spec.condition == "clean"
+            and spec.optics_origin == "measurement"
+        )
+        marked.append(
+            pytest.param(*param.values, id=param.id, marks=_XFAIL_NO_962_FIX)
+            if needs_fix
+            else param
+        )
+    return marked
+
+
+PARAMS = _mark_962(machine_reconstruction_params("psb", optics_origins=("model", "measurement")))
 PT_PARAMS = machine_reconstruction_params(
     "psb", workflows=("all",), conditions=("clean",), frame_kinds=("dynamic",)
 )
