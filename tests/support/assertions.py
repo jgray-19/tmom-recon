@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
-import pandas as pd
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 LOGGER = logging.getLogger(__name__)
 
@@ -18,9 +21,9 @@ def rmse(actual: np.ndarray, predicted: np.ndarray) -> float:
 def merge_tracking_truth(tracking_df: pd.DataFrame, result: pd.DataFrame) -> pd.DataFrame:
     """Join reconstruction to truth without silently dropping BPM/turn rows."""
     keys = ["name", "turn"]
-    truth = tracking_df[keys + ["px", "py"]].rename(columns={"px": "px_true", "py": "py_true"})
+    truth = tracking_df[[*keys, "px", "py"]].rename(columns={"px": "px_true", "py": "py_true"})
     merged = truth.merge(
-        result[keys + ["px", "py"]],
+        result[[*keys, "px", "py"]],
         on=keys,
         how="left",
         validate="one_to_one",

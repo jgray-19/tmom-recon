@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
-import pandas as pd
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 #: Coupled MAD-NG Twiss columns (``twiss{coupling=true}``) the kick response needs.
 _COLUMNS = ("beta11", "beta12", "beta21", "beta22", "mu1", "mu2", "ev1", "ev2")

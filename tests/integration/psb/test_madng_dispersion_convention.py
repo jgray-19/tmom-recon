@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from pymadng_utils.accelerators import PSB
-from tests.psb_tracking import ACD_ELEMENT, KINETIC_ENERGY_GEV, RING, SEQ_FILE
 
+from tests.psb_tracking import ACD_ELEMENT, KINETIC_ENERGY_GEV, RING, SEQ_FILE
 from tmom_recon.acd.madng_driver import ACDipoleMadDriver
 
 DELTA = 3.0e-3

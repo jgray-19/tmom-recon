@@ -84,7 +84,7 @@ def test_quadratic_solver_selects_near_root():
 
 
 def test_public_estimator_rejects_nonzero_model_pt_loudly():
-    with pytest.raises(ValueError, match="pt == 0.0"):
+    with pytest.raises(ValueError, match=r"pt == 0\.0"):
         estimate_closed_orbit_pt(
             _data(np.zeros(len(BPMS))),
             ModelDetails(accelerator=object(), pt=1e-3),

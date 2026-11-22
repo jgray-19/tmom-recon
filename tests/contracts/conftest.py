@@ -8,9 +8,8 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import pandas as pd
 import pytest
 from pymadng_utils.mad import AcceleratorMadInterface
 from pymadng_utils.model_creator.madng_utils import update_model_with_madng
@@ -30,6 +29,9 @@ from tests.support.lhc import (
     lhc_model_details,
 )
 from tmom_recon import ACDipoleConfig, ModelDetails, OpticsInput
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 @dataclass(frozen=True)

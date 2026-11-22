@@ -17,10 +17,10 @@ from tmom_recon.physics.bpm_phases import (
 )
 from tmom_recon.physics.momenta import momenta_from_next, momenta_from_prev
 
-from .models import ACDipoleBPMSelection
-
 if TYPE_CHECKING:
     from tmom_recon.lattice.core import LatticeMaps
+
+    from .models import ACDipoleBPMSelection
 
 # ---------------------------------------------------------------------------
 # Twiss utilities
@@ -120,7 +120,7 @@ def _prepare_neighbor_tables(
 
     Returns:
         ``(prev_x, prev_y, next_x, next_y)`` DataFrames indexed by BPM name,
-        each carrying the neighbor name and delta (phase_advance − 0.25) columns.
+        each carrying the neighbor name and delta (phase_advance - 0.25) columns.
     """
     q1 = _get_tune(tws_bpm, "q1")
     q2 = _get_tune(tws_bpm, "q2")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -8,6 +8,9 @@ import tfs
 
 from tmom_recon import OpticsInput
 from tmom_recon.optics import resolve_optics
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _write_measurement_file(

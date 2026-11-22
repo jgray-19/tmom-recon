@@ -24,11 +24,15 @@ from __future__ import annotations
 import shutil
 from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-import pandas as pd
 from omc3.hole_in_one import hole_in_one_entrypoint
 from turn_by_turn.structures import TbtData, TransverseData
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pandas as pd
 
 #: Measured by the combined run and copied into every per-momentum directory,
 #: mirroring ``psb_md.acd_workflow._copy_combined_dispersion_to_phase_dir``.

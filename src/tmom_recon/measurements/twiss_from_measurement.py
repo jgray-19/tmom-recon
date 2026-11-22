@@ -405,8 +405,8 @@ def _compute_cumulative_phase(
     var_values = np.concatenate(([0.0], np.cumsum(variances)))
 
     return PhaseData(
-        mu=dict(zip(order, mu_values)),
-        var=dict(zip(order, var_values)),
+        mu=dict(zip(order, mu_values, strict=False)),
+        var=dict(zip(order, var_values, strict=False)),
         total_var=total_var,
         index=pd.Index(order),
     )

@@ -253,7 +253,7 @@ def _fit_harmonic_series_with_tune(
     The fitted parameters are ``a``, ``b`` and ``Q``; there is no constant offset.
     The supplied tune enters as a Gaussian prior, not as a hard search window::
 
-        χ² = Σ ((yᵢ - kᵢ) / σᵢ)² + ((Q - Q₀) / σ_Q)²
+        χ² = Σ ((yᵢ - kᵢ) / sigmaᵢ)² + ((Q - Q₀) / sigma_Q)²
     """
     t_valid = turns.astype(float)
     y_valid = values.astype(float)
@@ -271,7 +271,7 @@ def _fit_harmonic_series_with_tune(
     # Grid search over tunes near the hint to find the best linear-fit starting
     # point.  Starting from the linear fit exactly at tune_hint fails when the
     # hint and true tunes are nearly orthogonal over the record
-    # (N × |Q_hint - Q_true| ≈ integer): the linear fit yields amplitude ≈ 0, the
+    # (N x |Q_hint - Q_true| ≈ integer): the linear fit yields amplitude ≈ 0, the
     # nonlinear optimizer starts at a saddle where ∂RSS/∂tune = 0 everywhere on
     # the zero-amplitude manifold, and the tune never moves.  The grid search
     # guarantees the optimizer begins near the global linear-fit minimum.
@@ -294,7 +294,7 @@ def _fit_harmonic_series_with_tune(
     # The Gaussian prior on tune is intentionally omitted here: the grid search
     # above already starts the optimizer near the data-driven minimum, so no
     # pull toward the hint is needed.  Including the prior blocks convergence
-    # whenever the true tune lies more than ~1σ from the hint, because for small
+    # whenever the true tune lies more than ~1sigma from the hint, because for small
     # signal amplitudes the prior penalty dominates the data-fit residuals.
     tune_scale = 1.0 / max(len(t_valid), 1)  # Rayleigh resolution
 

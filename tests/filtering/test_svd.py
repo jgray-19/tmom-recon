@@ -413,10 +413,9 @@ class TestKnownNoiseSvdCleanMeasurements:
         noisy_df = pd.DataFrame(noisy_rows)
         cleaned_df = known_noise_svd_clean_measurements(noisy_df, bpm_list=bpms, center=None)
 
-        assert cleaned_df.attrs["svd_rank_x"] == 2
-        assert cleaned_df.attrs["svd_rank_y"] == 2
-        assert cleaned_df.attrs["svd_known_noise_threshold_x"] == pytest.approx(
-            np.sqrt(len(turns)) + np.sqrt(len(bpms))
+        assert cleaned_df.attrs["svd_rank"] == 2
+        assert cleaned_df.attrs["svd_known_noise_threshold"] == pytest.approx(
+            np.sqrt(len(turns)) + np.sqrt(2 * len(bpms))
         )
 
         x_error_before = float(np.sqrt(np.mean((noisy_df["x"] - clean_df["x"]) ** 2)))
@@ -441,3 +440,80 @@ class TestKnownNoiseSvdCleanMeasurements:
 
         with pytest.raises(ValueError, match="threshold_scale"):
             known_noise_svd_clean_measurements(meas_df, threshold_scale=0.0)
+
+
+# Two AC-dipole drives on a coupled ring, 16 BPMs as the PSB: x carries Q1 plus a
+# CROSS-sized Q2 line, y the reverse. Per-plane rank 2 kept 0.51 of the cross line
+# (worst BPM 0.23); the joint rank 4 must keep every line.
+_Q1, _Q2, _N_BPM, _N_TURN, _CROSS = 0.1696, 0.2325, 16, 2000, 0.05
+_NOISE = 0.05  # of the own-line amplitude scale (1-2)
+# Cleaned / uncleaned line - 1, white noise, seed 7 (2026-11-14): joint rank 4 own 4.5e-5,
+# cross 1.1e-3; joint rank 2 own 0.98, cross 2.2.
+_NOISY_OWN_CHANGE_MAX = 1e-4
+_NOISY_CROSS_CHANGE_MAX = 2e-3
+
+
+def _lines(series: np.ndarray, turns: np.ndarray) -> np.ndarray:
+    """Complex Q1, Q2 lines of each column (least-squares harmonic fit)."""
+    phases = 2 * np.pi * np.outer(turns, [_Q1, _Q2])
+    design = np.hstack([np.cos(phases), np.sin(phases), np.ones((len(turns), 1))])
+    coef = np.linalg.lstsq(design, series, rcond=None)[0]
+    return coef[0:2] - 1j * coef[2:4]
+
+
+def _coupled_drives(noise: float) -> tuple[pd.DataFrame, dict[str, np.ndarray]]:
+    rng = np.random.default_rng(7)
+    turns = np.arange(_N_TURN)
+    truth = {}
+    for plane, own in (("x", 0), ("y", 1)):
+        amp = np.ones((2, _N_BPM))
+        amp[own] = rng.uniform(1, 2, _N_BPM)
+        amp[1 - own] = _CROSS * rng.uniform(1, 2, _N_BPM)
+        truth[plane] = amp * np.exp(1j * rng.uniform(0, 2 * np.pi, (2, _N_BPM)))
+    rows = {
+        "turn": np.repeat(turns, _N_BPM),
+        "name": np.tile([f"BPM{i}" for i in range(_N_BPM)], _N_TURN),
+    }
+    for plane in "xy":
+        rotation = np.exp(2j * np.pi * np.outer(turns, [_Q1, _Q2]))
+        signal = np.real(rotation @ truth[plane]) + rng.normal(0, noise, (_N_TURN, _N_BPM))
+        rows[plane] = signal.reshape(-1)
+        rows[f"var_{plane}"] = np.full(_N_TURN * _N_BPM, max(noise, 1e-3) ** 2)
+    return pd.DataFrame(rows), truth
+
+
+def _frame_lines(frame: pd.DataFrame) -> dict[str, np.ndarray]:
+    turns = np.arange(_N_TURN)
+    out = {}
+    for plane in "xy":
+        matrix = frame.pivot(index="turn", columns="name", values=plane)
+        out[plane] = _lines(matrix[[f"BPM{i}" for i in range(_N_BPM)]].to_numpy(), turns)
+    return out
+
+
+def _line_errors(cleaned: pd.DataFrame, reference: dict[str, np.ndarray]) -> tuple[float, float]:
+    """Worst relative own-line and cross-line deviation from ``reference`` over BPMs and planes."""
+    lines = _frame_lines(cleaned)
+    own_err = cross_err = 0.0
+    for plane, own in (("x", 0), ("y", 1)):
+        rel = np.abs(lines[plane] / reference[plane] - 1)
+        own_err, cross_err = max(own_err, rel[own].max()), max(cross_err, rel[1 - own].max())
+    return own_err, cross_err
+
+
+def test_joint_rank_4_keeps_both_drives_cross_plane_lines_exactly() -> None:
+    """Noise-free: x's Q2 line and y's Q1 line survive the joint rank-4 SVD exactly."""
+    data, truth = _coupled_drives(0.0)
+    own_err, cross_err = _line_errors(weighted_svd_clean_measurements(data, rank=4), truth)
+    assert own_err < 1e-9
+    assert cross_err < 1e-9
+
+
+def test_joint_rank_4_keeps_cross_plane_lines_under_noise() -> None:
+    """White noise: cleaning leaves every Q1/Q2 line as the uncleaned data measure it."""
+    data, _truth = _coupled_drives(_NOISE)
+    cleaned = weighted_svd_clean_measurements(data, rank=4)
+    own_err, cross_err = _line_errors(cleaned, _frame_lines(data))
+    assert cleaned.attrs["svd_rank"] == 4
+    assert own_err < _NOISY_OWN_CHANGE_MAX
+    assert cross_err < _NOISY_CROSS_CHANGE_MAX

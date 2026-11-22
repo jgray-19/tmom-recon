@@ -16,11 +16,12 @@ import pytest
 
 from tests.psb_tracking import create_psb_model_dir
 from tests.support.lhc import tracking_artifacts_loader
-from tests.support.psb import PSBScenario
 from tests.support.scenarios import scenario as build_psb_scenario
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from tests.support.psb import PSBScenario
 
 # Configure logging for tests
 logging.getLogger("xdeps").setLevel(logging.WARNING)

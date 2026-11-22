@@ -9,7 +9,6 @@ import pytest
 import tmom_recon
 from tmom_recon import (
     OpticsInput,
-    calculate_acd_global_pz,
     calculate_acd_pz,
     calculate_kicker_pz,
     calculate_pz,
@@ -27,7 +26,6 @@ PUBLIC_API = {
     "PzGenerator",
     "ResolvedOptics",
     "build_twiss_from_measurements",
-    "calculate_acd_global_pz",
     "calculate_acd_pz",
     "calculate_kicker_pz",
     "calculate_pz",
@@ -71,13 +69,10 @@ def test_all_bpm_requires_an_explicit_barrier_decision() -> None:
 
 def test_workflows_are_separate_public_operations() -> None:
     assert calculate_acd_pz is not calculate_pz
-    assert calculate_acd_global_pz is not calculate_acd_pz
     assert calculate_kicker_pz is not calculate_pz
 
 
-@pytest.mark.parametrize(
-    "function", [calculate_pz, calculate_acd_pz, calculate_acd_global_pz, calculate_kicker_pz]
-)
+@pytest.mark.parametrize("function", [calculate_pz, calculate_acd_pz, calculate_kicker_pz])
 def test_reconstruction_apis_require_explicit_orbit_inputs(function) -> None:
     parameters = inspect.signature(function).parameters
     assert "frame" not in parameters

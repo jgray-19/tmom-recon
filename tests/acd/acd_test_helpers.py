@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 from pymadng_utils.accelerators import LHC
 
 from tmom_recon.acd.madng_driver import ACDipoleMadDriver
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 AC_DIPOLE_ELEMENT = "MKQA.6L4.B1"
 

@@ -6,8 +6,10 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 SCHEMA_VERSION = 1
 SUPPORTED_STRENGTH_SUFFIXES = (
@@ -92,8 +94,8 @@ def load_external_strength_fixture(path: Path) -> ExternalStrengthFixture:
 
 
 __all__ = [
-    "ExternalStrengthFixture",
     "SCHEMA_VERSION",
+    "ExternalStrengthFixture",
     "load_external_strength_fixture",
     "strength_fingerprint",
 ]

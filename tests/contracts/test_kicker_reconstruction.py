@@ -14,13 +14,15 @@ where the beam was actually deflected -- see
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-import pandas as pd
 import pytest
 from xtrack_tools.kicker import run_kicker_track
 
 from tmom_recon import KickerConfig, ModelDetails, calculate_kicker_pz
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 pytestmark = [pytest.mark.diagnostic, pytest.mark.integration, pytest.mark.slow, pytest.mark.psb]
 

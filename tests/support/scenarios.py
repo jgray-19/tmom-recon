@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from tests.psb_tracking import DRIVEN_TUNES, build_psb_tracking_setup
-from tests.support.psb import PSBScenario
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from tests.support.psb import PSBScenario
 
 
 @dataclass(frozen=True)

@@ -6,9 +6,8 @@ import re
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
-import pandas as pd
 import tfs
 from pymadng_utils.accelerators import LHC
 from pymadng_utils.mad import AcceleratorMadInterface
@@ -19,6 +18,9 @@ from xtrack_tools.monitors import process_tracking_data
 from tests.support.acd_barrier import acd_barrier_s
 from tmom_recon import ModelDetails
 from tmom_recon.acd.madng_driver import ACDipoleMadDriver
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 AC_DIPOLE_MARKER = "MKQA.6L4.B1"
 AC_DIPOLE_DRIVEN_TUNES = (0.27, 0.322)
@@ -210,7 +212,7 @@ def setup_xsuite_simulation(
         target_qy=_NATURAL_TUNES[1],
         corrector_file=corrector_file,
     )
-    corrector_table = cast(pd.DataFrame, tfs.read(corrector_file))
+    corrector_table = cast("pd.DataFrame", tfs.read(corrector_file))
     corrector_table = corrector_table.loc[
         ~corrector_table["kind"].astype(str).str.lower().isin({"monitor", "hmonitor", "vmonitor"})
     ]

@@ -61,7 +61,13 @@ fitted with ``C_k`` from the x and y lines of all BPMs. ``C_k`` (and so the
 kick) still follows the forced response; only the cross-mode part at the
 markers comes from the data.
 
-This module gives only the driven lines. The static part of the marker state
+Free motion (ramp transients). A drive ramped in non-adiabatically leaves a
+free oscillation at the natural tunes, ``Re[F_j v_j(s) exp(2 pi i q_j n)]`` with
+``v_j`` the normal-mode vectors. The natural-tune lines are fitted jointly with
+the driven ones, and one ``F_j`` per mode from x and y at all BPMs. Free motion
+is continuous across the AC dipole.
+
+The static part of the marker state
 (the off-momentum orbit) is one DC shared by both ends, since the kick has zero
 mean; the reconstruction takes it from the turn-mean BPM states tracked to the
 marker (:func:`tmom_recon.acd.reconstruction.reconstruct_from_prepared`).
@@ -114,6 +120,7 @@ class GlobalModeFit:
         bpms: BPMs used, in data order.
         residuals: Per-BPM relative residual of the mode's own-plane line,
             ``|Z_i - C g_i - B_i d| / |Z_i|``.
+        free: Free-oscillation amplitude ``F`` of normal mode ``mode`` at its natural tune.
         cross: Fitted other-mode amplitudes ``d`` (2 complex) at the marker,
             ``None`` without :func:`cross_mode_bases`.
     """
@@ -123,6 +130,7 @@ class GlobalModeFit:
     amplitude: complex
     bpms: tuple[str, ...]
     residuals: np.ndarray
+    free: complex
     cross: np.ndarray | None = None
 
     @property
@@ -284,10 +292,12 @@ def cross_mode_bases(
 def _fit_modes(
     data: pd.DataFrame,
     responses: Mapping[str, np.ndarray],
+    free_vectors: Mapping[str, np.ndarray],
     tunes: tuple[float, float],
+    natural_tunes: tuple[float, float],
     cross_bases: Mapping[str, np.ndarray] | None = None,
 ) -> list[GlobalModeFit]:
-    lines, model, weights, bpms, bases = [], [], [], [], []
+    lines, free_lines, model, free_model, weights, bpms, bases = [], [], [], [], [], [], []
     for name, rows in data.groupby("name", sort=False):
         key = str(name).upper()
         if key not in responses:
@@ -296,9 +306,15 @@ def _fit_modes(
         if not np.all(np.isfinite(var) & (var > 0)):
             continue
         turns = rows["turn"].to_numpy(float)
-        # lines[plane, mode]
-        lines.append([harmonic_lines(turns, rows[p].to_numpy(float), tunes)[0] for p in _OWN_PLANE])
+        # [plane, driven 1, driven 2, natural 1, natural 2]
+        z = [
+            harmonic_lines(turns, rows[p].to_numpy(float), (*tunes, *natural_tunes))[0]
+            for p in _OWN_PLANE
+        ]
+        lines.append([zp[:2] for zp in z])
+        free_lines.append([zp[2:] for zp in z])
         model.append(responses[key][[0, 2], :])
+        free_model.append(free_vectors[key][[0, 2], :])
         if cross_bases is not None:
             bases.append(cross_bases[key][[0, 2]])
         weights.append(1.0 / var)
@@ -308,6 +324,7 @@ def _fit_modes(
             f"Global ACD markers need at least 2 BPMs with finite var_x/var_y; got {len(bpms)}"
         )
     lines, model, weights = np.array(lines), np.array(model), np.array(weights)[:, :, None]
+    free_lines, free_model = np.array(free_lines), np.array(free_model)
     fits = []
     for k in range(2):
         if cross_bases is None:
@@ -323,38 +340,49 @@ def _fit_modes(
             )[0]
             amplitude, cross = complex(coef[0]), coef[1:]
             fitted = (design @ coef).reshape(lines[:, :, k].shape)
+        free = fit_mode_amplitude(free_lines[:, :, k], free_model[:, :, k], weights[:, :, 0])
         own = lines[:, k, k]
         residuals = np.abs(own - fitted[:, k]) / np.abs(own)
-        fits.append(GlobalModeFit(k + 1, float(tunes[k]), amplitude, tuple(bpms), residuals, cross))
+        fits.append(
+            GlobalModeFit(k + 1, float(tunes[k]), amplitude, tuple(bpms), residuals, free, cross)
+        )
     return fits
 
 
 @dataclass(frozen=True)
 class GlobalMarkerLines:
-    """Driven lines of the global solution at the two marker ends.
+    """Driven and free lines of the global solution at the two marker ends.
 
     Attributes:
         tunes: Driven tunes ``(Q_1, Q_2)``.
-        lines: ``{MARKER: (4, 2)}`` complex line of each coordinate per drive.
+        natural_tunes: Natural tunes ``(q_1, q_2)`` of the free lines.
+        lines: ``{MARKER: (4, 2)}`` complex driven line of each coordinate per drive.
+        free_lines: ``{MARKER: (4, 2)}`` complex free line of each coordinate per mode.
         fits: The two :class:`GlobalModeFit`.
     """
 
     tunes: tuple[float, float]
+    natural_tunes: tuple[float, float]
     lines: Mapping[str, np.ndarray]
+    free_lines: Mapping[str, np.ndarray]
     fits: tuple[GlobalModeFit, ...]
 
-    def driven_state(self, name: str, turns: np.ndarray) -> np.ndarray:
-        """Zero-mean driven ``(x, px, y, py)`` at marker ``name``, shape ``(n_turns, 4)``."""
-        rotation = np.exp(2j * np.pi * np.outer(turns, self.tunes))
-        return np.real(rotation @ self.lines[name.upper()].T)
+    def state(self, name: str, turns: np.ndarray) -> np.ndarray:
+        """Zero-mean driven plus free ``(x, px, y, py)`` at marker ``name``, shape ``(n_turns, 4)``."""
+        key = name.upper()
+        driven = np.exp(2j * np.pi * np.outer(turns, self.tunes)) @ self.lines[key].T
+        free = np.exp(2j * np.pi * np.outer(turns, self.natural_tunes)) @ self.free_lines[key].T
+        return np.real(driven + free)
 
 
 def fit_global_marker_lines(
     data: pd.DataFrame,
     responses: Mapping[str, np.ndarray],
+    free_vectors: Mapping[str, np.ndarray],
     *,
     markers: Sequence[str],
     driven_tunes: tuple[float, float],
+    natural_tunes: tuple[float, float],
     cross_bases: Mapping[str, np.ndarray] | None = None,
 ) -> GlobalMarkerLines:
     """Fit the two drive amplitudes to all BPMs and return the lines at ``markers``.
@@ -364,27 +392,35 @@ def fit_global_marker_lines(
             Any static frame offset per BPM is irrelevant (fitted as a constant).
         responses: Forced responses ``{NAME: g (4, 2)}`` at the BPMs and marker
             ends (:func:`forced_mode_responses`).
+        free_vectors: Normal-mode vectors ``{NAME: v (4, 2)}`` of the same model
+            (:func:`normal_mode_responses`) for the free oscillation.
         markers: Marker end names whose lines are returned.
         driven_tunes: Drive tunes ``(Q_1, Q_2)`` of the horizontal and vertical AC dipole.
+        natural_tunes: The model's fractional natural tunes ``(q_1, q_2)``.
         cross_bases: :func:`cross_mode_bases` of the same model to also fit each
             drive's other-mode content at the markers from the data; ``None``
             takes it from the forced response alone.
     """
     responses = {str(k).upper(): np.asarray(v) for k, v in responses.items()}
     tunes = (float(driven_tunes[0]), float(driven_tunes[1]))
+    natural = (float(natural_tunes[0]), float(natural_tunes[1]))
+    free_vectors = {str(k).upper(): np.asarray(v) for k, v in free_vectors.items()}
     if cross_bases is not None:
         cross_bases = {str(k).upper(): np.asarray(v) for k, v in cross_bases.items()}
-    fits = _fit_modes(data, responses, tunes, cross_bases)
+    fits = _fit_modes(data, responses, free_vectors, tunes, natural, cross_bases)
     for fit in fits:
         LOGGER.info(
-            "Global ACD markers mode %d: kick amplitude %.3e rad, median BPM residual %.2e over %d BPMs",
+            "Global ACD markers mode %d: kick amplitude %.3e rad, free/kick %.3f, "
+            "median BPM residual %.2e over %d BPMs",
             fit.mode,
             abs(fit.amplitude),
+            abs(fit.free) / abs(fit.amplitude),
             fit.median_residual,
             len(fit.bpms),
         )
     amplitudes = np.array([fit.amplitude for fit in fits])
-    lines = {}
+    lines, free_lines = {}, {}
+    free = np.array([fit.free for fit in fits])
     for marker in markers:
         name = str(marker).upper()
         drive = amplitudes * responses[name]
@@ -393,4 +429,5 @@ def fit_global_marker_lines(
                 "iak,ka->ik", cross_bases[name], np.array([f.cross for f in fits])
             )
         lines[name] = drive
-    return GlobalMarkerLines(tunes, lines, tuple(fits))
+        free_lines[name] = free * free_vectors[name]
+    return GlobalMarkerLines(tunes, natural, lines, free_lines, tuple(fits))

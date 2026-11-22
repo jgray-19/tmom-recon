@@ -21,7 +21,6 @@ from tmom_recon.optics import (
     SECOND_ORDER_DISPERSION_COLUMNS,
     ResolvedOptics,
 )
-from tmom_recon.orbit_reference import OrbitReference
 
 from .bpm_reconstruction import (
     _normalise_supplied_tune,
@@ -45,6 +44,8 @@ from .transport import (
 )
 
 if TYPE_CHECKING:
+    from tmom_recon.orbit_reference import OrbitReference
+
     from .madng_driver import ACDipoleMadDriver
 
 LOGGER = logging.getLogger(__name__)
@@ -478,7 +479,7 @@ def _global_marker_estimates(
     estimates = []
     for side in (upstream_side, downstream_side):
         name = model.accelerator.acd_marker_name(side.marker_end)
-        state = dc + global_lines.driven_state(name, turns)
+        state = dc + global_lines.state(name, turns)
         estimates.append(
             ACDipoleStateEstimate(
                 ACDipoleStateSeries(*state.T, np.zeros(n), np.full(n, model.pt)),

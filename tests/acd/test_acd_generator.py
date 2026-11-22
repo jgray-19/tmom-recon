@@ -10,6 +10,9 @@ These run the real MAD-NG driver, mirroring the other ACD integration tests.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -18,12 +21,14 @@ from tmom_recon import (
     ACDipoleConfig,
     ACDipolePzGenerator,
     ModelDetails,
-    calculate_acd_global_pz,
     calculate_acd_pz,
 )
-from tmom_recon.acd.madng_driver import ACDipoleMadDriver
+from tmom_recon.reconstruction import _calculate_acd_global_pz
 
 from .acd_test_helpers import AC_DIPOLE_ELEMENT, _ac_dipole_segment_around_element, _get_driver
+
+if TYPE_CHECKING:
+    from tmom_recon.acd.madng_driver import ACDipoleMadDriver
 
 SEQ_FILE = "lhcb1.seq"
 DRIVEN_TUNES = (0.27, 0.322)
@@ -153,7 +158,7 @@ def test_global_generator_update_matches_one_shot(data_dir, acd_tracking_setup) 
     config = _config(bpm_upstream=bpm_up, bpm_downstream=bpm_dn)
     reference = measured_zero_reference_for_simulation(tracking_df)
 
-    generator = ACDipolePzGenerator.build(
+    generator = ACDipolePzGenerator._build(
         data=tracking_df,
         closed_orbit_at_zero=reference,
         orbit_mode="dynamic",
@@ -162,7 +167,7 @@ def test_global_generator_update_matches_one_shot(data_dir, acd_tracking_setup) 
         global_markers=True,
     )
     from_generator = generator.update()
-    one_shot = calculate_acd_global_pz(
+    one_shot = _calculate_acd_global_pz(
         tracking_df,
         model_details,
         config,
@@ -176,7 +181,8 @@ def test_global_generator_update_matches_one_shot(data_dir, acd_tracking_setup) 
 @pytest.mark.slow
 @pytest.mark.parametrize("global_markers", [False, True], ids=["tracked", "global"])
 def test_generator_removes_bpm_gains(data_dir, acd_tracking_setup, global_markers) -> None:
-    """Data read with gains, rebuilt with them, gives the gain-free reconstruction; no gains restores it."""
+    """Data and blank closed orbit read with gains, rebuilt with them, give the gain-free
+    reconstruction; no gains restores it."""
     tracking_df, driver, bpm_up, bpm_dn = _setup(data_dir, acd_tracking_setup)
     model_details = ModelDetails(accelerator=driver.accelerator, pt=driver.pt)
     config = _config(bpm_upstream=bpm_up, bpm_downstream=bpm_dn)
@@ -187,25 +193,33 @@ def test_generator_removes_bpm_gains(data_dir, acd_tracking_setup, global_marker
         for p, plane in enumerate("xy")
     }
 
-    scaled = tracking_df.copy()
+    orbit = measured_zero_reference_for_simulation(tracking_df)  # a blank orbit the data carry
+    orbit["x"] = [1e-3 * (-1) ** i for i in range(len(orbit))]
+    orbit["y"] = [-5e-4 * (-1) ** i for i in range(len(orbit))]
+    with_orbit = tracking_df.copy()
+    for plane in "xy":
+        with_orbit[plane] = with_orbit[plane] + with_orbit["name"].map(orbit[plane]).to_numpy(float)
+
+    scaled, scaled_orbit = with_orbit.copy(), orbit.copy()
     upper = scaled["name"].astype(str).str.upper()
     for plane in "xy":
         factor = 1.0 + upper.map(lambda n, p=plane: gains[p, n]).to_numpy(float)
         scaled[plane] = scaled[plane].to_numpy(float) * factor
         scaled[f"var_{plane}"] = scaled[f"var_{plane}"].to_numpy(float) * factor**2
+        scaled_orbit[plane] *= 1.0 + np.array([gains[plane, str(n).upper()] for n in orbit.index])
 
-    def build(frame):
-        return ACDipolePzGenerator.build(
+    def build(frame, blank):
+        return ACDipolePzGenerator._build(
             data=frame,
-            closed_orbit_at_zero=measured_zero_reference_for_simulation(tracking_df),
+            closed_orbit_at_zero=blank,
             orbit_mode="dynamic",
             model_details=model_details,
             config=config,
             global_markers=global_markers,
         )
 
-    reference = build(tracking_df).update()
-    generator = build(scaled)
+    reference = build(with_orbit, orbit).update()
+    generator = build(scaled, scaled_orbit)
     corrected = generator.update(bpm_gains=gains)
     pd.testing.assert_frame_equal(corrected, reference, rtol=1e-6, atol=1e-12)
     assert not (generator.update().equals(reference))

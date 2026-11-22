@@ -57,7 +57,6 @@ __all__ = [
     "ModelOpticsErrors",
     "OpticsInput",
     "PzGenerator",
-    "calculate_acd_global_pz",
     "calculate_acd_pz",
     "calculate_pz",
 ]
@@ -140,7 +139,7 @@ def calculate_acd_pz(
     return _calculate_acd(data, resolved_acd, reference, resolved_optics)
 
 
-def calculate_acd_global_pz(
+def _calculate_acd_global_pz(
     data: pd.DataFrame,
     model_details: ModelDetails,
     config: ACDipoleConfig,
@@ -204,7 +203,7 @@ def _global_marker_lines(
     *,
     fit_cross_modes: bool,
 ) -> GlobalMarkerLines:
-    """Global forced-response drive lines at the two marker ends."""
+    """Global forced-response drive lines and free lines at the two marker ends."""
     # The undriven transport model: the forced response is exact with coupling,
     # the driven (lens) optics are not.
     vectors, natural_tunes = normal_mode_responses(model, model.pt)
@@ -217,8 +216,10 @@ def _global_marker_lines(
     return fit_global_marker_lines(
         acd_data,
         responses,
+        vectors,
         markers=(before, after),
         driven_tunes=driven_tunes,
+        natural_tunes=natural_tunes,
         cross_bases=cross_bases,
     )
 
@@ -285,13 +286,17 @@ def _calculate_acd(data, resolved_acd, reference, resolved_optics, global_lines=
 
 
 def remove_bpm_gains(data: pd.DataFrame, gains: Mapping[tuple[str, str], float]) -> pd.DataFrame:
-    """Divide each BPM's ``x``/``y`` readings by ``1 + g`` and the variances by ``(1 + g)**2``."""
+    """Divide each BPM's ``x``/``y`` readings by ``1 + g`` and the variances (if any) by ``(1 + g)**2``.
+
+    BPM names come from the ``name`` column, else the index (a closed-orbit table).
+    """
     out = data.copy(deep=True)
-    names = out["name"].astype(str).str.upper()
+    names = (out["name"] if "name" in out else out.index.to_series()).astype(str).str.upper()
     for plane in ("x", "y"):
         factor = 1.0 + names.map(lambda n, p=plane: gains.get((p, n), 0.0)).to_numpy(float)
         out[plane] = out[plane].to_numpy(float) / factor
-        out[f"var_{plane}"] = out[f"var_{plane}"].to_numpy(float) / factor**2
+        if f"var_{plane}" in out:
+            out[f"var_{plane}"] = out[f"var_{plane}"].to_numpy(float) / factor**2
     return out
 
 
@@ -329,6 +334,7 @@ class ACDipolePzGenerator:
         self._data = data
         self._prepare = prepare
         self._gains_signature: tuple | None = None
+        self._closed_orbit_read = closed_orbit_at_zero.copy(deep=True)  # as read, with gains
         self._prepared = prepared
         self._resolved_acd = resolved_acd
         self._optics_tws = resolved_acd.optics_tws
@@ -354,14 +360,33 @@ class ACDipolePzGenerator:
         orbit_mode: str,
         optics: OpticsInput = OpticsInput(),
         model_errors: ModelOpticsErrors | None = None,
+    ) -> ACDipolePzGenerator:
+        """Freeze the data side of the pipeline and return a generator."""
+        return cls._build(
+            data=data,
+            model_details=model_details,
+            config=config,
+            closed_orbit_at_zero=closed_orbit_at_zero,
+            orbit_mode=orbit_mode,
+            optics=optics,
+            model_errors=model_errors,
+        )
+
+    @classmethod
+    def _build(
+        cls,
+        *,
+        data: pd.DataFrame,
+        model_details: ModelDetails,
+        config: ACDipoleConfig,
+        closed_orbit_at_zero: pd.DataFrame,
+        orbit_mode: str,
+        optics: OpticsInput = OpticsInput(),
+        model_errors: ModelOpticsErrors | None = None,
         global_markers: bool = False,
         fit_cross_modes: bool = False,
     ) -> ACDipolePzGenerator:
-        """Freeze the data side of the pipeline and return a generator.
-
-        ``global_markers`` makes every :meth:`update` return the
-        :func:`calculate_acd_global_pz` marker states instead of the tracked ones.
-        """
+        """:meth:`build`; ``global_markers`` returns the global-marker states from ``update``."""
         validate_input(data)
         resolved_acd = resolve_ac_dipole_config(model_details, config)
         acd = resolved_acd.config
@@ -417,6 +442,7 @@ class ACDipolePzGenerator:
         if self._data is None or self._prepare is None:
             raise ValueError("BPM gains need a generator made by ACDipolePzGenerator.build")
         corrected = remove_bpm_gains(self._data, bpm_gains or {})
+        self._closed_orbit_at_zero = remove_bpm_gains(self._closed_orbit_read, bpm_gains or {})
         self._prepared = self._prepare(corrected)
         if self._global_markers:
             self._acd_data = _acd_data(corrected)
@@ -435,7 +461,8 @@ class ACDipolePzGenerator:
         Args:
             bpm_gains: BPM gains ``{(plane, BPM): g}`` with ``plane`` ``"x"`` or ``"y"``,
                 where a BPM reads ``(1 + g)`` times the position. The positions are
-                divided by ``1 + g`` (variances by ``(1 + g)**2``) and the cleaning
+                divided by ``1 + g`` (variances by ``(1 + g)**2``), as is the
+                ``closed_orbit_at_zero`` (read by the same BPMs), and the cleaning
                 is redone from them, so it costs a re-preparation rather than a refit
                 of the model. ``None`` or empty keeps the data as built.
             knobs: Knob variables (e.g. tune-correction knobs) to set on both

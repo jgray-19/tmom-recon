@@ -164,6 +164,23 @@ def _compute_centre(
         )
 
 
+def _plane_centres(
+    matrix: np.ndarray, centre: str | None, weights: np.ndarray | None, n_planes: int
+) -> np.ndarray:
+    """:func:`_compute_centre` of each of ``n_planes`` equal column blocks, as one row."""
+    blocks = np.split(np.arange(matrix.shape[1]), n_planes)
+    return np.concatenate(
+        [
+            np.broadcast_to(
+                _compute_centre(matrix[:, b], centre, None if weights is None else weights[:, b]),
+                (1, len(b)),
+            )
+            for b in blocks
+        ],
+        axis=1,
+    )
+
+
 def _select_rank(
     shape: tuple[int, ...],
     singular_values: np.ndarray,
@@ -282,12 +299,15 @@ def _svd_clean_matrix(
     variance_name: str = "measurement",
     fix_zero_columns: bool = False,
     known_noise_threshold_scale: float | None = None,
+    n_planes: int = 1,
 ) -> tuple[np.ndarray, int, np.ndarray, float | None]:
-    """Clean one measurement plane with truncated SVD.
+    """Clean a turn-by-device matrix with truncated SVD.
 
     Args:
-        matrix: Turn-by-BPM measurement matrix.
-        centre: One of ``"bpm"``, ``"global"``, or ``None``.
+        matrix: Turn-by-device measurement matrix: ``n_planes`` equal column
+            blocks (e.g. ``[x | y]`` BPM columns), decomposed together.
+        centre: One of ``"bpm"``, ``"global"`` (one offset per plane block), or
+            ``None``.
         rank: Integer rank or ``"auto"``.
         max_nan_gap: Largest measurement gap to interpolate before
             decomposition.
@@ -301,6 +321,7 @@ def _svd_clean_matrix(
         variance_name: Plane name used in validation messages.
         known_noise_threshold_scale: Optional multiplier for the whitened
             known-noise singular-value edge. Requires ``variance_matrix``.
+        n_planes: Number of equal column blocks, centred separately.
 
     Returns:
         Cleaned matrix, chosen rank, full singular value spectrum, and
@@ -319,7 +340,7 @@ def _svd_clean_matrix(
     filled_matrix = _fill_small_nans(matrix, max_gap=max_nan_gap)
 
     if variance_matrix is None:
-        centre_offset = _compute_centre(filled_matrix, centre)
+        centre_offset = _plane_centres(filled_matrix, centre, None, n_planes)
         centred_matrix = np.nan_to_num(filled_matrix - centre_offset, copy=False)
         reconstructed, chosen_rank, singular_values, threshold = _truncated_svd(
             centred_matrix, rank
@@ -334,7 +355,7 @@ def _svd_clean_matrix(
             missing_mask[:, invalid_columns] = True
             filled_matrix[:, invalid_columns] = np.nan
         weights = np.broadcast_to(1.0 / (column_scales**2), filled_matrix.shape)
-        centre_offset = _compute_centre(filled_matrix, centre, weights=weights)
+        centre_offset = _plane_centres(filled_matrix, centre, weights, n_planes)
         centred_matrix = filled_matrix - centre_offset
         scaled_matrix = np.nan_to_num(centred_matrix / column_scales, copy=False)
         svd_rank = "known_noise" if known_noise_threshold_scale is not None else rank
@@ -349,67 +370,68 @@ def _svd_clean_matrix(
     return cleaned_matrix, chosen_rank, singular_values, threshold
 
 
-def _finalise_cleaned_frame(
+def _clean_planes(
     meas_df: pd.DataFrame,
-    turn_range: np.ndarray,
-    bpm_list: list[str],
-    x_cleaned: np.ndarray,
-    y_cleaned: np.ndarray,
+    bpm_list: list[str] | None,
     *,
-    rank_x: int,
-    rank_y: int,
-    singular_values_x: np.ndarray,
-    singular_values_y: np.ndarray,
-    centre: str | None,
+    center: str | None,
+    rank: int | str,
+    max_nan_gap: int,
+    fix_zero_columns: bool,
     weighted: bool,
-    known_noise_threshold_x: float | None = None,
-    known_noise_threshold_y: float | None = None,
+    known_noise_threshold_scale: float | None = None,
 ) -> pd.DataFrame:
-    """Merge cleaned matrices back into the original measurement frame.
+    """Clean ``x`` and ``y`` with one SVD of the turn-by-BPM matrix ``[x | y]``.
 
-    Args:
-        meas_df: Original long-format measurement frame.
-        turn_range: Consecutive turn range used for pivoting.
-        bpm_list: BPM ordering used for pivoting.
-        x_cleaned: Cleaned horizontal matrix.
-        y_cleaned: Cleaned vertical matrix.
-        rank_x: Chosen rank for the horizontal plane.
-        rank_y: Chosen rank for the vertical plane.
-        singular_values_x: Full horizontal singular spectrum.
-        singular_values_y: Full vertical singular spectrum.
-        centre: Centring mode used for cleaning.
-        weighted: Whether weighted SVD cleaning was used.
-        known_noise_threshold_x: Horizontal known-noise SVD threshold, if used.
-        known_noise_threshold_y: Vertical known-noise SVD threshold, if used.
-
-    Returns:
-        Original data with cleaned ``x`` and ``y`` columns and SVD metadata in
-        ``attrs``.
+    A coupled mode moves both planes on the same turn pattern, so the joint
+    decomposition keeps a drive's cross-plane line in the same mode as its
+    own-plane line; per-plane cleaning at the same rank would drop it. ``rank``
+    counts joint modes (two per betatron mode: two drives or two free modes
+    need 4).
     """
-    cleaned_df = pd.DataFrame(
-        {
-            "turn": np.repeat(turn_range, len(bpm_list)),
-            "name": np.tile(bpm_list, len(turn_range)),
-            "x": x_cleaned.reshape(-1),
-            "y": y_cleaned.reshape(-1),
-        }
-    )
+    if weighted:
+        missing_columns = {"x", "y", "turn", "var_x", "var_y"}.difference(meas_df.columns)
+        if missing_columns:
+            missing = ", ".join(sorted(missing_columns))
+            raise ValueError(f"Weighted SVD cleaning requires columns: {missing}")
+    if bpm_list is None:
+        bpm_list = meas_df["name"].unique().tolist()
 
+    turn_range = np.arange(int(meas_df["turn"].min()), int(meas_df["turn"].max()) + 1)
+    logger.debug("Processing %d BPMs over %d turns", len(bpm_list), len(turn_range))
+    matrix = np.hstack([_pivot_to_matrix(meas_df, p, turn_range, bpm_list) for p in "xy"])
+    variance = (
+        np.hstack([_pivot_to_matrix(meas_df, f"var_{p}", turn_range, bpm_list) for p in "xy"])
+        if weighted
+        else None
+    )
+    cleaned, chosen_rank, singular_values, threshold = _svd_clean_matrix(
+        matrix,
+        centre=center,
+        rank="known_noise" if known_noise_threshold_scale is not None else rank,
+        max_nan_gap=max_nan_gap,
+        variance_matrix=variance,
+        variance_name="measurement",
+        fix_zero_columns=fix_zero_columns,
+        known_noise_threshold_scale=known_noise_threshold_scale,
+        n_planes=2,
+    )
+    n_bpms = len(bpm_list)
     result = meas_df.set_index(["turn", "name"])
-    cleaned_indexed = cleaned_df.set_index(["turn", "name"])
-    result["x"] = cleaned_indexed["x"]
-    result["y"] = cleaned_indexed["y"]
-    result.attrs["svd_rank_x"] = rank_x
-    result.attrs["svd_rank_y"] = rank_y
-    result.attrs["svd_singular_values_x"] = tuple(float(value) for value in singular_values_x)
-    result.attrs["svd_singular_values_y"] = tuple(float(value) for value in singular_values_y)
-    result.attrs["centre"] = centre
-    result.attrs["center"] = centre
+    for i, plane in enumerate("xy"):
+        block = cleaned[:, i * n_bpms : (i + 1) * n_bpms]
+        index = pd.MultiIndex.from_arrays(
+            [np.repeat(turn_range, n_bpms), np.tile(bpm_list, len(turn_range))],
+            names=["turn", "name"],
+        )
+        result[plane] = pd.Series(block.reshape(-1), index=index)
+    result.attrs["svd_rank"] = chosen_rank
+    result.attrs["svd_singular_values"] = tuple(float(v) for v in singular_values)
+    result.attrs["centre"] = center
+    result.attrs["center"] = center
     result.attrs["svd_weighted"] = weighted
-    if known_noise_threshold_x is not None:
-        result.attrs["svd_known_noise_threshold_x"] = known_noise_threshold_x
-    if known_noise_threshold_y is not None:
-        result.attrs["svd_known_noise_threshold_y"] = known_noise_threshold_y
+    if threshold is not None:
+        result.attrs["svd_known_noise_threshold"] = threshold
     return result.reset_index()
 
 
@@ -421,62 +443,32 @@ def svd_clean_measurements(
     max_nan_gap: int = 5,
     fix_zero_columns: bool = False,
 ) -> pd.DataFrame:
-    """Clean BPM measurements with truncated SVD.
+    """Clean BPM measurements with one truncated SVD of ``[x | y]``.
 
     Args:
         meas_df: Long-format measurement table containing at least ``turn``,
             ``name``, ``x``, and ``y`` columns.
         bpm_list: Optional BPM ordering. When omitted, the order from
             ``meas_df`` is used.
-        center: Centring mode passed to the cleaner. Accepted values are
-            ``"bpm"``, ``"global"``, or ``None``.
-        rank: Integer rank or ``"auto"`` to use the Gavish-Donoho threshold.
+        center: Centring mode: ``"bpm"``, ``"global"`` (per plane), or ``None``.
+        rank: Integer joint rank or ``"auto"`` (Gavish-Donoho threshold).
         max_nan_gap: Largest contiguous missing span to interpolate before
             decomposition.
         fix_zero_columns: Whether exact zeros are valid measurements. By
             default, any BPM column containing an exact zero is treated as a
-            dead-reading column and returned as NaN. Set this to ``True`` when
-            zeros are legitimate samples.
+            dead-reading column and returned as NaN.
 
     Returns:
         Copy of the input measurements with cleaned ``x`` and ``y`` values.
     """
     logger.info("Starting SVD cleaning of measurements")
-    if bpm_list is None:
-        bpm_list = meas_df["name"].unique().tolist()
-
-    turn_range = np.arange(int(meas_df["turn"].min()), int(meas_df["turn"].max()) + 1)
-    logger.debug("Processing %d BPMs over %d turns", len(bpm_list), len(turn_range))
-
-    x_matrix = _pivot_to_matrix(meas_df, "x", turn_range, bpm_list)
-    y_matrix = _pivot_to_matrix(meas_df, "y", turn_range, bpm_list)
-    x_cleaned, rank_x, singular_values_x, _ = _svd_clean_matrix(
-        x_matrix,
-        centre=center,
-        rank=rank,
-        max_nan_gap=max_nan_gap,
-        fix_zero_columns=fix_zero_columns,
-    )
-    y_cleaned, rank_y, singular_values_y, _ = _svd_clean_matrix(
-        y_matrix,
-        centre=center,
-        rank=rank,
-        max_nan_gap=max_nan_gap,
-        fix_zero_columns=fix_zero_columns,
-    )
-
-    logger.info("SVD cleaning completed successfully")
-    return _finalise_cleaned_frame(
+    return _clean_planes(
         meas_df,
-        turn_range,
         bpm_list,
-        x_cleaned,
-        y_cleaned,
-        rank_x=rank_x,
-        rank_y=rank_y,
-        singular_values_x=singular_values_x,
-        singular_values_y=singular_values_y,
-        centre=center,
+        center=center,
+        rank=rank,
+        max_nan_gap=max_nan_gap,
+        fix_zero_columns=fix_zero_columns,
         weighted=False,
     )
 
@@ -489,22 +481,23 @@ def weighted_svd_clean_measurements(
     max_nan_gap: int = 5,
     fix_zero_columns: bool = False,
 ) -> pd.DataFrame:
-    """Clean BPM measurements with variance-weighted truncated SVD.
+    """Clean BPM measurements with one variance-weighted truncated SVD of ``[x | y]``.
+
+    Each BPM column is whitened by its own ``var_x``/``var_y`` before the joint
+    decomposition and rescaled afterwards.
 
     Args:
         meas_df: Long-format measurement table containing at least ``turn``,
             ``name``, ``x``, ``y``, ``var_x``, and ``var_y`` columns.
         bpm_list: Optional BPM ordering. When omitted, the order from
             ``meas_df`` is used.
-        center: Centring mode passed to the cleaner. Accepted values are
-            ``"bpm"``, ``"global"``, or ``None``.
-        rank: Integer rank or ``"auto"`` to use the Gavish-Donoho threshold.
+        center: Centring mode: ``"bpm"``, ``"global"`` (per plane), or ``None``.
+        rank: Integer joint rank or ``"auto"`` (Gavish-Donoho threshold).
         max_nan_gap: Largest contiguous missing span to interpolate before
             decomposition.
         fix_zero_columns: Whether exact zeros are valid measurements. By
             default, any BPM column containing an exact zero is treated as a
-            dead-reading column and returned as NaN. Set this to ``True`` when
-            zeros are legitimate samples.
+            dead-reading column and returned as NaN.
 
     Returns:
         Copy of the input measurements with cleaned ``x`` and ``y`` values.
@@ -514,54 +507,13 @@ def weighted_svd_clean_measurements(
             measurements do not have finite positive variances.
     """
     logger.info("Starting weighted SVD cleaning of measurements")
-    required_columns = {"x", "y", "turn", "var_x", "var_y"}
-    missing_columns = required_columns.difference(meas_df.columns)
-    if missing_columns:
-        missing = ", ".join(sorted(missing_columns))
-        raise ValueError(f"Weighted SVD cleaning requires columns: {missing}")
-
-    if bpm_list is None:
-        bpm_list = meas_df["name"].unique().tolist()
-
-    turn_range = np.arange(int(meas_df["turn"].min()), int(meas_df["turn"].max()) + 1)
-    logger.debug("Processing %d BPMs over %d turns", len(bpm_list), len(turn_range))
-
-    x_matrix = _pivot_to_matrix(meas_df, "x", turn_range, bpm_list)
-    y_matrix = _pivot_to_matrix(meas_df, "y", turn_range, bpm_list)
-    var_x_matrix = _pivot_to_matrix(meas_df, "var_x", turn_range, bpm_list)
-    var_y_matrix = _pivot_to_matrix(meas_df, "var_y", turn_range, bpm_list)
-
-    x_cleaned, rank_x, singular_values_x, _ = _svd_clean_matrix(
-        x_matrix,
-        centre=center,
-        rank=rank,
-        max_nan_gap=max_nan_gap,
-        variance_matrix=var_x_matrix,
-        variance_name="horizontal measurement",
-        fix_zero_columns=fix_zero_columns,
-    )
-    y_cleaned, rank_y, singular_values_y, _ = _svd_clean_matrix(
-        y_matrix,
-        centre=center,
-        rank=rank,
-        max_nan_gap=max_nan_gap,
-        variance_matrix=var_y_matrix,
-        variance_name="vertical measurement",
-        fix_zero_columns=fix_zero_columns,
-    )
-
-    logger.info("Weighted SVD cleaning completed successfully")
-    return _finalise_cleaned_frame(
+    return _clean_planes(
         meas_df,
-        turn_range,
         bpm_list,
-        x_cleaned,
-        y_cleaned,
-        rank_x=rank_x,
-        rank_y=rank_y,
-        singular_values_x=singular_values_x,
-        singular_values_y=singular_values_y,
-        centre=center,
+        center=center,
+        rank=rank,
+        max_nan_gap=max_nan_gap,
+        fix_zero_columns=fix_zero_columns,
         weighted=True,
     )
 
@@ -574,11 +526,10 @@ def known_noise_svd_clean_measurements(
     max_nan_gap: int = 5,
     fix_zero_columns: bool = False,
 ) -> pd.DataFrame:
-    """Clean BPM measurements with a variance-informed SVD noise cut.
+    """Clean BPM measurements with a variance-informed joint SVD noise cut.
 
-    This is the known-variance counterpart to :func:`weighted_svd_clean_measurements`.
-    It whitens each BPM column by the supplied ``var_x``/``var_y`` values, keeps
-    singular modes above ``threshold_scale * (sqrt(n_turns) + sqrt(n_bpms))``,
+    Whitens each BPM column of ``[x | y]`` by its ``var_x``/``var_y``, keeps
+    singular modes above ``threshold_scale * (sqrt(n_turns) + sqrt(2 n_bpms))``,
     then rescales back to physical units.
 
     Args:
@@ -586,16 +537,14 @@ def known_noise_svd_clean_measurements(
             ``name``, ``x``, ``y``, ``var_x``, and ``var_y`` columns.
         bpm_list: Optional BPM ordering. When omitted, the order from
             ``meas_df`` is used.
-        center: Centring mode passed to the cleaner. Accepted values are
-            ``"bpm"``, ``"global"``, or ``None``.
+        center: Centring mode: ``"bpm"``, ``"global"`` (per plane), or ``None``.
         threshold_scale: Multiplier on the whitened random-matrix noise edge.
             Values above one are more conservative and cut more modes.
         max_nan_gap: Largest contiguous missing span to interpolate before
             decomposition.
         fix_zero_columns: Whether exact zeros are valid measurements. By
             default, any BPM column containing an exact zero is treated as a
-            dead-reading column and returned as NaN. Set this to ``True`` when
-            zeros are legitimate samples.
+            dead-reading column and returned as NaN.
 
     Returns:
         Copy of the input measurements with cleaned ``x`` and ``y`` values.
@@ -607,60 +556,15 @@ def known_noise_svd_clean_measurements(
     logger.info("Starting known-noise SVD cleaning of measurements")
     if not np.isfinite(threshold_scale) or threshold_scale <= 0.0:
         raise ValueError("threshold_scale must be finite and positive")
-
-    required_columns = {"x", "y", "turn", "var_x", "var_y"}
-    missing_columns = required_columns.difference(meas_df.columns)
-    if missing_columns:
-        missing = ", ".join(sorted(missing_columns))
-        raise ValueError(f"Known-noise SVD cleaning requires columns: {missing}")
-
-    if bpm_list is None:
-        bpm_list = meas_df["name"].unique().tolist()
-
-    turn_range = np.arange(int(meas_df["turn"].min()), int(meas_df["turn"].max()) + 1)
-    logger.debug("Processing %d BPMs over %d turns", len(bpm_list), len(turn_range))
-
-    x_matrix = _pivot_to_matrix(meas_df, "x", turn_range, bpm_list)
-    y_matrix = _pivot_to_matrix(meas_df, "y", turn_range, bpm_list)
-    var_x_matrix = _pivot_to_matrix(meas_df, "var_x", turn_range, bpm_list)
-    var_y_matrix = _pivot_to_matrix(meas_df, "var_y", turn_range, bpm_list)
-
-    x_cleaned, rank_x, singular_values_x, threshold_x = _svd_clean_matrix(
-        x_matrix,
-        centre=center,
-        rank="known_noise",
-        max_nan_gap=max_nan_gap,
-        variance_matrix=var_x_matrix,
-        variance_name="horizontal measurement",
-        fix_zero_columns=fix_zero_columns,
-        known_noise_threshold_scale=threshold_scale,
-    )
-    y_cleaned, rank_y, singular_values_y, threshold_y = _svd_clean_matrix(
-        y_matrix,
-        centre=center,
-        rank="known_noise",
-        max_nan_gap=max_nan_gap,
-        variance_matrix=var_y_matrix,
-        variance_name="vertical measurement",
-        fix_zero_columns=fix_zero_columns,
-        known_noise_threshold_scale=threshold_scale,
-    )
-
-    logger.info("Known-noise SVD cleaning completed successfully")
-    return _finalise_cleaned_frame(
+    return _clean_planes(
         meas_df,
-        turn_range,
         bpm_list,
-        x_cleaned,
-        y_cleaned,
-        rank_x=rank_x,
-        rank_y=rank_y,
-        singular_values_x=singular_values_x,
-        singular_values_y=singular_values_y,
-        centre=center,
+        center=center,
+        rank="known_noise",
+        max_nan_gap=max_nan_gap,
+        fix_zero_columns=fix_zero_columns,
         weighted=True,
-        known_noise_threshold_x=threshold_x,
-        known_noise_threshold_y=threshold_y,
+        known_noise_threshold_scale=threshold_scale,
     )
 
 

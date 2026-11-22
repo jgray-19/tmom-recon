@@ -54,7 +54,6 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import pandas as pd
-import tfs
 
 from tmom_recon.data.columns import (
     DISPERSION_RENAME_MAPPING,
@@ -67,6 +66,8 @@ from tmom_recon.momentum_dispersion import derive_momentum_dispersion
 
 if TYPE_CHECKING:  # pragma: no cover - typing helpers only
     from collections.abc import Collection
+
+    import tfs
 
 LOGGER = logging.getLogger(__name__)
 

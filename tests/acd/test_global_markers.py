@@ -77,9 +77,17 @@ def _data(responses, *, offset: float = 0.0, noise: dict[str, float] | None = No
     return pd.concat(frames, ignore_index=True)
 
 
-def _fit(data, responses, **kwargs):
+def _fit(data, responses, *, free_vectors=None, natural_tunes=(0.2550, 0.4400), **kwargs):
+    """Without ``free_vectors`` the data have no free motion (unit-free vectors fit ``F = 0``)."""
+    vectors = free_vectors or {name: np.ones((4, 2), complex) for name in responses}
     return fit_global_marker_lines(
-        data, responses, markers=(BEFORE, AFTER), driven_tunes=TUNES, **kwargs
+        data,
+        responses,
+        vectors,
+        markers=(BEFORE, AFTER),
+        driven_tunes=TUNES,
+        natural_tunes=natural_tunes,
+        **kwargs,
     )
 
 
@@ -103,7 +111,7 @@ def test_markers_equal_the_exact_driven_states(coupling) -> None:
     responses = _responses(coupling)
     out = _fit(_data(responses, offset=3e-3), responses)
     for name in (BEFORE, AFTER):
-        state = out.driven_state(name, TURNS)
+        state = out.state(name, TURNS)
         truth = _state(responses[name.upper()])
         for i, col in enumerate(COORDS):
             np.testing.assert_allclose(state[:, i], truth[col], rtol=0, atol=1e-12)
@@ -127,7 +135,7 @@ def test_kick_is_the_driven_alpha_jump() -> None:
     """Uncoupled: px_after - px_before = -Delta(alpha) x / beta at the marker."""
     responses = _responses()
     out = _fit(_data(responses), responses)
-    before, after = out.driven_state(BEFORE, TURNS), out.driven_state(AFTER, TURNS)
+    before, after = out.state(BEFORE, TURNS), out.state(AFTER, TURNS)
     g = responses[BEFORE.upper()]
     for k in range(2):
         beta = abs(g[2 * k, k]) ** 2
@@ -180,7 +188,7 @@ def test_cross_fit_recovers_the_other_mode_missing_from_the_model() -> None:
     }
     out = _fit(_data(truth), responses, cross_bases=bases)
     for name in (BEFORE, AFTER):
-        state = out.driven_state(name, TURNS)
+        state = out.state(name, TURNS)
         expected = _state(truth[name.upper()])
         for i, col in enumerate(COORDS):
             np.testing.assert_allclose(state[:, i], expected[col], rtol=0, atol=1e-12)
@@ -207,3 +215,40 @@ def test_cross_mode_bases_carry_the_other_mode_from_the_marker() -> None:
         np.testing.assert_allclose(
             bases[name], np.einsum("ij,jak->iak", transfer, other), atol=1e-10
         )
+
+
+NATURAL_TUNES = (0.2550, 0.4400)
+FREE = np.array([2.4e-4 * np.exp(-0.3j), 1.8e-4 * np.exp(1.9j)])  # one amplitude per normal mode
+
+
+def _free_vectors() -> dict[str, np.ndarray]:
+    """Arbitrary coupled normal-mode vectors, equal at both marker ends (free motion is continuous)."""
+    rng = np.random.default_rng(9)
+    out = {name: rng.normal(size=(4, 2)) + 1j * rng.normal(size=(4, 2)) for name in BPMS}
+    out[BEFORE.upper()] = out[AFTER.upper()] = rng.normal(size=(4, 2)) + 1j * rng.normal(
+        size=(4, 2)
+    )
+    return out
+
+
+def test_markers_include_the_free_oscillation() -> None:
+    """Ramp transient: free motion at the natural tunes on top of the drive is in the marker states."""
+    responses, vectors = _responses(0.05), _free_vectors()
+    data = _data(responses)
+    rotation = np.exp(2j * np.pi * np.outer(TURNS, NATURAL_TUNES))
+    free = {name: np.real(rotation @ (FREE * v).T) for name, v in vectors.items()}
+    for name in BPMS:
+        rows = data["name"] == name
+        data.loc[rows, "x"] += free[name][:, 0]
+        data.loc[rows, "y"] += free[name][:, 2]
+    out = _fit(data, responses, free_vectors=vectors, natural_tunes=NATURAL_TUNES)
+    for name in (BEFORE, AFTER):
+        state = out.state(name, TURNS)
+        driven = _state(responses[name.upper()])
+        for i, col in enumerate(COORDS):
+            np.testing.assert_allclose(
+                state[:, i], driven[col] + free[name.upper()][:, i], rtol=0, atol=1e-12
+            )
+    for k, fit in enumerate(out.fits):
+        assert fit.amplitude == pytest.approx(AMPLITUDE[k], rel=1e-10)
+        assert fit.free == pytest.approx(FREE[k], rel=1e-10)

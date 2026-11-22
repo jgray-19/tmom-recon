@@ -12,7 +12,6 @@ from .reconstruction import (
     ACDipoleConfig,
     ACDipolePzGenerator,
     PzGenerator,
-    calculate_acd_global_pz,
     calculate_acd_pz,
     calculate_pz,
 )
@@ -29,7 +28,6 @@ __all__ = [
     "PzGenerator",
     "ResolvedOptics",
     "build_twiss_from_measurements",
-    "calculate_acd_global_pz",
     "calculate_acd_pz",
     "calculate_kicker_pz",
     "calculate_pz",

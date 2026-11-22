@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-import numpy as np
-import pandas as pd
+from typing import TYPE_CHECKING
 
 from tmom_recon.lattice.names import resolve_name
 
 from .models import ACDipoleBPMSelection
+
+if TYPE_CHECKING:
+    import numpy as np
+    import pandas as pd
 
 __all__ = ["resolve_name"]
 

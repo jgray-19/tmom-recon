@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from tmom_recon.acd.madng_driver import ACDipoleMadDriver
+if TYPE_CHECKING:
+    from tmom_recon.acd.madng_driver import ACDipoleMadDriver
 
 
 @dataclass(frozen=True)

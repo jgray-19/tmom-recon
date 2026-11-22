@@ -30,8 +30,8 @@ test = [
     "xtrack-tools",
 ]
 dev = [
-    "pre-commit",
-    "ruff",
+    "pre-commit>=4,<5",
+    "ruff>=0.13,<0.14",
 ]
 docs = [
     "sphinx>=8",
@@ -73,56 +73,13 @@ addopts = [
 ]
 
 [tool.ruff]
-exclude = [
-  ".eggs",
-  ".git",
-  ".mypy_cache",
-  ".venv",
-  "_build",
-  "build",
-  "dist",
-  "tests/kalman",
-]
-
-src = ["src"]
-target-version = "py311"
-
 line-length = 100
-indent-width = 4
+target-version = "py311"
+extend-exclude = ["tests/data", "tests/kalman", "build", "scratch_tmp"]
 
 [tool.ruff.lint]
-dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
-ignore = [
-  "E501",
-  "FBT001",
-  "FBT002",
-  "PT019",
-]
-extend-select = [
-    "F",
-    "W",
-    "E",
-    "I",
-    "A",
-    "N",
-    "UP",
-    "C4",
-    "FA",
-    "FBT",
-    "ISC",
-    "BLE",
-    "ICN",
-    "RET",
-    "SIM",
-    "TID",
-    "PTH",
-    "NPY",
-]
-fixable = ["ALL"]
-unfixable = []
-
-[tool.ruff.lint.per-file-ignores]
-"study/0*.py" = ["N999"]
+extend-select = ["I", "B", "UP", "RUF", "TC"]
+ignore = ["E501"]
 
 [tool.ruff.lint.flake8-bugbear]
 # Frozen dataclass: safe as an argument default.

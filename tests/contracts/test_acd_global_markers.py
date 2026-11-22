@@ -1,4 +1,4 @@
-"""Global driven-optics ACD markers (``calculate_acd_global_pz``) against PSB tracking truth."""
+"""Global driven-optics ACD markers (``_calculate_acd_global_pz``) against PSB tracking truth."""
 
 from __future__ import annotations
 
@@ -12,9 +12,10 @@ from tests.acd.acd_test_helpers import acd_state_marker_names
 from tests.contracts.conftest import ScenarioSpec
 from tests.psb_tracking import ACD_ELEMENT, DRIVEN_TUNES
 from tests.support.scenarios import MagnetErrors
-from tmom_recon import ACDipoleConfig, ModelDetails, calculate_acd_global_pz, calculate_acd_pz
+from tmom_recon import ACDipoleConfig, ModelDetails, calculate_acd_pz
 from tmom_recon.acd.global_markers import GLOBAL_SUMMARY_ATTR_NAME, harmonic_lines
 from tmom_recon.acd.integration import resolve_ac_dipole_config
+from tmom_recon.reconstruction import _calculate_acd_global_pz
 
 LOGGER = logging.getLogger(__name__)
 pytestmark = [pytest.mark.diagnostic, pytest.mark.integration, pytest.mark.slow, pytest.mark.psb]
@@ -55,7 +56,7 @@ def test_global_markers_match_tracked_truth(contract_scenario) -> None:
         "orbit_mode": sc.orbit_mode,
         "optics": sc.optics,
     }
-    result = calculate_acd_global_pz(sc.data, sc.model_details, sc.acd, **kwargs)
+    result = _calculate_acd_global_pz(sc.data, sc.model_details, sc.acd, **kwargs)
     names = acd_state_marker_names(resolve_ac_dipole_config(sc.model_details, sc.acd).model)
     fits = result.attrs[GLOBAL_SUMMARY_ATTR_NAME]
     for fit in fits:
@@ -140,7 +141,7 @@ def test_global_kick_is_robust_to_unmodelled_quad_errors(psb_scenarios, quad_rms
         label: _kick_line_errors(
             method(data, details, config, **kwargs), data_all, names, DRIVEN_TUNES
         )
-        for label, method in (("global", calculate_acd_global_pz), ("tracked", calculate_acd_pz))
+        for label, method in (("global", _calculate_acd_global_pz), ("tracked", calculate_acd_pz))
     }
     LOGGER.info("quad_rms %.0e, natural tunes %s: kick errors %s", quad_rms, natural, errors)
     for mom in ("px", "py"):
@@ -196,7 +197,7 @@ def test_coupled_markers_match_tracked_truth(tilted_psb) -> None:
     kwargs = {"closed_orbit_at_zero": origin, "orbit_mode": "dynamic"}
     names = acd_state_marker_names(resolve_ac_dipole_config(details, config).model)
     results = {
-        "global": calculate_acd_global_pz(data, details, config, **kwargs),
+        "global": _calculate_acd_global_pz(data, details, config, **kwargs),
         "tracked": calculate_acd_pz(data, details, config, **kwargs),
     }
     truth = data_all.assign(name=data_all["name"].astype(str).str.upper())
@@ -298,7 +299,7 @@ def test_cross_mode_fit_recovers_coupling_missing_from_model(tilted_psb, model_c
     kwargs = {"closed_orbit_at_zero": origin, "orbit_mode": "dynamic"}
     names = acd_state_marker_names(resolve_ac_dipole_config(details, config).model)
     results = {
-        label: calculate_acd_global_pz(data, details, config, fit_cross_modes=fit, **kwargs)
+        label: _calculate_acd_global_pz(data, details, config, fit_cross_modes=fit, **kwargs)
         for label, fit in (("model", False), ("data", True))
     }
     truth = data_all.assign(name=data_all["name"].astype(str).str.upper())

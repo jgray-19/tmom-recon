@@ -62,7 +62,7 @@ jobs:
         run: uv pip install --upgrade pip setuptools wheel
 
       # pymadng-utils and xtrack-tools are not on PyPI. Their git URLs live here, not in
-      # [tool.uv.sources]: downstream repos (adelmo) install tmom-recon as a path
+      # [tool.uv.sources]: downstream repos (accelmo) install tmom-recon as a path
       # dependency, and uv would then see two URLs for pymadng-utils and refuse to resolve.
       - name: Install package
         run: >-

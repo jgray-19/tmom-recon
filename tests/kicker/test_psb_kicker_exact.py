@@ -46,8 +46,8 @@ _KICKERS = ("BR3.DHZ12L4", "BR3.DVT5L4")
 
 #: Relative kick error from the first BPM alone; worst measured 5.8e-7.
 _KICK_REL_TOL = 2e-6
-#: Reported state at the kicker [m, rad]; worst measured ~6e-13, the MAD-NG twiss/track floor.
-_ORBIT_TOL = 2e-12
+#: Reported state at the kicker [m, rad]; set by the model twiss closed-orbit ``cotol`` of 1e-11.
+_ORBIT_TOL = 3e-11
 
 
 @dataclass(frozen=True)
@@ -126,7 +126,9 @@ def _model_inputs(accelerator: PSB, state: MachineState):
     base = probe.mad.recv_vars(*[f"MADX['{v}']" for v in accelerator.tune_variables])
     tune_knobs = {
         name: float(value) * scale
-        for name, value, scale in zip(accelerator.tune_variables, base, state.tune_knob_scale)
+        for name, value, scale in zip(
+            accelerator.tune_variables, base, state.tune_knob_scale, strict=False
+        )
     }
     return strengths or None, tune_knobs
 
@@ -186,7 +188,7 @@ py:send(turns, true); py:send(xs, true); py:send(ys, true); py:send(before, true
     y = np.asarray(driver.mad.recv(), dtype=float)
     before = np.asarray(driver.mad.recv(), dtype=float)
     data = pd.DataFrame({"name": names, "turn": turns, "x": x, "y": y})
-    return data, dict(zip(("x", "px", "y", "py"), before))
+    return data, dict(zip(("x", "px", "y", "py"), before, strict=False))
 
 
 @cache

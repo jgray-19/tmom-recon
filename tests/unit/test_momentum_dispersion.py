@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
-import pandas as pd
 import pytest
 from pymadng_utils.accelerators import PSB
 from pymadng_utils.mad import AcceleratorMadInterface
@@ -12,6 +13,9 @@ from tmom_recon.momentum_dispersion import (
     MIN_SIN_PHASE_ADVANCE,
     derive_momentum_dispersion,
 )
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 RING = 3
 KINETIC_ENERGY_GEV = 0.16
@@ -189,7 +193,9 @@ def _coupled_twiss_and_trajectory(seq_psb3, rms_tilt: float, launch_x: float):
     interface.mad.send(_QUAD_NAMES.replace("PY", interface.py_name))
     quads = interface.mad.recv().split(",")
     tilts = rms_tilt * np.random.default_rng(1).standard_normal(len(quads))
-    interface.set_magnet_strengths({f"{q}.tilt": float(t) for q, t in zip(quads, tilts)})
+    interface.set_magnet_strengths(
+        {f"{q}.tilt": float(t) for q, t in zip(quads, tilts, strict=False)}
+    )
     interface.observe()
     tws = interface.run_twiss(coupling=True)
     tws.index = tws.index.astype(str).str.upper()

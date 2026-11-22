@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+
 from tests.support import fake_measurement
 from tests.support.fake_measurement import (
     DISPERSION_MEASUREMENT_FILES,

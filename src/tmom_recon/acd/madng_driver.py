@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -12,7 +11,7 @@ from pymadng_utils.mad import KnobMadInterface
 from pymadng_utils.mad.knob_mad_interface import resolve_knobs
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Generator, Mapping
 
     from pymadng_utils.accelerators import Accelerator
 
